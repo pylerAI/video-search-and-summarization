@@ -1408,8 +1408,12 @@ class ViaStreamHandler:
                             logger.info("Guardrails engaged")
                             return response["content"]
                         logger.info("Guardrails pass")
-                chat_config = self._ca_rag_config["chat"]
-                if chat_config["rag"] != "vector-rag" and chat_config["rag"] != "graph-rag":
+                
+                # Get the rag_type from the request info instead of trying to access context manager config
+                current_rag_type = request_infos[-1].rag_type or self._ca_rag_config["chat"].get("rag", "unknown")
+                
+                logger.info("Chat config (RAG type from request): %s", current_rag_type)
+                if current_rag_type != "vector-rag" and current_rag_type != "graph-rag":
                     logger.info("Both graph rag and vector rag are disabled. Q&A is disabled.")
                     return "Both graph rag and vector rag are disabled. Q&A is disabled."
                 else:
@@ -1461,6 +1465,128 @@ class ViaStreamHandler:
                 )
         except Exception as e:
             error_message = f"An error occurred: {str(e)} - {e.__class__.__name__}"
+            logger.error(error_message)
+            raise ViaException(error_message)
+
+    def moments(
+        self,
+        assets: list[Asset],
+        query: str = None,
+        top_k: int = 10,
+        video_ids: list[str] = None,
+    ):
+        """
+        Retrieve aligned moments from videos based on semantic similarity.
+        
+        Args:
+            assets: List of video assets to search
+            query: Search query for semantic similarity
+            top_k: Number of top moments to retrieve
+            video_ids: Optional list of specific video IDs to search
+            
+        Returns:
+            dict: Results with aligned moments and metadata
+        """
+        try:
+            request_infos = self.get_request_infos(assets)
+            if len(request_infos) > 1:
+                logger.info(
+                    f"Multiple video processing requests identified for same assets;"
+                    f" using request for moments retrieval: {str(request_infos[-1])}"
+                )
+            if len(request_infos) >= 1:
+                if request_infos[-1].enable_chat is False:
+                    return {
+                        "error": f"Chat/RAG functionality disabled for request id: {request_infos[-1].request_id}. "
+                               f"Please run summarization with enable_chat=True first."
+                    }
+
+                # Get the rag_type from the request info instead of trying to access context manager config
+                current_rag_type = request_infos[-1].rag_type or self._ca_rag_config["chat"].get("rag", "unknown")
+                
+                logger.info("Moments - RAG type from request: %s", current_rag_type)
+                if current_rag_type != "vector-rag":
+                    return {
+                        "error": f"Moments retrieval requires vector-rag mode. Current mode: {current_rag_type}. "
+                               f"Please run summarization with rag_type='vector-rag'."
+                    }
+
+                # Use the existing chat infrastructure with a special prompt that requests
+                # structured data from the vector RAG system. The enhanced_vector_retrieval_func
+                # should be able to handle this request and return structured data.
+                moments_prompt = f"""MOMENTS_SEARCH_REQUEST: Find the top {top_k} most similar moments to: "{query}"
+
+Return results in JSON format with this exact structure:
+{{
+    "results": [
+        {{
+            "document": {{"page_content": "content text"}},
+            "score": similarity_score,
+            "metadata": {{
+                "uuid": "video_id",
+                "chunkIdx": chunk_index,
+                "start_pts": start_pts_value,
+                "end_pts": end_pts_value,
+                "start_ntp": "start_ntp_string",
+                "end_ntp": "end_ntp_string", 
+                "streamId": "stream_id",
+                "file": "file_path",
+                "doc_type": "caption",
+                "cv_meta": "cv_metadata"
+            }}
+        }}
+    ]
+}}
+
+This is a special moments retrieval request. Please search the vector database and return the exact JSON structure above."""
+
+                # Use the existing chat call infrastructure
+                result = request_infos[-1]._ctx_mgr.call(
+                    {
+                        "chat": {
+                            "question": moments_prompt,
+                            "is_live": request_infos[-1].is_live,
+                            "is_last": False,
+                        }
+                    }
+                )
+                logger.debug(f"Moments: result object is {result}")
+
+                if "error" in result and result["error"]:
+                    raise ViaException("An internal error occurred during moments retrieval")
+
+                # Parse the response from the chat system
+                response_text = result["chat"]["response"]
+                
+                # Try to parse JSON response from the enhanced vector function
+                try:
+                    import json
+                    # Check if response looks like JSON
+                    if response_text.strip().startswith('{') and response_text.strip().endswith('}'):
+                        parsed_response = json.loads(response_text)
+                        if "results" in parsed_response:
+                            return parsed_response
+                    
+                    # If not structured JSON, fall back to regular chat response
+                    logger.warning(f"Moments search returned non-JSON response: {response_text}")
+                    return {
+                        "results": [],
+                        "error": f"No structured moments found. Response: {response_text}"
+                    }
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse moments response as JSON: {e}")
+                    return {
+                        "results": [],
+                        "error": f"Invalid JSON response: {str(e)}"
+                    }
+                
+            else:
+                return {
+                    "error": "Moments functionality disabled; please call /summarize API with enable_chat: True;"
+                }
+        except Exception as e:
+            error_message = f"An error occurred during moments retrieval: {str(e)} - {e.__class__.__name__}"
             logger.error(error_message)
             raise ViaException(error_message)
 

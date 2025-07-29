@@ -1140,6 +1140,143 @@ class CompletionResponse(ViaBaseModel):
 # ===================== Models required by /summarize API
 
 
+# ===================== Models required by /moments API
+
+class AlignedMomentTimestamp(ViaBaseModel):
+    """Timestamp information for an aligned moment."""
+    
+    start_pts: int = Field(
+        description="Start timestamp in nanoseconds",
+        json_schema_extra={"format": "int64"}
+    )
+    end_pts: int = Field(
+        description="End timestamp in nanoseconds", 
+        json_schema_extra={"format": "int64"}
+    )
+    start_ntp: str = Field(
+        description="Start timestamp in NTP format",
+        max_length=64
+    )
+    end_ntp: str = Field(
+        description="End timestamp in NTP format",
+        max_length=64
+    )
+    start_seconds: float = Field(
+        description="Start timestamp in seconds"
+    )
+    end_seconds: float = Field(
+        description="End timestamp in seconds"
+    )
+
+
+class AlignedMoment(ViaBaseModel):
+    """Represents an aligned moment from video retrieval."""
+    
+    query_id: str = Field(
+        description="Unique identifier for the query",
+        max_length=64
+    )
+    moment_id: str = Field(
+        description="Unique identifier for this moment",
+        max_length=128
+    )
+    similarity_score: float = Field(
+        description="Similarity score between query and moment",
+        ge=0.0,
+        le=1.0
+    )
+    timestamp: AlignedMomentTimestamp = Field(
+        description="Timestamp information for the moment"
+    )
+    video_id: str = Field(
+        description="Unique identifier of the video",
+        max_length=64
+    )
+    chunk_idx: int = Field(
+        description="Index of the chunk within the video",
+        ge=0
+    )
+    file_path: str = Field(
+        description="Path to the video file",
+        max_length=1024
+    )
+    content: str = Field(
+        description="Content/caption of the moment",
+        max_length=10000
+    )
+    rank: int = Field(
+        description="Rank of this moment (1-based)",
+        ge=1
+    )
+    doc_type: str = Field(
+        description="Type of document",
+        max_length=32,
+        default="caption"
+    )
+    cv_metadata: str = Field(
+        description="Computer vision metadata",
+        max_length=5000,
+        default=""
+    )
+
+
+class MomentsRetrievalQuery(ViaBaseModel):
+    """Query for retrieving top aligned moments."""
+    
+    id: Union[UUID, List[UUID]] = Field(
+        description="Unique ID or list of IDs of the video(s) to search for moments"
+    )
+
+    @field_validator("id", mode="after")
+    def check_ids(cls, v, info):
+        if isinstance(v, list) and len(v) > 50:
+            raise ValueError("List of ids must not exceed 50 items")
+        return v
+
+    @property
+    def id_list(self) -> List[UUID]:
+        return [self.id] if isinstance(self.id, UUID) else self.id
+    
+    query: str = Field(
+        description="Search query to find aligned moments",
+        max_length=5000,
+        min_length=1,
+        pattern=ANY_CHAR_PATTERN
+    )
+    top_k: int = Field(
+        description="Number of top moments to retrieve",
+        default=10,
+        ge=1,
+        le=100
+    )
+
+
+class MomentsRetrievalResponse(ViaBaseModel):
+    """Response containing top aligned moments."""
+    
+    query: str = Field(
+        description="The original search query"
+    )
+    query_id: str = Field(
+        description="Unique identifier for this query",
+        max_length=64
+    )
+    total_moments_found: int = Field(
+        description="Total number of aligned moments found",
+        ge=0
+    )
+    aligned_moments: list[AlignedMoment] = Field(
+        description="List of aligned moments, sorted by similarity score",
+        max_length=100
+    )
+    video_ids_searched: Union[list[str], str] = Field(
+        description="Video IDs that were searched, or 'all' if no filter was applied"
+    )
+    timestamp: float = Field(
+        description="Unix timestamp when the search was performed"
+    )
+
+
 # ===================== Models required by /recommended_config API
 class RecommendedConfig(ViaBaseModel):
     """Recommended VIA Config."""
@@ -2552,6 +2689,158 @@ class ViaServer:
             return response
 
         # ======================= Q&A API
+
+        # ======================= Moments Retrieval API
+        
+        @self._app.post(
+            f"{API_PREFIX}/moments/search",
+            summary="VIA Aligned Moments Retrieval",
+            description="Retrieve top-10 most aligned moments per video based on semantic similarity.",
+            responses={
+                200: {"description": "Successful Response.", "model": MomentsRetrievalResponse},
+                **add_common_error_responses(),
+                503: {
+                    "model": ViaError,
+                    "description": (
+                        "Server is busy processing another request."
+                        " Client may try again in some time."
+                    ),
+                },
+            },
+            tags=["Moments"],
+        )
+        async def retrieve_aligned_moments(
+            query: MomentsRetrievalQuery, request: Request
+        ) -> MomentsRetrievalResponse:
+            """
+            Retrieve top-K most aligned moments from videos based on semantic similarity.
+            
+            Returns metadata including:
+            - query_id: Unique identifier for the query
+            - moment_id: Unique identifier for each moment
+            - similarity_score: Semantic similarity score
+            - timestamp: Start/end timestamps in various formats
+            - video_id: Video identifier
+            """
+            
+            logger.info(f"Moments retrieval request: {query.query} (top_k={query.top_k})")
+            
+            try:
+                # Convert video UUIDs to strings - now using id_list like chat API
+                video_ids_str = [str(vid) for vid in query.id_list]
+                
+                # Get assets - following chat API pattern
+                asset_list = []
+                for video_id in video_ids_str:
+                    try:
+                        asset = self._asset_manager.get_asset(video_id)
+                        asset_list.append(asset)
+                    except Exception as e:
+                        logger.warning(f"Video {video_id} not found: {e}")
+                
+                if not asset_list:
+                    raise ViaException(
+                        "None of the specified video IDs were found",
+                        "BadParameters", 
+                        400
+                    )
+                
+                # Use the stream handler's moments method - following chat API pattern
+                loop = asyncio.get_event_loop()
+                moments_result = await loop.run_in_executor(
+                    self._async_executor,
+                    self._stream_handler.moments,
+                    asset_list,
+                    query.query,
+                    query.top_k,
+                    video_ids_str,
+                )
+                
+                # Check for errors from stream handler
+                if isinstance(moments_result, dict) and "error" in moments_result:
+                    raise ViaException(
+                        moments_result["error"],
+                        "MethodNotAllowed",
+                        405
+                    )
+                
+                # Process results into response format
+                aligned_moments = []
+                query_id = str(uuid.uuid4())
+                
+                # Handle the response from context manager
+                if "results" in moments_result:
+                    search_results = moments_result["results"]
+                    
+                    for i, result_item in enumerate(search_results):
+                        # Extract document and score from context manager response
+                        if isinstance(result_item, dict):
+                            document = result_item.get("document", {})
+                            similarity_score = result_item.get("score", 0.0)
+                            metadata = result_item.get("metadata", {})
+                        else:
+                            # Fallback for different response formats
+                            document = {"page_content": str(result_item)}
+                            similarity_score = 1.0 - (i * 0.1)  # Decreasing scores
+                            metadata = {}
+                        
+                        # Create aligned moment object
+                        moment = AlignedMoment(
+                            query_id=query_id,
+                            moment_id=f"{metadata.get('uuid', 'unknown')}_{metadata.get('chunkIdx', i)}",
+                            similarity_score=float(similarity_score),
+                            timestamp=AlignedMomentTimestamp(
+                                start_pts=metadata.get('start_pts', 0),
+                                end_pts=metadata.get('end_pts', 0),
+                                start_ntp=metadata.get('start_ntp', ''),
+                                end_ntp=metadata.get('end_ntp', ''),
+                                start_seconds=metadata.get('start_pts', 0) / 1_000_000_000.0 if metadata.get('start_pts') else 0.0,
+                                end_seconds=metadata.get('end_pts', 0) / 1_000_000_000.0 if metadata.get('end_pts') else 0.0,
+                            ),
+                            video_id=metadata.get('streamId', metadata.get('uuid', 'unknown')),
+                            chunk_idx=metadata.get('chunkIdx', i),
+                            file_path=metadata.get('file', ''),
+                            content=document.get("page_content", str(document)),
+                            rank=i + 1,
+                            doc_type=metadata.get('doc_type', 'caption'),
+                            cv_metadata=metadata.get('cv_meta', '')
+                        )
+                        aligned_moments.append(moment)
+                else:
+                    # Handle direct results if not wrapped in "results"
+                    logger.warning(f"Unexpected moments result format: {type(moments_result)}")
+                    # Return empty results rather than fail
+                
+                # Sort by similarity score (higher is better)
+                aligned_moments.sort(key=lambda x: x.similarity_score, reverse=True)
+                
+                # Update ranks after sorting
+                for i, moment in enumerate(aligned_moments):
+                    moment.rank = i + 1
+                
+                # Create response
+                response = MomentsRetrievalResponse(
+                    query=query.query,
+                    query_id=query_id,
+                    total_moments_found=len(aligned_moments),
+                    aligned_moments=aligned_moments,
+                    video_ids_searched=video_ids_str,
+                    timestamp=time.time()
+                )
+                
+                logger.info(f"Found {len(aligned_moments)} aligned moments for query: {query.query}")
+                return response
+                
+            except ViaException:
+                raise
+            except Exception as e:
+                logger.error(f"Error in moments retrieval: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise ViaException(
+                    f"Internal error during moments retrieval: {str(e)}",
+                    "InternalError",
+                    500
+                )
 
         # ======================= Recommended Config API
 
