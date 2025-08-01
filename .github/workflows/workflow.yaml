@@ -30,7 +30,21 @@ jobs:
           registry: nvcr.io
           username: '$oauthtoken'
           password: ${{ secrets.NGC_API_KEY }}
-          
+
+      - name: Generate buildkitd.toml
+        run: |
+          mkdir -p /tmp/buildkit
+          cat <<EOF > /tmp/buildkit/buildkitd.toml
+[registry."harbor.pyler.local"]
+  ca=["/etc/docker/certs.d/harbor.pyler.local/ca.crt"]
+EOF
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            config=/tmp/buildkit/buildkitd.toml
 
       - name: Log in to Harbor
         uses: docker/login-action@v3
