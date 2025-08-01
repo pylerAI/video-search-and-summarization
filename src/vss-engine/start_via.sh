@@ -276,6 +276,14 @@ configure_riva_asr_service() {
 
 }
 
+install_audio_plugins() {
+    echo "Installing additional audio plugins for GStreamer and FFmpeg"
+    apt-get update
+    apt-get install -y gstreamer1.0-tools gstreamer1.0-plugins-ugly gstreamer1.0-plugins-good gstreamer1.0-libav ffmpeg
+    export GST_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+    echo "Audio plugins installation completed"
+}
+
 start_via_server() {
     EXTRA_ARGS="$VSS_EXTRA_ARGS"
     if [ $DISABLE_GUARDRAILS = true ]; then
@@ -294,17 +302,17 @@ start_via_server() {
         EXTRA_ARGS+=" --milvus-db-port $MILVUS_DB_PORT --milvus-db-host $MILVUS_DB_HOST"
     fi
     if [ $ENABLE_NSYS_PROFILER = true ]; then
-	    echo "Profiling with  nsys"
-	    PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
-	    EXE_PREFIX="nsys profile -t cuda,nvtx,osrt --python-backtrace=cuda --show-output=true --force-overwrite=true  --output=via_nsys_logs --gpu-metrics-devices=$PROFILE_GPU_IDS --capture-range=cudaProfilerApi --capture-range-end=stop"
+      echo "Profiling with  nsys"
+      PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
+      EXE_PREFIX="nsys profile -t cuda,nvtx,osrt --python-backtrace=cuda --show-output=true --force-overwrite=true  --output=via_nsys_logs --gpu-metrics-devices=$PROFILE_GPU_IDS --capture-range=cudaProfilerApi --capture-range-end=stop"
     fi
 
     if [ "$MODE" = "release" ]; then
-	    echo "Starting VIA server in release mode"
-	    EXE="python3 -Wignore via-engine/via_server.py"
+      echo "Starting VIA server in release mode"
+      EXE="python3 -Wignore via-engine/via_server.py"
     else
-	    echo "Starting VIA server in development mode"
-	    EXE="python3 -Wignore src/via_server.py"
+      echo "Starting VIA server in development mode"
+      EXE="python3 -Wignore src/via_server.py"
     fi
     if [ ! -z $TRT_ENGINE_PATH ]; then
         EXTRA_ARGS+=" --trt-engine-dir $TRT_ENGINE_PATH"
@@ -365,6 +373,7 @@ start_processes() {
 
     if [ "$ENABLE_AUDIO" = true ]; then
         configure_riva_asr_service
+        install_audio_plugins
     fi
 
     start_milvus
