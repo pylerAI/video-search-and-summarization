@@ -3,7 +3,6 @@ name: VSS Deploy
 on:
   push:
     branches:
-      - main
       - develop
 
 jobs:
@@ -47,3 +46,49 @@ jobs:
           file: ./src/vss-engine/docker/Dockerfile
           build-args: |
             BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
+
+      - name: Set up kubectl
+        if: github.event_name == 'push'
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Set up Helm 3
+        if: github.event_name == 'push'
+        uses: azure/setup-helm@v4.3.0
+        with:
+          version: 'v3.16.4'
+
+      - name: Deploy services to Onprem
+        if: github.event_name == 'push'
+        run:  |
+          find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i 's/IMAGE_TAG/${{ github.sha }}/g' {} +
+          kubectl apply -f deploy/k8s/${{ env.PROJECT_ENV }} --recursive
+
+      - name: Wait for image pull job to complete (up to 20min)
+        run: |
+          for i in {1..80}; do
+            STATUS=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
+            FAILED=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
+            if [ "$STATUS" == "True" ]; then
+              echo "Job completed successfully."
+              exit 0
+            elif [ "$FAILED" == "True" ]; then
+              echo "Job failed!"
+              kubectl describe job image-prepull -n vss
+              exit 1
+            fi
+            echo "Waiting for job to complete..."
+            sleep 15
+          done
+          echo "Timeout reached. Job did not complete in time."
+          exit 1
+
+      - name: Clean up prepull job
+        run: kubectl delete job image-prepull -n vss --ignore-not-found
+
+      - name: Deploy vss app to Onprem
+        if: github.event_name == 'push'
+        run: |
+          find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i 's/IMAGE_TAG/${{ github.sha }}/g' {} +
+          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.3.1.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install

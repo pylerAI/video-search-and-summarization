@@ -1,0 +1,235 @@
+global:
+  ngcImagePullSecretName: ngc-docker-reg-secret
+
+vss:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss
+  storageClassName: gpfs
+  # securityContext: {}
+  # podSecurityContext: {}
+  applicationSpecs:
+    vss-deployment:
+      securityContext:
+        runAsGroup: 0
+        runAsUser: 0       
+      containers:
+        vss:
+          image:
+            pullPolicy: IfNotPresent
+            repository: harbor.pyler.local/apps/dev/vss-engine
+            tag: IMAGE_TAG
+          env:
+          - name: VLM_MODEL_TO_USE
+            value: vila-1.5
+          - name: MODEL_PATH
+            value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+          - name: ASSET_STORAGE_DIR
+            value: /tmp/custom-asset-dir
+          - name: EXAMPLE_STREAMS_DIR
+            value: /tmp/custom-example-streams-dir
+          - name: ENABLE_AUDIO
+            value: 'true'
+          - name: ENABLE_RIVA_SERVER_READINESS_CHECK
+            value: 'true'
+          startupProbe:
+            failureThreshold: 360
+  configs:
+    ca_rag_config.yaml:
+      chat:
+        embedding:
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+        llm:
+          base_url: http://llm-nim-svc:8000/v1
+          model: meta/llama-3.1-70b-instruct
+        reranker:
+          base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
+      notification:
+        llm:
+          base_url: http://llm-nim-svc:8000/v1
+          model: meta/llama-3.1-70b-instruct
+      summarization:
+        embedding:
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+        llm:
+          base_url: http://llm-nim-svc:8000/v1
+          model: meta/llama-3.1-70b-instruct
+    guardrails_config.yaml:
+      models:
+      - engine: nim
+        model: meta/llama-3.1-70b-instruct
+        parameters:
+          base_url: http://llm-nim-svc:8000/v1
+        type: main
+      - engine: nim
+        model: nvidia/llama-3.2-nv-embedqa-1b-v2
+        parameters:
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+        type: embeddings
+  extraPodVolumeMounts:
+  - mountPath: /tmp/custom-asset-dir
+    name: custom-asset-dir
+  - mountPath: /tmp/custom-example-streams-dir
+    name: custom-example-streams-dir
+  extraPodVolumes:
+  - hostPath:
+      path: /home/nvadmin/Workspace/blueprint/video_uploads
+    name: custom-asset-dir
+  - hostPath:
+      path: /home/nvadmin/Workspace/blueprint/video_examples
+    name: custom-example-streams-dir
+  resources:
+    limits:
+      nvidia.com/gpu: 2
+  workloadSpecs:
+    dummy: {}
+    wl-env:
+      wl_env:
+        - name: NGC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: NGC_API_KEY
+              name: infisical-managed-secrets
+        - name: GRAPH_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: GRAPHDB_USER
+              name: infisical-managed-secrets
+        - name: GRAPH_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: GRAPHDB_PASSWORD
+              name: infisical-managed-secrets
+      wl_units: 1
+
+etcd:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss
+  storageClassName: gpfs
+
+minio:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss  
+  storageClassName: gpfs
+
+
+milvus:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss  
+  storageClassName: gpfs
+
+neo4j:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss  
+  storageClassName: gpfs
+
+  extraPodVolumes:
+  - name: secret-db-username-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: GRAPHDB_USER
+        path: db-username
+  - name: secret-db-password-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: GRAPHDB_PASSWORD
+        path: db-password
+  extraPodVolumeMounts:
+  - name: secret-db-username-volume
+    mountPath: /secrets/db-username
+    subPath: db-username
+    readOnly: true
+  - name: secret-db-password-volume
+    mountPath: /secrets/db-password
+    subPath: db-password
+    readOnly: true
+
+
+nim-llm:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss 
+  storageClassName: gpfs
+  persistence:
+    storageClass: gpfs
+  image:
+    repository: nvcr.io/nim/meta/llama-3.1-70b-instruct
+    tag: 1.10.1
+  model:
+    name: meta/llama-3.1-70b-instruct
+    ngcAPISecret: infisical-managed-secrets
+  resources:
+    limits:
+      nvidia.com/gpu: 4
+
+
+nemo-embedding:
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  namespace: vss  
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
+        value: '1'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+
+nemo-rerank:
+  namespace: vss  
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-08
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+
+riva:
+  enabled: true
+  namespace: vss  
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-03
+  storageClassName: gpfs
+  workloadSpecs:
+    dummy: {}
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_HTTP_API_PORT
+        value: '9000'
+      - name: NIM_GRPC_API_PORT
+        value: '50051'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
