@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vss-web
+  namespace: vss
+spec:
+  ingressClassName: cilium
+  rules:
+  - host: vss-web.idc.local
+    http:
+      paths:
+      - backend:
+          service:
+            name: vss-service
+            port:
+              number: 9000
+        path: /
+        pathType: Prefix
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vss-api
+  namespace: vss
+spec:
+  ingressClassName: cilium
+  rules:
+  - host: vss-api.idc.local
+    http:
+      paths:
+      - backend:
+          service:
+            name: vss-service
+            port:
+              number: 8000
+        path: /
+        pathType: Prefix
