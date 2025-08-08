@@ -27,17 +27,16 @@ import re
 import sys
 import time
 import traceback
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, List, Literal, Union
-from uuid import UUID
+from typing import Annotated, Dict, List, Literal, Optional, Union
 
 import aiofiles
 import aiofiles.os
 import gi
 import uvicorn
+from asset_manager import Asset, AssetManager
 from fastapi import FastAPI, File, Form, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -57,8 +56,6 @@ from pydantic import (
     field_validator,
 )
 from sse_starlette.sse import EventSourceResponse
-
-from asset_manager import Asset, AssetManager
 from utils import (
     MediaFileInfo,
     StreamSettingsCache,
@@ -84,7 +81,7 @@ TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{3})Z
 FILE_NAME_PATTERN = r"^[A-Za-z0-9_.\- ]*$"
 PATH_PATTERN = r"^[A-Za-z0-9_.\-/ ]*$"
 DESCRIPTION_PATTERN = r'^[A-Za-z0-9_.\-"\' ,]*$'
-UUID_LENGTH = 36
+str_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
 LIVE_STREAM_URL_PATTERN = r"^rtsp://"
@@ -161,6 +158,8 @@ class MediaType(str, Enum):
 
     VIDEO = "video"
     IMAGE = "image"
+    METADATA = "metadata"
+    SEGMENT = "segment"
 
 
 class Purpose(str, Enum):
@@ -172,7 +171,7 @@ class Purpose(str, Enum):
 class FileInfo(ViaBaseModel):
     """Information about an uploaded file."""
 
-    id: UUID = Field(
+    id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     bytes: int = Field(
@@ -198,26 +197,48 @@ class FileInfo(ViaBaseModel):
     )
 
 
-class AddFileInfoResponse(FileInfo):
-    """Response schema for the add file request."""
+# class AddFileInfoResponse(FileInfo):
+#     """Response schema for the add file request."""
 
-    media_type: MediaType = Field(description="Media type (image / video).")
+#     media_type: MediaType = Field(description="Media type (image / video / metadata / chunk).")
+
+
+class FileDetail(ViaBaseModel):
+    filename: str
+    media_type: str
+    bytes: int
+
+
+class AddFileInfoResponse(BaseModel):
+    id: str = Field(..., description="The video ID to which the files are attached")
+    purpose: Literal["vision"] = Field(..., description="The intended purpose of the file")
+    files: Dict[str, FileDetail] = Field(..., description="Mapping of media type to uploaded file details")
+
+
+class AssetFilesResponse(ViaBaseModel):
+    id: str
+    purpose: str
+    files: Dict[str, FileDetail]
 
 
 class DeleteFileResponse(ViaBaseModel):
     """Response schema for delete file request."""
 
-    id: UUID = Field(
+    id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     object: Literal["file"] = Field(description="Type of response object.")
     deleted: bool = Field(description="Indicates if the file was deleted")
 
 
-class ListFilesResponse(ViaBaseModel):
-    """Response schema for the list files API."""
+# class ListFilesResponse(ViaBaseModel):
+#     """Response schema for the list files API."""
 
-    data: list[AddFileInfoResponse] = Field(max_length=1000000)
+#     data: list[AddFileInfoResponse] = Field(max_length=1000000)
+#     object: Literal["list"] = Field(description="Type of response object")
+
+class ListFilesResponse(ViaBaseModel):
+    data: list[AssetFilesResponse] = Field(max_length=1000000)
     object: Literal["list"] = Field(description="Type of response object")
 
 
@@ -261,7 +282,7 @@ class AddLiveStream(ViaBaseModel):
 class AddLiveStreamResponse(ViaBaseModel):
     """Response schema for the add live stream API."""
 
-    id: UUID = Field(
+    id: str = Field(
         description="The stream identifier, which can be referenced in the API endpoints."
     )
 
@@ -269,7 +290,7 @@ class AddLiveStreamResponse(ViaBaseModel):
 class LiveStreamInfo(ViaBaseModel):
     """Live Stream Information."""
 
-    id: UUID = Field(description="Unique identifier for the live stream")
+    id: str = Field(description="Unique identifier for the live stream")
     liveStreamUrl: str = Field(
         description="Live stream RTSP URL",
         max_length=256,
@@ -462,7 +483,7 @@ class ChatCompletionTool(ViaBaseModel):
 class SummarizationQuery(ViaBaseModel):
     """Summarization Query Request Fields."""
 
-    id: Union[UUID, List[UUID]] = Field(
+    id: Union[str, List[str]] = Field(
         description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize",
     )
 
@@ -473,8 +494,8 @@ class SummarizationQuery(ViaBaseModel):
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        return [self.id] if isinstance(self.id, str) else self.id
 
     @property
     def get_query_json(self: ViaBaseModel) -> dict:
@@ -887,7 +908,7 @@ class ChatMessage(ViaBaseModel):
 class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
 
-    id: Union[UUID, List[UUID]] = Field(
+    id: Union[str, List[str]] = Field(
         description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize"
     )
 
@@ -898,8 +919,8 @@ class ChatCompletionQuery(ViaBaseModel):
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        return [self.id] if isinstance(self.id, str) else self.id
 
     messages: List[ChatMessage] = Field(
         description="The list of chat messages.", max_length=1000000
@@ -1101,7 +1122,7 @@ class CompletionUsage(ViaBaseModel):
 class CompletionResponse(ViaBaseModel):
     """Represents a summarization/chat completion response."""
 
-    id: UUID = Field(description="Unique ID for the query")
+    id: str = Field(description="Unique ID for the query")
     choices: list[CompletionResponseChoice] = Field(
         description=(
             "A list of chat completion choices. Can be more than one if `n` is greater than 1."
@@ -1204,8 +1225,8 @@ class RecentAlertInfo(ViaBaseModel):
     alert_name: str = Field(
         description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN
     )
-    alert_id: UUID = Field(description="ID of the alert")
-    live_stream_id: UUID = Field(description="ID of the live stream that generated the alert")
+    alert_id: str = Field(description="ID of the alert")
+    live_stream_id: str = Field(description="ID of the live stream that generated the alert")
     detected_events: list[
         Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
     ] = Field(
@@ -1231,7 +1252,7 @@ class AddAlertInfo(ViaBaseModel):
     name: str = Field(
         description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN, default=""
     )
-    liveStreamId: UUID = Field(description="ID of the live stream to configure the alert for")
+    liveStreamId: str = Field(description="ID of the live stream to configure the alert for")
     events: list[Annotated[str, Field(min_length=1, max_length=1024, pattern=ANY_CHAR_PATTERN)]] = (
         Field(
             description="List of events to generate alert for",
@@ -1264,13 +1285,13 @@ class AddAlertInfo(ViaBaseModel):
 class AddAlertResponse(ViaBaseModel):
     """Response of the add alert API."""
 
-    id: UUID = Field(description="ID of the newly added alert")
+    id: str = Field(description="ID of the newly added alert")
 
 
 class AlertInfo(ViaBaseModel):
     """Information about an alert added to the server."""
 
-    liveStreamId: UUID = Field(description="ID of the live stream to configure the alert for")
+    liveStreamId: str = Field(description="ID of the live stream to configure the alert for")
     events: list[
         Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
     ] = Field(
@@ -1278,7 +1299,7 @@ class AlertInfo(ViaBaseModel):
         max_length=100,
         examples=[["Fire", "More than 5 people"]],
     )
-    alertId: UUID = Field(description="ID of the alert")
+    alertId: str = Field(description="ID of the alert")
     name: str = Field(description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN)
 
 
@@ -1288,7 +1309,7 @@ class AlertInfo(ViaBaseModel):
 class ViaServer:
     def __init__(self, args) -> None:
         self._args = args
-
+        print(f"args.asset_dir: {args.asset_dir}")
         self._asset_manager = AssetManager(
             args.asset_dir,
             max_storage_usage_gb=args.max_asset_storage_size,
@@ -1428,8 +1449,8 @@ class ViaServer:
         # ======================= Files API
         @self._app.post(
             f"{API_PREFIX}/files",
-            summary="API for uploading a media file",
-            description="Files are used to upload media files.",
+            summary="API for uploading media files (up to 2)",
+            description="Allows uploading one or two media files for a given video ID.",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
@@ -1446,94 +1467,61 @@ class ViaServer:
                     )
                 ),
             ],
-            media_type: Annotated[MediaType, Form(description="Media type (image / video).")],
-            file: Annotated[
-                UploadFile, File(description="File object (not file name) to be uploaded.")
-            ] = None,
-            filename: Annotated[
-                str,
-                Form(
-                    description="Filename along with path to be used.",
-                    max_length=256,
-                    examples=["/home/ubuntu/myfile.mp4"],
-                    pattern=PATH_PATTERN,
-                ),
-            ] = "",
-        ) -> AddFileInfoResponse:
+            media_type1: Annotated[MediaType, Form(description="Media type (image / video / metadata / segment).")],
+            file1: Annotated[UploadFile, File(description="File object to be uploaded.")] = None,
+            filename1: Annotated[str, Form(max_length=256, pattern=PATH_PATTERN)] = "",
+            media_type2: Annotated[Optional[MediaType], Form(description="Second file's media type (optional)")] = None,
+            file2: Annotated[Optional[UploadFile], File(description="Second file to upload (optional).")] = None,  # ✅ default=None 제거!
+            filename2: Annotated[str, Form(max_length=256, pattern=PATH_PATTERN)] = "",
+            video_id: Annotated[Optional[str], Form(description="Video ID for the uploaded file(s). If not provided, a new one will be generated.")] = None,
+        ) -> dict:
 
-            logger.info(
-                "Received add video file request - purpose %s,"
-                " media_type %s have file %r, filename - %s",
-                purpose,
-                media_type,
-                file,
-                filename,
-            )
+            from starlette.datastructures import UploadFile as StarletteUploadFile
+            def is_real_uploadfile(val):
+                return isinstance(val, StarletteUploadFile)
 
-            if not file and not filename:
-                raise ViaException(
-                    "At least one of 'file' or 'filename' must be specified",
-                    "InvalidParameters",
-                    422,
-                )
-            if file and filename:
-                raise ViaException(
-                    "Only one of 'file' or 'filename' must be specified. Both are not allowed.",
-                    "InvalidParameters",
-                    422,
-                )
+            if not is_real_uploadfile(file2): file2 = None
 
-            if media_type != "video" and media_type != "image":
-                raise ViaException(
-                    "Currently only 'video', 'image' media_type is supported.",
-                    "InvalidParameters",
-                    422,
-                )
-            if file:
-                if not re.compile(FILE_NAME_PATTERN).match(file.filename):
-                    raise ViaException(
-                        f"filename should match pattern '{FILE_NAME_PATTERN}'", "BadParameters", 400
-                    )
-                # File uploaded by user
-                video_id = await self._asset_manager.save_file(
-                    file, file.filename, purpose, media_type
-                )
+            if not (file1 or filename1):
+                raise ViaException("At least one file or filename must be specified", "InvalidParameters", 422)
+
+            for media_type in [media_type1, media_type2]:
+                if media_type and media_type not in ["video", "image", "metadata", "segment"]:
+                    raise ViaException(f"Unsupported media type: {media_type}", "InvalidParameters", 422)
+
+            # Handle file1
+            if file1:
+                video_id = await self._asset_manager.save_file(file1, file1.filename, purpose, media_type1, video_id)
+                fname1 = file1.filename
+            elif filename1:
+                video_id = self._asset_manager.add_file(filename1, purpose, media_type1, reuse_asset=False)
+                fname1 = os.path.basename(filename1)
             else:
-                # File added as path
-                video_id = self._asset_manager.add_file(
-                    filename, purpose, media_type, reuse_asset=False
-                )
+                fname1 = None
 
-            try:
-                if not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
-                    media_info = await MediaFileInfo.get_info_async(
-                        self._asset_manager.get_asset(video_id).path
-                    )
-                    if not media_info.video_codec:
-                        raise Exception("Invalid file")
-                    if (media_type == "image") != media_info.is_image:
-                        raise Exception("Invalid file")
-            except Exception as e:
-                logger.error("".join(traceback.format_exception(e)))
-                self._asset_manager.cleanup_asset(video_id)
-                raise ViaException(
-                    f"File does not seem to be a valid {media_type} file",
-                    "InvalidFile",
-                    400,
-                )
+            # Handle file2 (if exists)
+            if file2:
+                video_id = await self._asset_manager.save_file(file2, file2.filename, purpose, media_type2, video_id)
+                fname2 = file2.filename
+            elif filename2:
+                video_id = self._asset_manager.add_file(filename2, purpose, media_type2, reuse_asset=False)
+                fname2 = os.path.basename(filename2)
+            else:
+                fname2 = None
 
-            asset = self._asset_manager.get_asset(video_id)
-            try:
-                fsize = (await aiofiles.os.stat(asset.path)).st_size
-            except Exception:
-                fsize = 0
-            return {
-                "id": video_id,
-                "bytes": fsize,
-                "filename": asset.filename,
-                "media_type": media_type,
-                "purpose": "vision",
-            }
+            # Construct response for only uploaded files
+            files_info = {}
+            if fname1:
+                path1 = os.path.join(self._asset_manager._asset_dir, video_id, fname1)
+                size1 = (await aiofiles.os.stat(path1)).st_size if await aiofiles.os.path.isfile(path1) else 0
+                files_info[media_type1] = {"filename": fname1, "media_type": media_type1, "bytes": size1}
+
+            if fname2:
+                path2 = os.path.join(self._asset_manager._asset_dir, video_id, fname2)
+                size2 = (await aiofiles.os.stat(path2)).st_size if await aiofiles.os.path.isfile(path2) else 0
+                files_info[media_type2] = {"filename": fname2, "media_type": media_type2, "bytes": size2}
+
+            return {"id": video_id, "purpose": purpose, "files": files_info}
 
         @self._app.delete(
             f"{API_PREFIX}/files/{{file_id}}",
@@ -1547,7 +1535,7 @@ class ViaServer:
             tags=["Files"],
         )
         async def delete_video_file(
-            file_id: Annotated[UUID, Path(description="File having 'file_id' to be deleted.")],
+            file_id: Annotated[str, Path(description="File having 'file_id' to be deleted.")],
         ) -> DeleteFileResponse:
             file_id = str(file_id)
             logger.info("Received delete video file request for %s", file_id)
@@ -1563,6 +1551,49 @@ class ViaServer:
             )
 
             return {"id": file_id, "object": "file", "deleted": True}
+
+        # @self._app.get(
+        #     f"{API_PREFIX}/files",
+        #     description="Returns a list of files.",
+        #     summary="Returns list of files",
+        #     responses={
+        #         200: {"description": "Successful Response."},
+        #         **add_common_error_responses([500]),
+        #     },
+        #     tags=["Files"],
+        # )
+        # async def list_video_files(
+        #     purpose: Annotated[
+        #         str,
+        #         Query(
+        #             description="Only return files with the given purpose.",
+        #             max_length=36,
+        #             title="Only return files with the given purpose.",
+        #             pattern=r"^[a-zA-Z]*$",
+        #         ),
+        #     ],
+        # ) -> ListFilesResponse:
+        #     if purpose != "vision":
+        #         return {"data": [], "object": "list"}
+        #     video_file_list = [
+        #         {
+        #             "id": asset.asset_id,
+        #             "filename": asset.filename,
+        #             "purpose": "vision",
+        #             "bytes": (
+        #                 (await aiofiles.os.stat(asset.path)).st_size
+        #                 if (await aiofiles.os.path.isfile(asset.path))
+        #                 else 0
+        #             ),
+        #             "media_type": asset.media_type,
+        #         }
+        #         for asset in self._asset_manager.list_assets()
+        #         if not asset.is_live
+        #     ]
+        #     logger.info(
+        #         "Received list files request. Responding with %d files info", len(video_file_list)
+        #     )
+        #     return {"data": video_file_list, "object": "list"}
 
         @self._app.get(
             f"{API_PREFIX}/files",
@@ -1587,25 +1618,59 @@ class ViaServer:
         ) -> ListFilesResponse:
             if purpose != "vision":
                 return {"data": [], "object": "list"}
-            video_file_list = [
-                {
-                    "id": asset.asset_id,
-                    "filename": asset.filename,
-                    "purpose": "vision",
-                    "bytes": (
-                        (await aiofiles.os.stat(asset.path)).st_size
-                        if (await aiofiles.os.path.isfile(asset.path))
-                        else 0
-                    ),
-                    "media_type": asset.media_type,
-                }
-                for asset in self._asset_manager.list_assets()
-                if not asset.is_live
-            ]
-            logger.info(
-                "Received list files request. Responding with %d files info", len(video_file_list)
-            )
-            return {"data": video_file_list, "object": "list"}
+
+            asset_list = []
+            for asset in self._asset_manager.list_assets():
+                if asset.is_live:
+                    continue
+
+                files: Dict[str, FileDetail] = {}
+
+                for media_type, file_info in asset.files.items():
+                    path = file_info.get("path")
+                    size = 0
+                    if await aiofiles.os.path.isfile(path):
+                        size = (await aiofiles.os.stat(path)).st_size
+
+                    files[media_type] = FileDetail(
+                        filename=file_info.get("fileName"),
+                        media_type=media_type,
+                        bytes=size
+                    )
+
+                asset_list.append(AssetFilesResponse(
+                    id=asset.asset_id,
+                    purpose=purpose,
+                    files=files
+                ))
+
+            logger.info("Responding with %d asset entries", len(asset_list))
+            return {"data": asset_list, "object": "list"}
+
+        # @self._app.get(
+        #     f"{API_PREFIX}/files/{{file_id}}",
+        #     summary="Returns information about a specific file",
+        #     description="Returns information about a specific file.",
+        #     responses={
+        #         200: {"description": "Successful Response."},
+        #         **add_common_error_responses(),
+        #     },
+        #     tags=["Files"],
+        # )
+        # async def get_file_info(
+        #     file_id: Annotated[
+        #         str, Path(description="The ID of the file to use for this request.")
+        #     ],
+        # ) -> FileInfo:
+        #     file_id = str(file_id)
+        #     asset = self._asset_manager.get_asset(file_id)
+        #     if asset.is_live:
+        #         raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
+        #     try:
+        #         fsize = (await aiofiles.os.stat(asset.path)).st_size
+        #     except Exception:
+        #         fsize = 0
+        #     return {"id": file_id, "bytes": fsize, "filename": asset.filename, "purpose": "vision"}
 
         @self._app.get(
             f"{API_PREFIX}/files/{{file_id}}",
@@ -1618,39 +1683,85 @@ class ViaServer:
             tags=["Files"],
         )
         async def get_file_info(
-            file_id: Annotated[
-                UUID, Path(description="The ID of the file to use for this request.")
-            ],
-        ) -> FileInfo:
+            file_id: Annotated[str, Path(description="The ID of the file to use for this request.")],
+        ) -> AssetFilesResponse:  # ✅ 수정
             file_id = str(file_id)
             asset = self._asset_manager.get_asset(file_id)
             if asset.is_live:
                 raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
-            try:
-                fsize = (await aiofiles.os.stat(asset.path)).st_size
-            except Exception:
-                fsize = 0
-            return {"id": file_id, "bytes": fsize, "filename": asset.filename, "purpose": "vision"}
+
+            files: Dict[str, FileDetail] = {}
+
+            for media_type, file_info in asset.files.items():
+                path = file_info.get("path")
+                size = 0
+                if await aiofiles.os.path.isfile(path):
+                    try:
+                        size = (await aiofiles.os.stat(path)).st_size
+                    except Exception:
+                        pass
+
+                files[media_type] = FileDetail(
+                    filename=file_info.get("fileName"),
+                    media_type=media_type,
+                    bytes=size
+                )
+
+            return AssetFilesResponse(
+                id=asset.asset_id,
+                purpose=asset.purpose,
+                files=files
+            )
+
+        # @self._app.get(
+        #     f"{API_PREFIX}/files/{{file_id}}/content",
+        #     summary="Returns the contents of the specified file",
+        #     description="Returns the contents of the specified file.",
+        #     responses={
+        #         200: {"description": "Successful Response."},
+        #         **add_common_error_responses(),
+        #     },
+        #     tags=["Files"],
+        # )
+        # async def get_file_content(
+        #     file_id: Annotated[
+        #         str, Path(description="The ID of the file to use for this request.")
+        #     ],
+        # ):
+        #     asset = self._asset_manager.get_asset(str(file_id))
+        #     if asset.is_live:
+        #         raise ViaException(f"No such resource {str(file_id)}", "BadParameter", 400)
+        #     return FileResponse(asset.path)
 
         @self._app.get(
-            f"{API_PREFIX}/files/{{file_id}}/content",
-            summary="Returns the contents of the specified file",
-            description="Returns the contents of the specified file.",
+            f"{API_PREFIX}/files/{{file_id}}/content/{{media_type}}",
+            summary="Returns the contents of the specified media_type file",
+            description="Returns the contents of a specific media_type file from the given file_id asset.",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
+                404: {"description": "Requested media_type file not found."}
             },
             tags=["Files"],
         )
-        async def get_file_content(
-            file_id: Annotated[
-                UUID, Path(description="The ID of the file to use for this request.")
-            ],
+        async def get_file_content_by_type(
+            file_id: Annotated[str, Path(description="The ID of the asset.")],
+            media_type: Annotated[str, Path(description="The media type of the file to retrieve.")],
         ):
-            asset = self._asset_manager.get_asset(str(file_id))
+            asset = self._asset_manager.get_asset(file_id)
             if asset.is_live:
-                raise ViaException(f"No such resource {str(file_id)}", "BadParameter", 400)
-            return FileResponse(asset.path)
+                raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
+
+            # 파일 존재 확인
+            file_info = asset.files.get(media_type)
+            if not file_info:
+                raise ViaException(f"No file of type '{media_type}' found for asset {file_id}", "NotFound", 404)
+
+            path = file_info.get("path")
+            if not path or not os.path.isfile(path):
+                raise ViaException(f"File not found on disk for '{media_type}'", "NotFound", 404)
+
+            return FileResponse(path, filename=file_info.get("fileName"))
 
         # ======================= Files API
 
@@ -1777,7 +1888,7 @@ class ViaServer:
         )
         async def delete_live_stream(
             stream_id: Annotated[
-                UUID, Path(description="Unique identifier for the live stream to be deleted.")
+                str, Path(description="Unique identifier for the live stream to be deleted.")
             ],
         ):
             stream_id = str(stream_id)
@@ -1858,8 +1969,8 @@ class ViaServer:
         )
         async def summarize(query: SummarizationQuery, request: Request) -> CompletionResponse:
 
-            videoIdListUUID = query.id_list
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            videoIdListstr = query.id_list
+            videoIdList = [str(str_obj) for str_obj in videoIdListstr]
             assetList = []
 
             if len(videoIdList) > 1:
@@ -2399,9 +2510,9 @@ class ViaServer:
         )
         async def qa(query: ChatCompletionQuery, request: Request) -> CompletionResponse:
 
-            videoIdListUUID = query.id_list
-            logger.debug(f"{videoIdListUUID}")
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            videoIdListstr = query.id_list
+            logger.debug(f"{videoIdListstr}")
+            videoIdList = [str(str_obj) for str_obj in videoIdListstr]
             assetList = []
 
             def json_to_string(input):
@@ -2492,7 +2603,7 @@ class ViaServer:
                 )
 
             loop = asyncio.get_event_loop()
-            request_id = str(uuid.uuid4())
+            request_id = str(str.str4())
 
             if len(videoIdList) == 1:
                 assetList = [asset]
@@ -2710,7 +2821,7 @@ class ViaServer:
             tags=["Alerts"],
         )
         def delete_alert(
-            alert_id: Annotated[UUID, Path(description="Unique ID of the alert to be deleted.")],
+            alert_id: Annotated[str, Path(description="Unique ID of the alert to be deleted.")],
         ):
             logger.info("Received delete alert request for %s", str(alert_id))
             self._stream_handler.remove_live_stream_alert(str(alert_id))
@@ -2727,7 +2838,7 @@ class ViaServer:
         )
         def get_recent_alerts(
             live_stream_id: Annotated[
-                UUID | None,
+                str | None,
                 Query(
                     description="Optional live stream ID to filter alerts.",
                 ),
@@ -2769,7 +2880,7 @@ class ViaServer:
             except Exception:
                 loc = ".".join(str(err["loc"]))
             msg = err["msg"].replace("UploadFile", "'bytes'").replace("<class 'str'>", "'string'")
-            if err["type"] in ["value_error", "uuid_parsing", "string_pattern_mismatch"]:
+            if err["type"] in ["value_error", "str_parsing", "string_pattern_mismatch"]:
                 msg += f" (input: {json.dumps(err['input'])})"
             return JSONResponse(
                 status_code=422, content={"code": "InvalidParameters", "message": f"{loc}: {msg}"}
@@ -2816,7 +2927,10 @@ class ViaServer:
                 "description"
             ] = "Request body schema for adding a file."
             openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
-                "file"
+                "file1"
+            ]["maxLength"] = 100e9
+            openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
+                "file2"
             ]["maxLength"] = 100e9
             openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["id"][
                 "anyOf"
@@ -2834,9 +2948,9 @@ class ViaServer:
                             for item in v:
                                 search_dict(item)
                         else:
-                            if k == "format" and v == "uuid":
-                                d["maxLength"] = UUID_LENGTH
-                                d["minLength"] = UUID_LENGTH
+                            if k == "format" and v == "str":
+                                d["maxLength"] = str_LENGTH
+                                d["minLength"] = str_LENGTH
                                 break
                     if "enum" in d and "const" in d:
                         d.pop("const")

@@ -39,17 +39,16 @@ import nvtx
 import prometheus_client as prom
 import uvicorn
 import yaml
-from fastapi import FastAPI
-from tabulate import tabulate
-from vss_ctx_rag.context_manager import ContextManager
-
 from asset_manager import Asset
 from chunk_info import ChunkInfo
 from cv_pipeline import CVPipeline
+from fastapi import FastAPI
+from tabulate import tabulate
 from utils import MediaFileInfo, process_highlight_request
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
+from vss_ctx_rag.context_manager import ContextManager
 
 DEFAULT_CALLBACK_JSON_TEMPLATE = (
     "{ "
@@ -2609,8 +2608,9 @@ class ViaStreamHandler:
                         idx = proc_chunk.chunk.chunkIdx
                         summ = proc_chunk.vlm_response.replace("\n", "  ")
                         f.write(f'{idx},"{summ}"\n')
-
+        logger.info("1")
         if req_info._ctx_mgr:
+            logger.info("req_info._ctx_mgr start")
             with TimeMeasure("Context Manager Summarize") as cms_t:
                 try:
                     with nvtx.annotate(
@@ -2636,6 +2636,7 @@ class ViaStreamHandler:
                         if req_info.summarize:
                             if req_info.enable_chat:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
+                                    logger.info(f"assets: {req_info.assets}")
                                     agg_response = req_info._ctx_mgr.call(
                                         {
                                             "summarization": {
@@ -2655,6 +2656,11 @@ class ViaStreamHandler:
                                     )
                             else:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
+                                    logger.info(f"assets2: {req_info.assets}")
+                                    for asset in req_info.assets:
+                                        logger.info(f"asset: {asset.path}")
+                                        logger.info(f"asset.files: {asset.files}")
+                                        logger.info(f"asset.files.get('video'): {asset.files.get('video')}")
                                     agg_response = req_info._ctx_mgr.call(
                                         {
                                             "summarization": {
