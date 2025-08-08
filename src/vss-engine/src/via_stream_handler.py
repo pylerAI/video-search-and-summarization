@@ -444,7 +444,6 @@ class ViaStreamHandler:
 
     def __init__(self, args) -> None:
         """Initialize the VIA Stream Handler"""
-        logger.info("Initializing VIA Stream Handler")
 
         self._notification_llm_api_key = None
         self._notification_llm_params = None
@@ -497,7 +496,6 @@ class ViaStreamHandler:
         self._args.cv_pipeline_configs["gdino_engine"] = CVPipeline.get_gdino_engine()
         self._args.cv_pipeline_configs["tracker_config"] = CVPipeline.get_tracker_config()
         self._args.cv_pipeline_configs["inference_interval"] = CVPipeline.get_inference_interval()
-        logger.info(self._args.cv_pipeline_configs)
 
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
@@ -575,8 +573,6 @@ class ViaStreamHandler:
         # Fix for proper boolean environment variable handling
         health_eval_value = os.environ.get("ENABLE_VIA_HEALTH_EVAL", "").lower()
         self._via_health_eval = health_eval_value in ("true", "1")
-
-        logger.info("Initialized VIA Stream Handler")
 
     def _create_llm_rails_pool(self):
         from nemoguardrails import LLMRails
@@ -2608,9 +2604,8 @@ class ViaStreamHandler:
                         idx = proc_chunk.chunk.chunkIdx
                         summ = proc_chunk.vlm_response.replace("\n", "  ")
                         f.write(f'{idx},"{summ}"\n')
-        logger.info("1")
+
         if req_info._ctx_mgr:
-            logger.info("req_info._ctx_mgr start")
             with TimeMeasure("Context Manager Summarize") as cms_t:
                 try:
                     with nvtx.annotate(
@@ -2636,7 +2631,6 @@ class ViaStreamHandler:
                         if req_info.summarize:
                             if req_info.enable_chat:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
-                                    logger.info(f"assets: {req_info.assets}")
                                     agg_response = req_info._ctx_mgr.call(
                                         {
                                             "summarization": {
@@ -2656,7 +2650,6 @@ class ViaStreamHandler:
                                     )
                             else:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
-                                    logger.info(f"assets2: {req_info.assets}")
                                     for asset in req_info.assets:
                                         logger.info(f"asset: {asset.path}")
                                         logger.info(f"asset.files: {asset.files}")
