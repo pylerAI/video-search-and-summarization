@@ -27,6 +27,7 @@ import re
 import sys
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
@@ -2603,7 +2604,7 @@ class ViaServer:
                 )
 
             loop = asyncio.get_event_loop()
-            request_id = str(str.str4())
+            request_id = str(uuid.uuid4())
 
             if len(videoIdList) == 1:
                 assetList = [asset]
