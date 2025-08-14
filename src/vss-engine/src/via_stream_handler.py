@@ -93,10 +93,11 @@ class RequestInfo:
         STOPPING = "stopping"
 
     class Response:
-        def __init__(self, start_timestamp: str, end_timestamp: str, response: str) -> None:
+        def __init__(self, start_timestamp: str, end_timestamp: str, response: str, full_result: dict = None) -> None: #
             self.start_timestamp = start_timestamp
             self.end_timestamp = end_timestamp
             self.response = response
+            self.full_result = full_result  # Store the full context manager result
 
     class Alert:
         offset = 0
@@ -2675,6 +2676,8 @@ class ViaStreamHandler:
                             if "error" in agg_response and agg_response["error"]:
                                 raise Exception("An internal error occurred")
 
+                            # Store the full response before extracting just the result
+                            agg_response_full = agg_response
                             agg_response = agg_response["summarization"]["result"]
                             if self._via_health_eval is True:
                                 with open(
@@ -2712,6 +2715,7 @@ class ViaStreamHandler:
                         else chunk_responses[-1].chunk.end_pts / 1e9
                     ),
                     agg_response,
+                    agg_response_full if 'agg_response_full' in locals() else None
                 )
             ]
 

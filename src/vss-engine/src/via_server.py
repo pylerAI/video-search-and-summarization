@@ -522,7 +522,7 @@ class SummarizationQuery(ViaBaseModel):
         default=None,
         examples=[512],
         ge=1,
-        le=1024,
+        le=24000,
         description="The maximum number of tokens to generate in any given call.",
         json_schema_extra={"format": "int32"},
     )
@@ -731,7 +731,7 @@ class SummarizationQuery(ViaBaseModel):
         default=None,
         examples=[512],
         ge=1,
-        le=10240,
+        le=24000,
         description="The maximum number of tokens to generate in any given summarization call.",
         json_schema_extra={"format": "int32"},
     )
@@ -760,7 +760,7 @@ class SummarizationQuery(ViaBaseModel):
         default=None,
         examples=[512],
         ge=1,
-        le=10240,
+        le=24000,
         description="The maximum number of tokens to generate in any given QnA call.",
         json_schema_extra={"format": "int32"},
     )
@@ -939,7 +939,7 @@ class ChatCompletionQuery(ViaBaseModel):
         default=None,
         examples=[512],
         ge=1,
-        le=1024,
+        le=24000,
         description="The maximum number of tokens to generate in any given call.",
         json_schema_extra={"format": "int32"},
     )
@@ -1135,6 +1135,11 @@ class CompletionResponse(ViaBaseModel):
         examples=[CompletionObject.SUMMARIZATION_COMPLETION],
     )
     usage: CompletionUsage | None = Field(default=None)
+    batch_summaries: list[dict] = Field(
+        default=[],
+        description="List of individual batch summaries with batch index and summary text",
+        examples=[[{"batch_index": 0, "summary": "Summary of batch 0..."}]]
+    )
 
 
 # ===================== Models required by /summarize API
@@ -2260,6 +2265,11 @@ class ViaServer:
                                     "end_offset": int(resp_list[0].end_timestamp),
                                 }
 
+                            # Extract batch summaries if available
+                            batch_summaries = []
+                            if resp_list and resp_list[0].full_result:
+                                batch_summaries = resp_list[0].full_result.get("summarization", {}).get("batch_summaries", [])
+                                
                             # Create the response json
                             response = {
                                 "id": request_id,
@@ -2278,6 +2288,7 @@ class ViaServer:
                                     }
                                 ],
                                 "usage": None,
+                                "batch_summaries": batch_summaries,
                             }
                             # Yield to generate a server-sent event
                             yield json.dumps(response)
@@ -2324,6 +2335,10 @@ class ViaServer:
                     raise ViaException("Failed to generate summary", "InternalServerError", 500)
 
                 # Create response json and return it
+                batch_summaries = []
+                if resp_list and resp_list[0].full_result:
+                    batch_summaries = resp_list[0].full_result.get("summarization", {}).get("batch_summaries", [])
+                
                 return {
                     "id": request_id,
                     "model": model_info.id,
@@ -2349,6 +2364,7 @@ class ViaServer:
                         "total_chunks_processed": req_info.chunk_count,
                         "query_processing_time": int(req_info.end_time - req_info.start_time),
                     },
+                    "batch_summaries": batch_summaries,
                 }
 
         # ======================= Summarize API
