@@ -39,16 +39,17 @@ import nvtx
 import prometheus_client as prom
 import uvicorn
 import yaml
+from fastapi import FastAPI
+from tabulate import tabulate
+from vss_ctx_rag.context_manager import ContextManager
+
 from asset_manager import Asset
 from chunk_info import ChunkInfo
 from cv_pipeline import CVPipeline
-from fastapi import FastAPI
-from tabulate import tabulate
 from utils import MediaFileInfo, process_highlight_request
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
-from vss_ctx_rag.context_manager import ContextManager
 
 DEFAULT_CALLBACK_JSON_TEMPLATE = (
     "{ "
@@ -166,6 +167,8 @@ class RequestInfo:
         self.notification_temperature = None
         self.notification_max_tokens = None
         self.highlight = False
+        self.video_title = ""
+        self.video_description = ""
 
 
 class DCSerializer:
@@ -444,6 +447,7 @@ class ViaStreamHandler:
 
     def __init__(self, args) -> None:
         """Initialize the VIA Stream Handler"""
+        logger.info("Initializing VIA Stream Handler")
 
         self._notification_llm_api_key = None
         self._notification_llm_params = None
@@ -496,6 +500,7 @@ class ViaStreamHandler:
         self._args.cv_pipeline_configs["gdino_engine"] = CVPipeline.get_gdino_engine()
         self._args.cv_pipeline_configs["tracker_config"] = CVPipeline.get_tracker_config()
         self._args.cv_pipeline_configs["inference_interval"] = CVPipeline.get_inference_interval()
+        logger.info(self._args.cv_pipeline_configs)
 
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
@@ -573,6 +578,8 @@ class ViaStreamHandler:
         # Fix for proper boolean environment variable handling
         health_eval_value = os.environ.get("ENABLE_VIA_HEALTH_EVAL", "").lower()
         self._via_health_eval = health_eval_value in ("true", "1")
+
+        logger.info("Initialized VIA Stream Handler")
 
     def _create_llm_rails_pool(self):
         from nemoguardrails import LLMRails
@@ -877,7 +884,10 @@ class ViaStreamHandler:
                 response.error,
             )
         elif vlm_response is not None:
-            if req_info.enable_audio:
+            # Always prefix VLM captions so downstream prefix-based routing works
+            if not isinstance(vlm_response, str):
+                vlm_response = str(vlm_response)
+            if not vlm_response.startswith("Video description:"):
                 vlm_response = "Video description: " + vlm_response
 
             logger.debug("%s\n %s", vlm_response, transcript)
@@ -1493,6 +1503,8 @@ class ViaStreamHandler:
         notification_temperature=None,
         notification_max_tokens=None,
         cv_pipeline_prompt="",
+        video_title="",
+        video_description="",
     ):
         """Run a summarization query on a file"""
         # Enable summarization if summarization config is enabled  OR API passes enable flag
@@ -1541,6 +1553,8 @@ class ViaStreamHandler:
             notification_temperature=notification_temperature,
             notification_max_tokens=notification_max_tokens,
             cv_pipeline_prompt=cv_pipeline_prompt,
+            video_title=video_title,
+            video_description=video_description,
         )
 
     def query(
@@ -1578,6 +1592,8 @@ class ViaStreamHandler:
         notification_temperature=None,
         notification_max_tokens=None,
         cv_pipeline_prompt="",
+        video_title="",
+        video_description="",
     ):
         """Run a query on a file"""
 
@@ -1705,6 +1721,8 @@ class ViaStreamHandler:
         req_info.notification_top_p = notification_top_p
         req_info.notification_temperature = notification_temperature
         req_info.notification_max_tokens = notification_max_tokens
+        req_info.video_title = video_title
+        req_info.video_description = video_description
 
         req_info.chunk_overlap_duration = chunk_overlap_duration
 
@@ -2628,7 +2646,21 @@ class ViaStreamHandler:
                                     ),
                                     doc_meta=last_meta,
                                 )
+                            # Wait a moment to ensure the final batch processing is likely complete
+                            time.sleep(3)
                         if req_info.summarize:
+                            # Prepare the final aggregation prompt with video title and description
+                            # final_aggregation_prompt_template = jinja2.Template(req_info.summary_aggregation_prompt)
+                            # final_aggregation_prompt = final_aggregation_prompt_template.render(
+                            #     video_title=req_info.video_title,
+                            #     video_description=req_info.video_description
+                            # )
+                            # print(f"final_aggregation_prompt: {final_aggregation_prompt}")
+
+                            # ca_rag_config = copy.deepcopy(self._ca_rag_config)
+                            # ca_rag_config["summarization"]["prompts"]["summary_aggregation"] = final_aggregation_prompt
+                            # req_info._ctx_mgr.update(ca_rag_config)
+
                             if req_info.enable_chat:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
                                     agg_response = req_info._ctx_mgr.call(
@@ -2644,16 +2676,14 @@ class ViaStreamHandler:
                                                     if req_info.enable_audio
                                                     else chunk_responses[-1].chunk.chunkIdx
                                                 ),
+                                                "video_title": req_info.video_title,
+                                                "video_description": req_info.video_description,
                                             },
                                             "chat": {"post_process": True},
                                         }
                                     )
                             else:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
-                                    for asset in req_info.assets:
-                                        logger.info(f"asset: {asset.path}")
-                                        logger.info(f"asset.files: {asset.files}")
-                                        logger.info(f"asset.files.get('video'): {asset.files.get('video')}")
                                     agg_response = req_info._ctx_mgr.call(
                                         {
                                             "summarization": {
@@ -2667,12 +2697,19 @@ class ViaStreamHandler:
                                                     if req_info.enable_audio
                                                     else chunk_responses[-1].chunk.chunkIdx
                                                 ),
+                                                "video_title": req_info.video_title,
+                                                "video_description": req_info.video_description,
                                             }
                                         }
                                     )
 
                             if "error" in agg_response and agg_response["error"]:
+                                logger.error(f"Internal error from Context Manager: {agg_response}")
                                 raise Exception("An internal error occurred")
+                            
+                            if "summarization" not in agg_response:
+                                # This case is not expected
+                                raise Exception("Unexpected format from context manager")
 
                             agg_response = agg_response["summarization"]["result"]
                             if self._via_health_eval is True:
