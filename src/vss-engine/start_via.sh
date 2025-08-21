@@ -21,6 +21,7 @@ DISABLE_CA_RAG=${DISABLE_CA_RAG:-false}
 DISABLE_FRONTEND=${DISABLE_FRONTEND:-false}
 DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS:-false}
 DISABLE_CV_PIPELINE=${DISABLE_CV_PIPELINE:-true}
+ALLOW_REMOVE_OLD_CTX_MGR=${ALLOW_REMOVE_OLD_CTX_MGR:-true} 
 
 MILVUS_DB_HOST="${MILVUS_DB_HOST:-127.0.0.1}"
 
@@ -315,6 +316,10 @@ start_via_server() {
         # Start via_server
         EXTRA_ARGS+=" --milvus-db-port $MILVUS_DB_PORT --milvus-db-host $MILVUS_DB_HOST"
     fi
+    if [ $ALLOW_REMOVE_OLD_CTX_MGR = true ]; then
+        EXTRA_ARGS+=" --allow-remove-old-ctx-mgr"
+    fi
+
     if [ $ENABLE_NSYS_PROFILER = true ]; then
       echo "Profiling with  nsys"
       PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
