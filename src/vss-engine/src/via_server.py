@@ -332,6 +332,27 @@ class LiveStreamInfo(ViaBaseModel):
         le=3600,
     )
 
+# ===================== Models required by /files API
+
+class Scene(BaseModel):
+    start_time: str
+    end_time: str
+    description: str
+
+class HierarchicalScene(BaseModel):
+    medium_scene: Scene
+    contained_high_scenes: List[Scene]
+
+class AlignmentMetadata(BaseModel):
+    aligned_at: str  # ISO 8601 timestamp
+    total_medium_scenes: int
+    total_high_scenes: int
+
+class SegmentSchema(BaseModel):
+    video_id: str
+    alignment_metadata: AlignmentMetadata
+    hierarchical_scenes: List[HierarchicalScene]
+
 
 # ===================== Models required by /live-stream API
 
@@ -1481,7 +1502,8 @@ class ViaServer:
             def is_real_uploadfile(val):
                 return isinstance(val, StarletteUploadFile)
 
-            if not is_real_uploadfile(file2): file2 = None
+            if not is_real_uploadfile(file2):
+                file2 = None
 
             if not (file1 or filename1):
                 raise ViaException("At least one file or filename must be specified", "InvalidParameters", 422)
@@ -1489,6 +1511,27 @@ class ViaServer:
             for media_type in [media_type1, media_type2]:
                 if media_type and media_type not in ["video", "image", "metadata", "segment"]:
                     raise ViaException(f"Unsupported media type: {media_type}", "InvalidParameters", 422)
+
+            async def validate_segment_schema(file, media_type):
+                if not file:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"File is required for segment type ({media_type})"
+                    )
+                try:
+                    raw = await file.read()
+                    data = json.loads(raw.decode("utf-8"))
+                    SegmentSchema(**data)  # JSON 스키마 검증
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Invalid segment schema for {media_type}: {str(e)}"
+                    )
+
+            if file1 and media_type1 == "segment": 
+                await validate_segment_schema(file1, media_type1)
+            if file2 and media_type2 == "segment":
+                await validate_segment_schema(file2, media_type2)
 
             # Handle file1
             if file1:
