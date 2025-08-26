@@ -31,6 +31,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
+from io import BytesIO
 from typing import Annotated, Dict, List, Literal, Optional, Union
 
 import aiofiles
@@ -1491,10 +1492,8 @@ class ViaServer:
             ],
             media_type1: Annotated[MediaType, Form(description="Media type (image / video / metadata / segment).")],
             file1: Annotated[UploadFile, File(description="File object to be uploaded.")] = None,
-            filename1: Annotated[str, Form(max_length=256, pattern=PATH_PATTERN)] = "",
             media_type2: Annotated[Optional[MediaType], Form(description="Second file's media type (optional)")] = None,
             file2: Annotated[Optional[UploadFile], File(description="Second file to upload (optional).")] = None,  # ✅ default=None 제거!
-            filename2: Annotated[str, Form(max_length=256, pattern=PATH_PATTERN)] = "",
             video_id: Annotated[Optional[str], Form(description="Video ID for the uploaded file(s). If not provided, a new one will be generated.")] = None,
         ) -> dict:
 
@@ -1505,7 +1504,7 @@ class ViaServer:
             if not is_real_uploadfile(file2):
                 file2 = None
 
-            if not (file1 or filename1):
+            if not (file1):
                 raise ViaException("At least one file or filename must be specified", "InvalidParameters", 422)
 
             for media_type in [media_type1, media_type2]:
@@ -1528,28 +1527,93 @@ class ViaServer:
                         detail=f"Invalid segment schema for {media_type}: {str(e)}"
                     )
 
+            def convert_format(old_data: dict) -> dict:
+                new_data = {
+                    "video_id": str(uuid.uuid4()),
+                    "coarse_scenes": []
+                }
+
+                for idx, scene in enumerate(old_data.get("hierarchical_scenes", [])):
+                    medium_scene = scene.get("medium_scene", {})
+                    high_scenes = scene.get("contained_high_scenes", [])
+
+                    coarse_scene = {
+                        "id": idx,  # 필요하면 주석 해제
+                        "start_time": medium_scene.get("start_time", ""),
+                        "end_time": medium_scene.get("end_time", ""),
+                        "num_finegrained_scenes": len(high_scenes),
+                        "fine_scenes": []
+                    }
+
+                    for jdx, hs in enumerate(high_scenes):
+                        fine_scene = {
+                            "id": jdx,  # 필요하면 주석 해제
+                            "start_time": hs.get("start_time", ""),
+                            "end_time": hs.get("end_time", "")
+                        }
+                        coarse_scene["fine_scenes"].append(fine_scene)
+
+                    new_data["coarse_scenes"].append(coarse_scene)
+                print(f"new_data: {new_data}")
+                return new_data
+
             if file1 and media_type1 == "segment": 
                 await validate_segment_schema(file1, media_type1)
             if file2 and media_type2 == "segment":
                 await validate_segment_schema(file2, media_type2)
+            
+            file_name_dict = {
+                "video": "video.mp4",
+                "image": "image.jpeg",
+                "metadata": "metadata.json",
+                "segment": "segment.json",
+            }
 
             # Handle file1
             if file1:
-                video_id = await self._asset_manager.save_file(file1, file1.filename, purpose, media_type1, video_id)
+                if media_type1 == "segment":
+                    await file1.seek(0)
+                    content = await file1.read()
+                    
+                    try:
+                        old_data = json.loads(content.decode("utf-8"))
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"JSON 파싱 실패: {e}")
+
+                    # 변환 수행
+                    processed_bytes = json.dumps(convert_format(old_data)).encode("utf-8")
+
+                    file1 = UploadFile(
+                        filename=file1.filename,
+                        file=BytesIO(processed_bytes),
+                    )
+                
+                video_id = await self._asset_manager.save_file(file1, file_name_dict[media_type1], purpose, media_type1, video_id)
                 fname1 = file1.filename
-            elif filename1:
-                video_id = self._asset_manager.add_file(filename1, purpose, media_type1, reuse_asset=False)
-                fname1 = os.path.basename(filename1)
             else:
                 fname1 = None
 
             # Handle file2 (if exists)
             if file2:
-                video_id = await self._asset_manager.save_file(file2, file2.filename, purpose, media_type2, video_id)
+                if media_type2 == "segment":
+                    await file2.seek(0)
+                    content = await file2.read()
+                    
+                    try:
+                        old_data = json.loads(content.decode("utf-8"))
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"JSON 파싱 실패: {e}")
+
+                    # 변환 수행
+                    processed_bytes = json.dumps(convert_format(old_data)).encode("utf-8")
+
+                    file2 = UploadFile(
+                        filename=file2.filename,
+                        file=BytesIO(processed_bytes),
+                    )
+
+                video_id = await self._asset_manager.save_file(file2, file_name_dict[media_type2], purpose, media_type2, video_id)
                 fname2 = file2.filename
-            elif filename2:
-                video_id = self._asset_manager.add_file(filename2, purpose, media_type2, reuse_asset=False)
-                fname2 = os.path.basename(filename2)
             else:
                 fname2 = None
 
