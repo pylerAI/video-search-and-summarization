@@ -29,7 +29,6 @@ import uuid
 from argparse import ArgumentParser
 from datetime import datetime, timezone
 from enum import Enum
-from collections import defaultdict
 from threading import RLock, Thread
 
 import aiohttp
@@ -111,6 +110,9 @@ class RequestInfo:
     def __init__(self) -> None:
         self.request_id = str(uuid.uuid4())
         self.stream_id = ""
+        self.chunk_type = "uniform"
+        self.segment = None
+        self.metadata = None
         self.chunk_count = 0
         self.chunk_size = 0
         self.chunk_overlap_duration = 0
@@ -252,6 +254,20 @@ def ntp_to_unix_timestamp(ntp_ts):
     return (
         datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
     )
+
+
+def segment_to_meta(req_info: RequestInfo):
+    if req_info.chunk_type != "segment":
+        raise ViaException("Invalid chunk type", "BadParameter", 400)
+        
+    path = req_info.segment 
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    return {
+        "coarse_grained_scene_id": data["coarse_scenes"][0]["id"],
+        "coarse_grained_scene_length": data["coarse_scenes"][0]["num_finegrained_scenes"],
+    }
 
 
 class AlertCallbackTool:
@@ -445,6 +461,7 @@ class ViaStreamHandler:
 
     def __init__(self, args) -> None:
         """Initialize the VIA Stream Handler"""
+        logger.info("Initializing VIA Stream Handler")
 
         self._notification_llm_api_key = None
         self._notification_llm_params = None
@@ -497,6 +514,7 @@ class ViaStreamHandler:
         self._args.cv_pipeline_configs["gdino_engine"] = CVPipeline.get_gdino_engine()
         self._args.cv_pipeline_configs["tracker_config"] = CVPipeline.get_tracker_config()
         self._args.cv_pipeline_configs["inference_interval"] = CVPipeline.get_inference_interval()
+        logger.info(self._args.cv_pipeline_configs)
 
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
@@ -575,6 +593,8 @@ class ViaStreamHandler:
         health_eval_value = os.environ.get("ENABLE_VIA_HEALTH_EVAL", "").lower()
         self._via_health_eval = health_eval_value in ("true", "1")
 
+        logger.info("Initialized VIA Stream Handler")
+
     def _create_llm_rails_pool(self):
         from nemoguardrails import LLMRails
 
@@ -606,64 +626,11 @@ class ViaStreamHandler:
             if len(self._ctx_mgr_pool) > 0:
                 return
             if self.num_ctx_mgr >= self.MAX_STREAMS:
-                if self._args.allow_remove_old_ctx_mgr:
-                    logger.info(
-                        "Context Manager Process Pool is full, removing oldest context manager"
-                    )
-                    # Check if ctx mgr is in use
-                    in_used_ctx_mgr = {}
-                    ctx_mgr_to_request_map = defaultdict(list)
-                    for _, request_info in self._request_info_map.items():
-                        in_use = request_info.status in [
-                            RequestInfo.Status.PROCESSING, 
-                            RequestInfo.Status.QUEUED,
-                        ]
-                        if request_info._ctx_mgr and in_use:
-                            in_used_ctx_mgr[request_info._ctx_mgr._process_index] = True
-                        ctx_mgr_to_request_map[request_info._ctx_mgr._process_index].append(request_info)
-
-                    removed = False
-                    for _, request_info in sorted(self._request_info_map.items(), key=lambda x: x[1].queue_time):
-                        if request_info._ctx_mgr:
-                            ctx_mgr_index = request_info._ctx_mgr._process_index
-                        else:
-                            continue
-                        
-                        if ctx_mgr_index in in_used_ctx_mgr:
-                            continue
-                        else:
-                            # Reset ctx mgr and return to pool
-                            request_info._ctx_mgr.reset(
-                                {
-                                    "summarization": {"expr": "pk > 0"},
-                                }
-                            )
-                            self._ctx_mgr_pool.append(request_info._ctx_mgr)
-                            logger.info(
-                                f"Returning Context Manager Process "
-                                f"{request_info._ctx_mgr._process_index} to process pool"
-                            )
-                            # Remove request infos matching the ctx mgr
-                            request_info_list = ctx_mgr_to_request_map[ctx_mgr_index]
-                            for req_info in request_info_list:
-                                del self._request_info_map[req_info.request_id]
-                                
-                            removed = True
-                            break
-
-                    if not removed:
-                        raise ViaException(
-                            "Context Manager Process Pool is full, but no ctx mgr to remove",
-                            503,
-                        )
-                    return
-                else:
-                    raise ViaException(
-                        "Server is already processing maximum number of live streams"
-                        f" ({self._args.max_live_streams})",
-                        503,
-                    )
-                
+                raise ViaException(
+                    "Server is already processing maximum number of live streams"
+                    f" ({self._args.max_live_streams})",
+                    503,
+                )
             logger.info(
                 f"Context Manager Process Pool is empty, adding new processes from index \
                       {self.num_ctx_mgr}"
@@ -874,9 +841,18 @@ class ViaStreamHandler:
         else:
             return None
 
-    def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo):
+    def _on_vlm_chunk_response(
+        self, 
+        response: VlmChunkResponse, 
+        req_info: RequestInfo,
+        coarse_grained_scene_id: str = None,
+        coarse_grained_scene_length: int = None,
+        coarse_idx: int = None,
+    ):
         """Gather chunks processed by the pipeline and run any further post-processing"""
         # Per-chunk decode latency
+
+        print(f"coarse_idx: {coarse_idx}")
         if hasattr(response, "decode_start_time") and hasattr(response, "decode_end_time"):
             if (
                 response.decode_start_time
@@ -959,29 +935,31 @@ class ViaStreamHandler:
                 chunk.cached_frames_cv_meta = ""
                 with TimeMeasure("Context Manager - Add Doc"):
                     add_doc_start_time = time.time()
-                    req_info._ctx_mgr.add_doc(
-                        vlm_response,
-                        doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
-                        doc_meta=(
-                            vars(chunk)
-                            | {
-                                "uuid": req_info.stream_id,
-                                "cv_meta": cv_meta_str,
-                            }
-                        ),
-                        callback=lambda output: logger.debug(
-                            f"Summary till now: {output.result()}"
-                        ),
-                    )
 
-                    if transcript is not None:  # enable audio
-
-                        if response.audio_transcript:
-                            logger.info("Adding audio transcript for chunk %r", chunk)
-
+                    if req_info.chunk_type == "segment":
+                        data = segment_to_meta(req_info)
+                        print(f"data: {data}, coarse_idx: {coarse_idx}")
                         req_info._ctx_mgr.add_doc(
-                            transcript,
-                            doc_i=chunk.chunkIdx * 2 + 1,
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
+                            doc_meta=(
+                                vars(chunk)
+                                | {
+                                    "uuid": req_info.stream_id,
+                                    "cv_meta": cv_meta_str,
+                                    "source": "segment",
+                                    "coarse_grained_scene_id": coarse_idx,
+                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                                }
+                            ),
+                            callback=lambda output: logger.debug(
+                                f"Summary till now: {output.result()}"
+                            ),
+                        )
+                    else:
+                        req_info._ctx_mgr.add_doc(
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
                             doc_meta=(
                                 vars(chunk)
                                 | {
@@ -993,6 +971,47 @@ class ViaStreamHandler:
                                 f"Summary till now: {output.result()}"
                             ),
                         )
+
+                    if transcript is not None:  # enable audio
+
+                        if response.audio_transcript:
+                            logger.info("Adding audio transcript for chunk %r", chunk)
+
+                        if req_info.chunk_type == "segment":
+                            data = segment_to_meta(req_info)
+                            print(f"data: {data}, coarse_idx: {coarse_idx}")
+                            req_info._ctx_mgr.add_doc(
+                            transcript,
+                            doc_i=chunk.chunkIdx * 2 + 1,
+                            doc_meta=(
+                                vars(chunk)
+                                | {
+                                    "uuid": req_info.stream_id,
+                                    "cv_meta": cv_meta_str,
+                                    "source": "segment",
+                                    "coarse_grained_scene_id": coarse_idx,
+                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                                }
+                            ),
+                            callback=lambda output: logger.debug(
+                                f"Summary till now: {output.result()}"
+                            ),
+                        )
+                        else:
+                            req_info._ctx_mgr.add_doc(
+                                transcript,
+                                doc_i=chunk.chunkIdx * 2 + 1,
+                                doc_meta=(
+                                    vars(chunk)
+                                    | {
+                                        "uuid": req_info.stream_id,
+                                        "cv_meta": cv_meta_str,
+                                    }
+                                ),
+                                callback=lambda output: logger.debug(
+                                    f"Summary till now: {output.result()}"
+                                ),
+                            )
 
                     if req_info.last_chunk is None or req_info.last_chunk.chunkIdx < chunk.chunkIdx:
                         req_info.last_chunk = chunk
@@ -1085,6 +1104,13 @@ class ViaStreamHandler:
                     last_meta = vars(last_chunk)
                     last_meta["cv_meta"] = ""
                     last_meta["uuid"] = req_info.stream_id
+
+                    if req_info.chunk_type == "segment":
+                        last_meta["source"] = "segment"
+                        data = segment_to_meta(req_info)
+                        last_meta["coarse_grained_scene_id"] = coarse_idx
+                        last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
+                    print(f"last_meta: {last_meta}")
                     req_info._ctx_mgr.add_doc(
                         ".",
                         doc_i=(
@@ -1187,6 +1213,7 @@ class ViaStreamHandler:
     def _trigger_query(self, req_info: RequestInfo, start_time: float = None):
         """Trigger a query on a file"""
         from file_splitter import FileSplitter
+        from file_splitter_segment import FileSplitterSegment
 
         logger.info("Triggering oldest queued query %s", req_info.request_id)
         req_info.status = RequestInfo.Status.PROCESSING
@@ -1279,15 +1306,19 @@ class ViaStreamHandler:
         if len(req_info.assets) == 1:
             video_codec = MediaFileInfo.get_info(req_info.assets[0].path).video_codec
 
-        def _on_new_chunk(chunk: ChunkInfo):
+        def _on_new_chunk(chunk: ChunkInfo, coarse_idx: int=None):
             """Callback for when a new chunk is created"""
+
+            print(f"_on_new_chunk, coarse_idx: {coarse_idx}, chunk: {chunk}")
             if chunk is None:
                 return
             chunk.streamId = req_info.assets[0].asset_id
             chunk.cv_metadata_json_file = req_info.cv_metadata_json_file
             self._vlm_pipeline.enqueue_chunk(
                 chunk,
-                lambda response, req_info=req_info: self._on_vlm_chunk_response(response, req_info),
+                lambda response: self._on_vlm_chunk_response(
+                    response=response, req_info=req_info, coarse_idx=coarse_idx
+                ),
                 req_info.vlm_request_params,
                 req_info.num_frames_per_chunk,
                 req_info.vlm_input_width,
@@ -1320,15 +1351,26 @@ class ViaStreamHandler:
             message="File Splitting-" + str(req_info.request_id), color="blue"
         )
         # Create virtual file chunks
-        FileSplitter(
-            paths_string,
-            FileSplitter.SplitMode.SEEK,
-            req_info.chunk_size,
-            start_pts=int(req_info.start_timestamp * 1e9),
-            end_pts=int(req_info.end_timestamp * 1e9),
-            sliding_window_overlap_sec=req_info.chunk_overlap_duration,
-            on_new_chunk=lambda chunk: _on_new_chunk(chunk),
-        ).split()
+        if req_info.chunk_type == "uniform":
+            FileSplitter(
+                paths_string,
+                FileSplitter.SplitMode.SEEK,
+                req_info.chunk_size,
+                start_pts=int(req_info.start_timestamp * 1e9),
+                end_pts=int(req_info.end_timestamp * 1e9),
+                sliding_window_overlap_sec=req_info.chunk_overlap_duration,
+                on_new_chunk=lambda chunk: _on_new_chunk(chunk),
+            ).split()
+        elif req_info.chunk_type == "segment" and req_info.segment:
+            FileSplitterSegment(
+                paths_string,
+                FileSplitterSegment.SplitMode.SEEK,
+                req_info.segment,
+                on_new_chunk=lambda chunk, coarse_idx: _on_new_chunk(chunk, coarse_idx),
+            ).split()
+        else:
+            raise ViaException("Invalid chunk type", "BadParameter", 400)
+
         nvtx.end_range(nvtx_file_split_start)
 
         # No chunks were created. Mark the request completed and trigger next query if queued
@@ -1516,6 +1558,9 @@ class ViaStreamHandler:
     def summarize(
         self,
         assets: list[Asset],
+        chunk_type: str = "uniform",
+        segment: str = None,
+        metadata: str = None,
         prompt: str = None,
         chunk_size=0,
         chunk_overlap_duration=0,
@@ -1564,6 +1609,9 @@ class ViaStreamHandler:
         return self.query(
             assets=assets,
             query=summarization_query,
+            chunk_type=chunk_type,
+            segment=segment,
+            metadata=metadata,
             chunk_size=chunk_size,
             chunk_overlap_duration=chunk_overlap_duration,
             generation_config=generation_config,
@@ -1601,6 +1649,9 @@ class ViaStreamHandler:
         self,
         assets: list[Asset],
         query: str,
+        chunk_type: str = "uniform",
+        segment: str = None,
+        metadata: str = None,
         chunk_size=0,
         chunk_overlap_duration=0,
         generation_config=None,
@@ -1702,6 +1753,9 @@ class ViaStreamHandler:
 
         # Create a RequestInfo object and populate it
         req_info = RequestInfo()
+        req_info.chunk_type = chunk_type
+        req_info.segment = segment
+        req_info.metadata = metadata
         req_info.file = assets[0].path
         req_info.chunk_size = chunk_size
         req_info.is_summarization = is_summarization
@@ -1731,6 +1785,9 @@ class ViaStreamHandler:
         req_info.nvtx_summarization_start = nvtx.start_range(
             message="Summarization-" + str(req_info.request_id), color="blue"
         )
+        print(f"req_info.chunk_type: {req_info.chunk_type}")
+        print(f"req_info.segment: {req_info.segment}")
+        print(f"req_info.metadata: {req_info.metadata}")
         if not self._args.disable_ca_rag:
             with self._lock:
                 self._create_ctx_mgr_pool(self._ca_rag_config)
@@ -2672,6 +2729,8 @@ class ViaStreamHandler:
                             last_meta["is_last"] = True
                             last_meta["uuid"] = req_info.stream_id
                             last_meta["cv_meta"] = ""
+                            if req_info.chunk_type == "segment":
+                                last_meta["source"] = "segment"
                             with TimeMeasure("Context Manager Summarize/call"):
                                 req_info._ctx_mgr.add_doc(
                                     ".",
@@ -2704,10 +2763,6 @@ class ViaStreamHandler:
                                     )
                             else:
                                 with TimeMeasure("Context Manager Summarize/summarize"):
-                                    for asset in req_info.assets:
-                                        logger.info(f"asset: {asset.path}")
-                                        logger.info(f"asset.files: {asset.files}")
-                                        logger.info(f"asset.files.get('video'): {asset.files.get('video')}")
                                     agg_response = req_info._ctx_mgr.call(
                                         {
                                             "summarization": {
@@ -2821,13 +2876,6 @@ class ViaStreamHandler:
             type=int,
             default=0,
             help="Maximum file duration to allow (0 = no restriction)",
-        )
-        parser.add_argument(
-            "--allow-remove-old-ctx-mgr",
-            action="store_true",
-            default=False,
-            help="Allow removing old context manager if additional request comes in." 
-            " (ctx-mgr for stream will not be removed even if this arg is true)",
         )
 
         parser.add_argument(
@@ -3048,7 +3096,5 @@ if __name__ == "__main__":
         handle_rtsp_input(stream_handler, args)
     else:
         handle_file(stream_handler, args)
-
-    stream_handler.stop()
 
     stream_handler.stop()

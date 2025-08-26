@@ -523,7 +523,11 @@ class SummarizationQuery(ViaBaseModel):
     @property
     def get_query_json(self: ViaBaseModel) -> dict:
         return self.model_dump(mode="json")
-
+    chunk_type: Literal["uniform", "segment"] = Field(
+        default="uniform",
+        description="Type of chunk",
+        examples=["uniform", "segment"],
+    )
     prompt: str = Field(
         default="",
         max_length=5000,
@@ -2079,6 +2083,7 @@ class ViaServer:
 
             videoIdListstr = query.id_list
             videoIdList = [str(str_obj) for str_obj in videoIdListstr]
+            print(f"videoIdList: {videoIdList}")
             assetList = []
 
             if len(videoIdList) > 1:
@@ -2103,12 +2108,19 @@ class ViaServer:
                             "BadParameters",
                             400,
                         )
+                
 
             videoId = videoIdList[
                 0
             ]  # Note: Other files processed only for multi-image summarize() below
             asset = self._asset_manager.get_asset(videoId)
-
+            segment = None
+            metadata = None
+            for file in asset.files.items():
+                if file[0] == "segment":
+                    segment = file[1]["path"]
+                if file[0] == "metadata":
+                    metadata = file[1]["path"]
             llm_generation_config = {}
             # Extract user specified llm output parameters
             if query.max_tokens is not None:
@@ -2298,6 +2310,9 @@ class ViaServer:
                     self._async_executor,
                     self._stream_handler.summarize,
                     assetList,
+                    query.chunk_type,
+                    segment,
+                    metadata,
                     query.prompt,
                     query.chunk_duration,
                     query.chunk_overlap_duration,
