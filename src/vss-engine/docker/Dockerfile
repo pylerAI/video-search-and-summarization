@@ -21,8 +21,8 @@ RUN touch -m 600 /root/.ssh/known_hosts && \
     ssh-keyscan github.com > /root/.ssh/known_hosts 
 
 RUN --mount=type=ssh \
-    git clone git@github.com:pylerAI/context-aware-rag.git /workspace/vss-ctx-rag \
-    && pip install /workspace/vss-ctx-rag --no-deps \
+    git clone git@github.com:pylerAI/context-aware-rag.git -b feature/batch-summaries /workspace/vss-ctx-rag \
+    && pip install -e /workspace/vss-ctx-rag --no-deps \
     && git clone git@github.com:pylerAI/video-search-and-summarization.git -b feature/dev-container-mod /workspace/vss
 
 #Make symlinks for the python source code
