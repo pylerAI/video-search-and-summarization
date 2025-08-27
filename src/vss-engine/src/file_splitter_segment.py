@@ -131,8 +131,8 @@ class FileSplitterSegment:
             for coarse in seg_data.get("coarse_scenes", []):
                 coarse_start = parse_time_str(coarse["start_time"])
                 for fine in coarse.get("fine_scenes", []):
-                    start_pts = coarse_start + parse_time_str(fine["start_time"])
-                    end_pts = coarse_start + parse_time_str(fine["end_time"])
+                    start_pts =  parse_time_str(fine["start_time"])
+                    end_pts = parse_time_str(fine["end_time"])
     
                     info = ChunkInfo()
                     info.chunkIdx = chunkIdx
