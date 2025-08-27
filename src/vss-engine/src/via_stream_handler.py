@@ -27,9 +27,9 @@ import time
 import traceback
 import uuid
 from argparse import ArgumentParser
+from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
-from collections import defaultdict
 from threading import RLock, Thread
 
 import aiohttp
@@ -257,7 +257,7 @@ def ntp_to_unix_timestamp(ntp_ts):
     )
 
 
-def segment_to_meta(req_info: RequestInfo):
+def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
     if req_info.chunk_type != "segment":
         raise ViaException("Invalid chunk type", "BadParameter", 400)
         
@@ -266,8 +266,8 @@ def segment_to_meta(req_info: RequestInfo):
         data = json.load(f)
 
     return {
-        "coarse_grained_scene_id": data["coarse_scenes"][0]["id"],
-        "coarse_grained_scene_length": data["coarse_scenes"][0]["num_finegrained_scenes"],
+        "coarse_grained_scene_id": data["coarse_scenes"][coarse_idx]["id"],
+        "coarse_grained_scene_length": data["coarse_scenes"][coarse_idx]["num_finegrained_scenes"],
     }
 
 
@@ -466,6 +466,7 @@ class ViaStreamHandler:
 
         self._notification_llm_api_key = None
         self._notification_llm_params = None
+        self.coarse_idx = None
 
         self._start_time = time.time()
         self._metrics = ViaStreamHandler.Metrics()
@@ -907,6 +908,7 @@ class ViaStreamHandler:
         # Per-chunk decode latency
 
         print(f"coarse_idx: {coarse_idx}")
+        self.coarse_idx = coarse_idx
         if hasattr(response, "decode_start_time") and hasattr(response, "decode_end_time"):
             if (
                 response.decode_start_time
@@ -991,8 +993,8 @@ class ViaStreamHandler:
                     add_doc_start_time = time.time()
 
                     if req_info.chunk_type == "segment":
-                        data = segment_to_meta(req_info)
-                        print(f"data: {data}, coarse_idx: {coarse_idx}")
+                        data = segment_to_meta(req_info, self.coarse_idx)
+                        print(f"data: {data}, coarse_idx: {self.coarse_idx}")
                         req_info._ctx_mgr.add_doc(
                             vlm_response,
                             doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
@@ -1002,7 +1004,7 @@ class ViaStreamHandler:
                                     "uuid": req_info.stream_id,
                                     "cv_meta": cv_meta_str,
                                     "source": "segment",
-                                    "coarse_grained_scene_id": coarse_idx,
+                                    "coarse_grained_scene_id": self.coarse_idx,
                                     "coarse_grained_scene_length": data["coarse_grained_scene_length"],
                                 }
                             ),
@@ -1032,8 +1034,8 @@ class ViaStreamHandler:
                             logger.info("Adding audio transcript for chunk %r", chunk)
 
                         if req_info.chunk_type == "segment":
-                            data = segment_to_meta(req_info)
-                            print(f"data: {data}, coarse_idx: {coarse_idx}")
+                            data = segment_to_meta(req_info, self.coarse_idx)
+                            print(f"data: {data}, coarse_idx: {self.coarse_idx}")
                             req_info._ctx_mgr.add_doc(
                             transcript,
                             doc_i=chunk.chunkIdx * 2 + 1,
@@ -1043,7 +1045,7 @@ class ViaStreamHandler:
                                     "uuid": req_info.stream_id,
                                     "cv_meta": cv_meta_str,
                                     "source": "segment",
-                                    "coarse_grained_scene_id": coarse_idx,
+                                    "coarse_grained_scene_id": self.coarse_idx,
                                     "coarse_grained_scene_length": data["coarse_grained_scene_length"],
                                 }
                             ),
@@ -1161,8 +1163,8 @@ class ViaStreamHandler:
 
                     if req_info.chunk_type == "segment":
                         last_meta["source"] = "segment"
-                        data = segment_to_meta(req_info)
-                        last_meta["coarse_grained_scene_id"] = coarse_idx
+                        data = segment_to_meta(req_info, self.coarse_idx)
+                        last_meta["coarse_grained_scene_id"] = self.coarse_idx
                         last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
                     print(f"last_meta: {last_meta}")
                     req_info._ctx_mgr.add_doc(
@@ -2785,7 +2787,12 @@ class ViaStreamHandler:
                             last_meta["cv_meta"] = ""
                             if req_info.chunk_type == "segment":
                                 last_meta["source"] = "segment"
+                                data = segment_to_meta(req_info, -1)
+                                last_meta["coarse_grained_scene_id"] = self.coarse_idx
+                                last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
+
                             with TimeMeasure("Context Manager Summarize/call"):
+
                                 req_info._ctx_mgr.add_doc(
                                     ".",
                                     doc_i=(
