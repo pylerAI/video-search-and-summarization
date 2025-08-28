@@ -1,0 +1,66 @@
+name: VSS dev-container
+
+on:
+  push:
+    branches:
+      - feature/dev-container-mod
+
+jobs:
+  deploy:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Set Environments
+        run: |
+          if [ "${GITHUB_REF##*/}" = "main" ]; then
+            echo "PROJECT_ENV=prod" >> $GITHUB_ENV
+          else
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+          fi
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Login to NGC
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: '$oauthtoken'
+          password: ${{ secrets.NGC_API_KEY }}
+          
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build & Push VSS Engine Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src/vss-engine
+          push: true
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-dev-container:${{ github.sha }}
+          file: ./src/vss-engine/docker/Dockerfile
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
+          
+      - name: Set up kubectl
+        if: github.event_name == 'push'
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Deploy dev-container to Onprem
+        if: github.event_name == 'push'
+        run:  |
+          find deploy/k8s/dev-container -type f -name "*.yaml" -exec sed -i 's/IMAGE_TAG/${{ github.sha }}/g' {} +
+          kubectl apply -f deploy/k8s/dev-container --recursive

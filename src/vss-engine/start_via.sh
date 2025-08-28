@@ -19,7 +19,7 @@ CV_PIPELINE_TRACKER_CONFIG="${CV_PIPELINE_TRACKER_CONFIG:-/opt/nvidia/via/config
 
 DISABLE_CA_RAG=${DISABLE_CA_RAG:-false}
 DISABLE_FRONTEND=${DISABLE_FRONTEND:-false}
-DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS:-false}
+DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS:-true}
 DISABLE_CV_PIPELINE=${DISABLE_CV_PIPELINE:-true}
 ALLOW_REMOVE_OLD_CTX_MGR=${ALLOW_REMOVE_OLD_CTX_MGR:-true} 
 
@@ -234,6 +234,7 @@ start_cuda_mps_server() {
 }
 
 configure_riva_asr_service() {
+    sed -i -e 's/language_code: "en-US"/language_code: "ko-KR"/g' ${RIVA_CONFIG_FILE}
     if [ -z "${RIVA_ASR_SERVER_URI}" ]; then
         echo "Please set RIVA_ASR_SERVER_URI env variable"
         exit 1
@@ -321,17 +322,17 @@ start_via_server() {
     fi
 
     if [ $ENABLE_NSYS_PROFILER = true ]; then
-      echo "Profiling with  nsys"
-      PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
-      EXE_PREFIX="nsys profile -t cuda,nvtx,osrt --python-backtrace=cuda --show-output=true --force-overwrite=true  --output=via_nsys_logs --gpu-metrics-devices=$PROFILE_GPU_IDS --capture-range=cudaProfilerApi --capture-range-end=stop"
+	    echo "Profiling with  nsys"
+	    PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
+	    EXE_PREFIX="nsys profile -t cuda,nvtx,osrt --python-backtrace=cuda --show-output=true --force-overwrite=true  --output=via_nsys_logs --gpu-metrics-devices=$PROFILE_GPU_IDS --capture-range=cudaProfilerApi --capture-range-end=stop"
     fi
 
     if [ "$MODE" = "release" ]; then
-      echo "Starting VIA server in release mode"
-      EXE="python3 -Wignore via-engine/via_server.py"
+	    echo "Starting VIA server in release mode"
+	    EXE="python3 -Wignore via-engine/via_server.py"
     else
-      echo "Starting VIA server in development mode"
-      EXE="python3 -Wignore src/via_server.py"
+	    echo "Starting VIA server in development mode"
+	    EXE="python3 -Wignore src/via_server.py"
     fi
     if [ ! -z $TRT_ENGINE_PATH ]; then
         EXTRA_ARGS+=" --trt-engine-dir $TRT_ENGINE_PATH"
@@ -368,6 +369,12 @@ start_via_server() {
 }
 
 start_processes() {
+
+    sed -i 's/llm-nim-svc/llm-openai-svc/g' /opt/nvidia/via/guardrails_config/config.yml
+    sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /opt/nvidia/via/guardrails_config/config.yml
+
+    sed -i 's/llm-nim-svc/llm-openai-svc/g' /tmp/via/default_config.yaml
+    sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /tmp/via/default_config.yaml
 
     if [ -z "${FRONTEND_PORT}" ]; then
         echo "Please set FRONTEND_PORT env variable"
