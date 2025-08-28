@@ -40,17 +40,16 @@ import nvtx
 import prometheus_client as prom
 import uvicorn
 import yaml
-from fastapi import FastAPI
-from tabulate import tabulate
-from vss_ctx_rag.context_manager import ContextManager
-
 from asset_manager import Asset
 from chunk_info import ChunkInfo
 from cv_pipeline import CVPipeline
+from fastapi import FastAPI
+from tabulate import tabulate
 from utils import MediaFileInfo, process_highlight_request
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
+from vss_ctx_rag.context_manager import ContextManager
 
 DEFAULT_CALLBACK_JSON_TEMPLATE = (
     "{ "
@@ -630,11 +629,64 @@ class ViaStreamHandler:
             if len(self._ctx_mgr_pool) > 0:
                 return
             if self.num_ctx_mgr >= self.MAX_STREAMS:
-                raise ViaException(
-                    "Server is already processing maximum number of live streams"
-                    f" ({self._args.max_live_streams})",
-                    503,
-                )
+                if self._args.allow_remove_old_ctx_mgr:
+                    logger.info(
+                        "Context Manager Process Pool is full, removing oldest context manager"
+                    )
+                    # Check if ctx mgr is in use
+                    in_used_ctx_mgr = {}
+                    ctx_mgr_to_request_map = defaultdict(list)
+                    for _, request_info in self._request_info_map.items():
+                        in_use = request_info.status in [
+                            RequestInfo.Status.PROCESSING, 
+                            RequestInfo.Status.QUEUED,
+                        ]
+                        if request_info._ctx_mgr and in_use:
+                            in_used_ctx_mgr[request_info._ctx_mgr._process_index] = True
+                        ctx_mgr_to_request_map[request_info._ctx_mgr._process_index].append(request_info)
+
+                    removed = False
+                    for _, request_info in sorted(self._request_info_map.items(), key=lambda x: x[1].queue_time):
+                        if request_info._ctx_mgr:
+                            ctx_mgr_index = request_info._ctx_mgr._process_index
+                        else:
+                            continue
+                        
+                        if ctx_mgr_index in in_used_ctx_mgr:
+                            continue
+                        else:
+                            # Reset ctx mgr and return to pool
+                            request_info._ctx_mgr.reset(
+                                {
+                                    "summarization": {"expr": "pk > 0"},
+                                }
+                            )
+                            self._ctx_mgr_pool.append(request_info._ctx_mgr)
+                            logger.info(
+                                f"Returning Context Manager Process "
+                                f"{request_info._ctx_mgr._process_index} to process pool"
+                            )
+                            # Remove request infos matching the ctx mgr
+                            request_info_list = ctx_mgr_to_request_map[ctx_mgr_index]
+                            for req_info in request_info_list:
+                                del self._request_info_map[req_info.request_id]
+                                
+                            removed = True
+                            break
+
+                    if not removed:
+                        raise ViaException(
+                            "Context Manager Process Pool is full, but no ctx mgr to remove",
+                            503,
+                        )
+                    return
+                else:
+                    raise ViaException(
+                        "Server is already processing maximum number of live streams"
+                        f" ({self._args.max_live_streams})",
+                        503,
+                    )
+                
             logger.info(
                 f"Context Manager Process Pool is empty, adding new processes from index \
                       {self.num_ctx_mgr}"
@@ -2889,6 +2941,13 @@ class ViaStreamHandler:
             type=int,
             default=0,
             help="Maximum file duration to allow (0 = no restriction)",
+        )
+        parser.add_argument(
+            "--allow-remove-old-ctx-mgr",
+            action="store_true",
+            default=False,
+            help="Allow removing old context manager if additional request comes in." 
+            " (ctx-mgr for stream will not be removed even if this arg is true)",
         )
 
         parser.add_argument(

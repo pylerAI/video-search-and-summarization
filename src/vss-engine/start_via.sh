@@ -21,6 +21,7 @@ DISABLE_CA_RAG=${DISABLE_CA_RAG:-false}
 DISABLE_FRONTEND=${DISABLE_FRONTEND:-false}
 DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS:-true}
 DISABLE_CV_PIPELINE=${DISABLE_CV_PIPELINE:-true}
+ALLOW_REMOVE_OLD_CTX_MGR=${ALLOW_REMOVE_OLD_CTX_MGR:-true} 
 
 MILVUS_DB_HOST="${MILVUS_DB_HOST:-127.0.0.1}"
 
@@ -277,6 +278,28 @@ configure_riva_asr_service() {
 
 }
 
+install_audio_plugins() {
+    echo "Installing additional audio plugins for GStreamer and FFmpeg"
+    apt-get update
+    apt-get install --reinstall -y \
+      libvpx9 \
+      libzvbi0 \
+      libmp3lame0 \
+      libx265-199 \
+      libunibreak5 \
+      libmpg123-0
+
+    apt-get install -y gstreamer1.0-libav gstreamer1.0-plugins-ugly gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-tools ffmpeg
+
+    ldconfig
+    rm -rf ~/.cache/gstreamer-1.0/
+
+    apt-get install --reinstall -y gstreamer1.0-libav
+
+    export GST_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+    echo "Audio plugins installation completed"
+}
+
 start_via_server() {
     EXTRA_ARGS="$VSS_EXTRA_ARGS"
     if [ $DISABLE_GUARDRAILS = true ]; then
@@ -294,6 +317,10 @@ start_via_server() {
         # Start via_server
         EXTRA_ARGS+=" --milvus-db-port $MILVUS_DB_PORT --milvus-db-host $MILVUS_DB_HOST"
     fi
+    if [ $ALLOW_REMOVE_OLD_CTX_MGR = true ]; then
+        EXTRA_ARGS+=" --allow-remove-old-ctx-mgr"
+    fi
+
     if [ $ENABLE_NSYS_PROFILER = true ]; then
 	    echo "Profiling with  nsys"
 	    PROFILE_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader | paste -sd "," -)
@@ -372,6 +399,7 @@ start_processes() {
 
     if [ "$ENABLE_AUDIO" = true ]; then
         configure_riva_asr_service
+        install_audio_plugins
     fi
 
     start_milvus
