@@ -5,6 +5,26 @@ on:
     branches:
       - develop
 
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+      image_tag:
+        required: false
+        type: string
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      NGC_API_KEY:
+        required: false
+      HARBOR_USERNAME:
+        required: false
+      HARBOR_PASSWORD:
+        required: false
+
 jobs:
   deploy:
     runs-on: sel2-arc-runners
@@ -14,12 +34,26 @@ jobs:
     steps:
       - name: Set Environments
         run: |
-          if [ "${GITHUB_REF##*/}" = "main" ]; then
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (because image_tag is provided: ${{ inputs.image_tag }})"
+          elif [ "${GITHUB_REF##*/}" = "main" ]; then
             echo "PROJECT_ENV=prod" >> $GITHUB_ENV
+            echo "Environment set to: prod (because branch is main)"
           else
             echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (default for branch: ${GITHUB_REF##*/})"
           fi
-      - name: Checkout
+      - name: Checkout (with image_tag)
+        if: inputs.image_tag
+        uses: actions/checkout@v4
+        with:
+          repository: pylerAI/video-search-and-summarization
+          ref: develop
+          token: ${{ secrets.TOKEN }}
+
+      - name: Checkout (default)
+        if: ${{ !inputs.image_tag }}
         uses: actions/checkout@v4
 
       - name: Set up SSH
@@ -48,28 +82,26 @@ jobs:
         with:
           context: ./src/vss-engine
           push: true
-          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-engine:${{ github.sha }}
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-engine:${{ inputs.image_tag || github.sha }}
           file: ./src/vss-engine/docker/Dockerfile
           build-args: |
             BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
           ssh: default=${{ env.SSH_AUTH_SOCK }}
 
       - name: Set up kubectl
-        if: github.event_name == 'push'
         uses: azure/setup-kubectl@v4
         with:
           version: 'v1.31.3'
 
       - name: Set up Helm 3
-        if: github.event_name == 'push'
         uses: azure/setup-helm@v4.3.0
         with:
           version: 'v3.16.4'
 
       - name: Deploy services to Onprem
-        if: github.event_name == 'push'
         run:  |
-          find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i 's/IMAGE_TAG/${{ github.sha }}/g' {} +
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
+          find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           kubectl apply -f deploy/k8s/${{ env.PROJECT_ENV }} --recursive
 
       - name: Wait for image pull job to complete (up to 20min)
@@ -95,9 +127,9 @@ jobs:
         run: kubectl delete job image-prepull -n vss --ignore-not-found
 
       - name: Deploy vss app to Onprem
-        if: github.event_name == 'push'
         run: |
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           kubectl scale deployment vss-vss-deployment -n vss --replicas=0
-          find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i 's/IMAGE_TAG/${{ github.sha }}/g' {} +
+          find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.3.1.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
           kubectl scale deployment vss-vss-deployment -n vss --replicas=1
