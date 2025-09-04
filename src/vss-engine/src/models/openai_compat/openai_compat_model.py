@@ -218,6 +218,11 @@ class CompOpenAIModel:
             and os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
         ):
             id = os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
+            id = "".join(
+                char.replace(".", "-").replace("/", "-")
+                for char in id
+                if char.isalnum() or char in "./"
+            )
         else:
             id = "ModelNotLoaded"
             logger.error("VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME is not configured")
