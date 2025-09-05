@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: vss-vss-deployment-cv-pipeline
+  name: vss-vss-deployment-cv-pipeline
+  namespace: vss
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: vss-vss-deployment-cv-pipeline
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/vss-configs-cm: 845b53bb93d33457bd192e7f562be4cc5e5353167347990166d0365f792291bf
+        checksum/vss-external-files-cm: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        checksum/vss-scripts-cm: 14476613537e2664e6d50dd956e0e491a5796b224f78bdac99a8ea4e36a9aeca
+        checksum/vss-workload-cm: 0563cf7572bfd24de47ccb4bb6e801c38b32b64c0680a54c583177a0882203c8
+      creationTimestamp: null
+      labels:
+        app: vss-vss-deployment-cv-pipeline
+    spec:
+      containers:
+      - command:
+        - bash
+        - /opt/init/init.sh
+        env:
+        - name: VLM_MODEL_TO_USE
+          value: vila-1.5
+        - name: MODEL_PATH
+          value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+        - name: NGC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: NGC_API_KEY
+              name: infisical-managed-secrets
+        - name: GRAPH_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: GRAPHDB_USER
+              name: infisical-managed-secrets
+        - name: GRAPH_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: GRAPHDB_PASSWORD
+              name: infisical-managed-secrets
+        - name: ENABLE_AUDIO
+          value: 'true'
+        - name: ENABLE_RIVA_SERVER_READINESS_CHECK
+          value: 'true'
+        # CV Pipeline
+        - name: INSTALL_PROPRIETARY_CODECS
+          value: "true"
+        - name: DISABLE_CV_PIPELINE
+          value: "false"
+        - name: GDINO_INFERENCE_INTERVAL
+          value: "1"
+        - name: NUM_CV_CHUNKS_PER_GPU
+          value: "2"
+        - name: VSS_LOG_LEVEL
+          value: "DEBUG"
+        image: nvcr.io/nvidia/blueprint/vss-engine:2.3.1
+        imagePullPolicy: IfNotPresent
+        name: vss
+        ports:
+        - containerPort: 8000
+          name: http-api
+          protocol: TCP
+        - containerPort: 2222
+          name: ssh
+          protocol: TCP
+        resources:
+          limits:
+            nvidia.com/gpu: 3 # CV Pipeline
+        securityContext:
+          runAsGroup: 0
+          runAsUser: 0     
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /opt/init
+          name: init-script
+        - mountPath: /opt/workload-config
+          name: workload-cm-volume
+        - mountPath: /opt/configs
+          name: configs-volume
+        - mountPath: /opt/scripts
+          name: scripts-cm-volume
+        - mountPath: /tmp/via-ngc-model-cache
+          name: ngc-model-cache-volume
+        - mountPath: /dev/shm
+          name: shm-volume
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: ngc-docker-reg-secret
+      
+      nodeSelector:
+        kubernetes.io/hostname: dgx-b200-02
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsUser: 1000
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: ngc-model-cache-volume
+        persistentVolumeClaim:
+          claimName: vss-ngc-model-cache-cv-pipeline
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+        name: shm-volume
+      - configMap:
+          defaultMode: 420
+          name: vss-workload-cm
+        name: workload-cm-volume
+      - configMap:
+          defaultMode: 420
+          name: vss-configs-cm
+        name: configs-volume
+      - configMap:
+          defaultMode: 420
+          name: vss-scripts-cm
+        name: scripts-cm-volume
+      - configMap:
+          defaultMode: 493
+          name: ssh-init-script
+        name: init-script

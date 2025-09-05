@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vss-service-cv-pipeline
+  namespace: vss
+spec:
+  ports:
+  - name: http-api
+    nodePort: 31640
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  - name: webui
+    nodePort: 30940
+    port: 9000
+    protocol: TCP
+    targetPort: 9000
+  - name: ssh
+    nodePort: 32340
+    port: 2222
+    protocol: TCP
+    targetPort: 2222
+  selector:
+    app: vss-vss-deployment-cv-pipeline
+  sessionAffinity: None
+  type: NodePort
