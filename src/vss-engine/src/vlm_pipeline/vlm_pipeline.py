@@ -39,27 +39,9 @@ from .embedding_helper import EmbeddingHelper
 from .ngc_model_downloader import download_model, download_model_git
 from .process_base import ViaProcessBase
 
-# Location to download and cache NGC models
-NGC_MODEL_CACHE = os.environ.get("NGC_MODEL_CACHE", "") or os.path.expanduser(
-    "~/.via/ngc_model_cache/"
-)
-
-FORCE_TRT = True
-
 
 class VlmModelType(Enum):
     OPENAI_COMPATIBLE = "openai-compat"  # Any OpenAI API compatible on NIM/OpenAI/Azure-OpenAI
-
-    def __str__(self):
-        return self.value
-
-
-class TrtLlmMode(Enum):
-    FP16 = "fp16"
-    FP8 = "fp8"
-    INT8 = "int8"
-    INT4 = "int4"
-    INT4_AWQ = "int4_awq"
 
     def __str__(self):
         return self.value
@@ -393,8 +375,6 @@ class EmbeddingProcess(ViaProcessBase):
             qsize=3,
         )
         self._vlm_model_type = args.vlm_model_type
-        self._use_trt = args.use_trt
-        self._trt_engine_dir = args.trt_engine_dir
         self._asset_dir = asset_dir
 
     def _initialize(self):
@@ -1363,19 +1343,11 @@ class VlmPipeline:
             type=int,
             help="Number of Decoder pipelines to run on each GPU in parallel",
         )
-
         parser.add_argument(
             "--vlm-model-type",
             type=VlmModelType,
             choices=list(VlmModelType),
             default=None,
-            help="Vision Language Model to use",
-        )
-        parser.add_argument(
-            "--trt-llm-mode",
-            type=TrtLlmMode,
-            choices=list(TrtLlmMode),
-            default=TrtLlmMode.INT4_AWQ,
             help="Vision Language Model to use",
         )
         parser.add_argument(
@@ -1402,27 +1374,6 @@ class VlmPipeline:
             action="store_true",
             default=False,
             help="Disable Video Embeddings Generation",
-        )
-        parser.add_argument(
-            "--model-path",
-            type=str,
-            required=False,
-            help="Location of the model",
-        )
-        parser.add_argument(
-            "--trt-build-int8",
-            action="store_true",
-            help="Build TRTLLM engine in int8 mode",
-        )
-        parser.add_argument(
-            "--use-trt",
-            action="store_true",
-            help="Use TensorRT",
-        )
-        parser.add_argument(
-            "--trt-engine-dir",
-            type=str,
-            help="Path to TRT engine directory",
         )
         parser.add_argument(
             "--num-frames-per-chunk",
