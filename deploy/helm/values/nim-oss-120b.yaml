@@ -1,0 +1,21 @@
+nim-llm:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss 
+  storageClassName: gpfs
+  persistence:
+    storageClass: gpfs
+  image:
+    repository: nvcr.io/nim/openai/gpt-oss-120b
+    tag: latest
+  model:
+    name: openai/gpt-oss-120b
+    ngcAPISecret: infisical-managed-secrets
+  resources:
+    limits:
+      nvidia.com/gpu: 4  
+
+  service:
+    name: llm-openai-svc
+    type: ClusterIP
+    openaiPort: 8000

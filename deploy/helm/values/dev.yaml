@@ -3,7 +3,7 @@ global:
 
 vss:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
   # securityContext: {}
@@ -11,8 +11,9 @@ vss:
   applicationSpecs:
     vss-deployment:
       securityContext:
+        # fsGroup: 0
         runAsGroup: 0
-        runAsUser: 0       
+        runAsUser: 0     
       containers:
         vss:
           image:
@@ -24,14 +25,21 @@ vss:
             value: vila-1.5
           - name: MODEL_PATH
             value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
-          - name: ASSET_STORAGE_DIR
-            value: /tmp/custom-asset-dir
-          - name: EXAMPLE_STREAMS_DIR
-            value: /tmp/custom-example-streams-dir
           - name: ENABLE_AUDIO
             value: 'true'
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
             value: 'true'
+          # CV Pipeline
+          # - name: INSTALL_PROPRIETARY_CODECS
+          #   value: "true"
+          # - name: DISABLE_CV_PIPELINE
+          #   value: "false"
+          # - name: GDINO_INFERENCE_INTERVAL
+          #   value: "1"
+          # - name: NUM_CV_CHUNKS_PER_GPU
+          #   value: "2"
+          # - name: VSS_LOG_LEVEL
+          #   value: "DEBUG"
           startupProbe:
             failureThreshold: 360
   configs:
@@ -66,21 +74,10 @@ vss:
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  extraPodVolumeMounts:
-  - mountPath: /tmp/custom-asset-dir
-    name: custom-asset-dir
-  - mountPath: /tmp/custom-example-streams-dir
-    name: custom-example-streams-dir
-  extraPodVolumes:
-  - hostPath:
-      path: /home/nvadmin/Workspace/blueprint/video_uploads
-    name: custom-asset-dir
-  - hostPath:
-      path: /home/nvadmin/Workspace/blueprint/video_examples
-    name: custom-example-streams-dir
   resources:
     limits:
       nvidia.com/gpu: 2
+      # nvidia.com/gpu: 3 # CV Pipeline
   workloadSpecs:
     dummy: {}
     wl-env:
@@ -104,26 +101,26 @@ vss:
 
 etcd:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
 
 minio:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
 
 
 milvus:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
 
 neo4j:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
 
@@ -152,8 +149,12 @@ neo4j:
 
 
 nim-llm:
+  # CV Pipeline
+  # env:
+  # - name: NIM_MAX_MODEL_LEN
+  #   value: "128000"
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss 
   storageClassName: gpfs
   persistence:
@@ -171,7 +172,7 @@ nim-llm:
 
 nemo-embedding:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
   workloadSpecs:
@@ -194,7 +195,7 @@ nemo-embedding:
 nemo-rerank:
   namespace: vss  
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   storageClassName: gpfs
   workloadSpecs:
     wl-env:
@@ -215,7 +216,7 @@ riva:
   enabled: true
   namespace: vss  
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-03
+    pyler.io/group: dgx
   storageClassName: gpfs
   workloadSpecs:
     dummy: {}
