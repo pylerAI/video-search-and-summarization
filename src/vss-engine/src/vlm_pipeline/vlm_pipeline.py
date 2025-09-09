@@ -948,7 +948,7 @@ class VlmPipeline:
             # RuntimeError: No CUDA GPUs are available
             use_gpu_mem_for_embedding_load = False
         else:
-            raise NotImplementedError("Only OPENAI_COMPATIBLE model is supported in VLM pipeline")
+            raise NotImplementedError("VLM Pipeline Error: Only OPENAI_COMPATIBLE model is supported.")
         self._emb_helper = EmbeddingHelper(asset_dir, use_gpu_mem=use_gpu_mem_for_embedding_load)
         self._args = args
 
