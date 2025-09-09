@@ -513,7 +513,7 @@ class VlmProcess(ViaProcessBase):
             )
         else:
             raise NotImplementedError(
-                f"VLM model type {self._vlm_model_type} not supported"
+                f"VLM model type {self._vlm_model_type} not supported. Only OPENAI_COMPATIBLE is supported."
             )
         self._emb_helper = EmbeddingHelper(
             self._asset_dir, use_gpu_mem=use_gpu_mem_for_embedding_load
