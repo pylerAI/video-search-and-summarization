@@ -533,7 +533,7 @@ class VlmProcess(ViaProcessBase):
     def _can_batch(self, item1, item2):
         # For VLM, batching can be performed only if number of frames used
         # for embedding generation is equal.
-        return False # Was only supported for VILA_15
+        return False  # Batching was only supported for VILA_15, which has been removed
 
     def _is_busy(self):
         # openai-compat models will handler their own request queuing
