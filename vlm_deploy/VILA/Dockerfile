@@ -1,12 +1,12 @@
 FROM nvcr.io/nvidia/pytorch:25.01-py3
-
+RUN apt-get update && apt-get install -y libgl1
 WORKDIR /app
 
 RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o ~/miniconda.sh \
  && sh ~/miniconda.sh -b -p /opt/conda \
  && rm ~/miniconda.sh
 
-ENV PATH /opt/conda/bin:$PATH
+ENV PATH=/opt/conda/bin:$PATH
 
 # Conda Terms of Service 승인
 RUN conda config --set allow_conda_downgrades true && \
@@ -42,5 +42,10 @@ ENV CUDA_HOME="/usr/local/cuda-12.8"
 ENV TORCH_CUDA_ARCH_LIST="10.0"
 RUN conda run -n vila pip install --no-build-isolation flash-attn
 
-COPY server.py server.py
-CMD ["conda", "run", "-n", "vila", "--no-capture-output", "python", "-u", "-W", "ignore", "server.py"]
+COPY serving/server.py serving/server.py
+
+ENV VILA_PORT=8001
+ENV VILA_MODEL_PATH="Efficient-Large-Model/VILA1.5-3b"
+ENV VILA_CONV_MODE="auto"
+
+CMD conda run -n vila --no-capture-output python -u -W ignore serving/server.py --port $VILA_PORT --model-path "$VILA_MODEL_PATH" --conv-mode $VILA_CONV_MODE

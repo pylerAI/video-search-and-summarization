@@ -168,7 +168,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 # Load model upon startup
-@app.post("/chat/completions")
+@app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     try:
         global model, tokenizer, image_processor, context_len
