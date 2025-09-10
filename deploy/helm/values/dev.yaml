@@ -3,7 +3,7 @@ global:
 
 vss:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss
   storageClassName: gpfs
   # securityContext: {}
@@ -19,12 +19,18 @@ vss:
           image:
             pullPolicy: IfNotPresent
             repository: harbor.pyler.local/apps/dev/vss-engine
-            tag: IMAGE_TAG
+            tag: 8f70a345ab6356309a6af06689c97f9d32abcb4a
           env:
           - name: VLM_MODEL_TO_USE
-            value: vila-1.5
-          - name: MODEL_PATH
-            value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+            value: "openai-compat"
+          - name: OPENAI_API_KEY
+            value: "fake_key"
+          - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+            value: "VILA1.5-40B"
+          - name: VIA_VLM_ENDPOINT
+            value: "http://vila-server-service:8000"
+          # - name: MODEL_PATH
+          #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
           - name: ENABLE_AUDIO
             value: 'true'
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
@@ -74,15 +80,21 @@ vss:
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  resources:
-    limits:
-      nvidia.com/gpu: 2
+  # USE EXTERNAL VLM
+  # resources:
+  #   limits:
+  #     nvidia.com/gpu: 2
       # nvidia.com/gpu: 3 # CV Pipeline
   workloadSpecs:
     dummy: {}
     wl-env:
       wl_env:
         - name: NGC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: NGC_API_KEY
+              name: infisical-managed-secrets
+        - name: NVIDIA_API_KEY
           valueFrom:
             secretKeyRef:
               key: NGC_API_KEY

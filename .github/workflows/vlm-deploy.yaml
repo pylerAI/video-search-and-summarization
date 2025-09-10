@@ -1,0 +1,134 @@
+name: VLM Deploy
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'vlm_deploy/**'
+
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+      image_tag:
+        required: false
+        type: string
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      NGC_API_KEY:
+        required: false
+      HARBOR_USERNAME:
+        required: false
+      HARBOR_PASSWORD:
+        required: false
+
+jobs:
+  build-and-deploy:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Set Environments
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (because image_tag is provided: ${{ inputs.image_tag }})"
+          elif [ "${GITHUB_REF##*/}" = "main" ]; then
+            echo "PROJECT_ENV=prod" >> $GITHUB_ENV
+            echo "Environment set to: prod (because branch is main)"
+          else
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (default for branch: ${GITHUB_REF##*/})"
+          fi
+
+      - name: Checkout (with image_tag)
+        if: inputs.image_tag
+        uses: actions/checkout@v4
+        with:
+          repository: pylerAI/video-search-and-summarization
+          ref: develop
+          token: ${{ secrets.TOKEN }}
+
+      - name: Checkout (default)
+        if: ${{ !inputs.image_tag }}
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Login to NGC
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: '$oauthtoken'
+          password: ${{ secrets.NGC_API_KEY }}
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build & Push Qwen Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vlm_deploy/Qwen
+          push: true
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:${{ inputs.image_tag || github.sha }}
+          file: ./vlm_deploy/Qwen/Dockerfile
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
+
+      - name: Build & Push VILA Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vlm_deploy/VILA
+          push: true
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vila-server:${{ inputs.image_tag || github.sha }}
+          file: ./vlm_deploy/VILA/Dockerfile
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Deploy Qwen to Kubernetes
+        run: |
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
+          # Qwen deployment 업데이트
+          find vlm_deploy/deploy/k8s/Qwen -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:$IMAGE_TAG|g" {} +
+          kubectl apply -f vlm_deploy/deploy/k8s/Qwen --recursive
+
+      - name: Deploy VILA to Kubernetes
+        run: |
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
+          # VILA deployment 업데이트
+          find vlm_deploy/deploy/k8s/VILA -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:$IMAGE_TAG|g" {} +
+          kubectl apply -f vlm_deploy/deploy/k8s/VILA --recursive
+
+      - name: Wait for Qwen deployment to be ready
+        run: |
+          kubectl rollout status deployment/qwen-server -n vss --timeout=1800s
+
+      - name: Wait for VILA deployment to be ready
+        run: |
+          kubectl rollout status deployment/vila-server -n vss --timeout=1800s
+
+      - name: Verify deployments
+        run: |
+          echo "=== Qwen Server Status ==="
+          kubectl get pods -n vss -l app=qwen-server
+          echo "=== VILA Server Status ==="
+          kubectl get pods -n vss -l app=vila-server
+          echo "=== Services Status ==="
+          kubectl get svc -n vss | grep -E "(qwen|vila)"

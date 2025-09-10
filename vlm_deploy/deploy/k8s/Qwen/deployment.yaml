@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-server
+  namespace: vss
+  labels:
+    app: qwen-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen-server
+  template:
+    metadata:
+      labels:
+        app: qwen-server
+    spec:
+      # 보안 설정
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: qwen-server
+        image: harbor.pyler.local/apps/qwen-server:IMAGE_TAG
+        command: ["/bin/bash"]
+        args: ["/app/start.sh"]
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MODEL_NAME
+          value: "Qwen/Qwen2.5-VL-32B-Instruct"
+        - name: TRUST_REMOTE_CODE
+          value: "true"
+        - name: PORT
+          value: "8000"
+        - name: HOST
+          value: "0.0.0.0"
+          
+        # NGC 캐시 설정
+        - name: NGC_MODEL_CACHE
+          value: /tmp/via-ngc-model-cache
+        - name: HF_HOME
+          value: /tmp/via-ngc-model-cache/huggingface
+        - name: TRANSFORMERS_CACHE
+          value: /tmp/via-ngc-model-cache/transformers
+
+        # VLLM 설정 (start.sh에서 사용)
+        - name: VLLM_TENSOR_PARALLEL_SIZE
+          value: "2"
+        - name: GPU_MEMORY_UTILIZATION
+          value: "0.9"
+        - name: MAX_MODEL_LEN
+          value: "8192"
+
+        # VIA와 연동을 위한 설정
+        - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+          value: "Qwen2.5-VL-32B-Instruct"
+        - name: VLM_MODEL_TO_USE
+          value: "openai-compat"
+        - name: VIA_VLM_ENDPOINT
+          value: "http://qwen-server-service:8000"
+        - name: OPENAI_API_KEY
+          value: "fake_key"
+        - name: NVIDIA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: NGC_API_KEY
+              name: infisical-managed-secrets
+
+        resources:
+          requests:
+            nvidia.com/gpu: "2"
+          limits:
+            nvidia.com/gpu: "2"
+
+        volumeMounts:
+        - mountPath: /tmp/via-ngc-model-cache
+          name: ngc-model-cache-volume
+        - mountPath: /dev/shm
+          name: shm-volume
+      volumes:
+      - name: ngc-model-cache-volume
+        persistentVolumeClaim:
+          claimName: qwen-ngc-model-cache-pvc
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+        name: shm-volume
+
+      nodeSelector:
+        pyler.io/group: dgx

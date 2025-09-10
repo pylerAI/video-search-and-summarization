@@ -1,5 +1,5 @@
 #start.sh
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 MODEL="${MODEL_PATH:-${MODEL_NAME:-Qwen/Qwen2.5-VL-32B-Instruct}}"
@@ -11,7 +11,8 @@ DOWNLOAD_DIR="${HF_HOME:-/root/.cache/huggingface}"
 
 TP="${TENSOR_PARALLEL_SIZE:-${VLLM_TENSOR_PARALLEL_SIZE:-1}}"
 
-ARGS=(--model "${MODEL}" --host "${HOST}" --port "${PORT}" --download-dir "${DOWNLOAD_DIR}")
+# VLLM serve에서는 모델을 위치 인수로 지정
+ARGS=("${MODEL}" --host "${HOST}" --port "${PORT}" --download-dir "${DOWNLOAD_DIR}")
 
 # Many community models (incl. some VLMs) require this
 if [[ "${TRUST_REMOTE_CODE:-true}" == "true" ]]; then

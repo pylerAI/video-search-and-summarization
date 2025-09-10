@@ -16,3 +16,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+riva-nim/*
+riva-nim-1.0.0.tgz
+
+deploy/helm/nvidia-blueprint-vss/*
