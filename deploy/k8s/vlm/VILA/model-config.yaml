@@ -7,14 +7,14 @@ metadata:
     app: vila-server
 data:
   # VILA 모델 설정
-  VILA_MODEL_PATH: "Efficient-Large-Model/VILA1.5-3B"
+  VILA_MODEL_PATH: "Efficient-Large-Model/VILA1.5-40B"
   VILA_CONV_MODE: "hermes-2"
   VILA_HOST: "0.0.0.0"
   VILA_PORT: "8000"
   VILA_WORKERS: "1"
   
   # VIA 연동 설정
-  VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-3B"
+  VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-40B"
   VLM_MODEL_TO_USE: "openai-compat"
   VIA_VLM_ENDPOINT: "http://vila-server-service:8000"
   OPENAI_API_KEY: "fake_key"
