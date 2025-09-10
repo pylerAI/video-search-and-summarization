@@ -24,13 +24,13 @@ from transformers.generation.streamers import TextIteratorStreamer
 import tempfile
 from fastapi import FastAPI, Request
 
-from llava.constants import (
-    DEFAULT_IM_END_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    DEFAULT_IMAGE_TOKEN,
-    IMAGE_PLACEHOLDER,
-    IMAGE_TOKEN_INDEX,
-)
+# from llava.constants import (
+#     DEFAULT_IM_END_TOKEN,
+#     DEFAULT_IM_START_TOKEN,
+#     DEFAULT_IMAGE_TOKEN,
+#     IMAGE_PLACEHOLDER,
+#     IMAGE_TOKEN_INDEX,
+# )
 from llava.conversation import SeparatorStyle, conv_templates
 from llava.mm_utils import KeywordsStoppingCriteria, get_model_name_from_path, process_images, tokenizer_image_token
 from llava.model.builder import load_pretrained_model
@@ -206,7 +206,7 @@ async def read_root():
     return {"message": "Welcome to the VILA API. This is for internal use only. Please use /chat/completions for chat completions."}
 
         
-@app.post("/chat/completions")
+@app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     # print("DEBUG0")
     current_time = time.strftime("%H:%M:%S-%s", time.localtime())
