@@ -46,7 +46,7 @@ spec:
 
         # VIA와 연동을 위한 설정
         - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-          value: "VILA1.5-40B"
+          value: "VILA1.5-40b"
         - name: VLM_MODEL_TO_USE
           value: "openai-compat"
         - name: VIA_VLM_ENDPOINT

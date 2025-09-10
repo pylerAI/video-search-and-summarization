@@ -84,7 +84,7 @@ jobs:
         with:
           context: ./vlm_deploy/Qwen
           push: true
-          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:${{ inputs.image_tag || github.sha }}
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/qwen-server:${{ inputs.image_tag || github.sha }}
           file: ./vlm_deploy/Qwen/Dockerfile
           ssh: default=${{ env.SSH_AUTH_SOCK }}
 
@@ -93,7 +93,7 @@ jobs:
         with:
           context: ./vlm_deploy/VILA
           push: true
-          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vila-server:${{ inputs.image_tag || github.sha }}
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/vila-server:${{ inputs.image_tag || github.sha }}
           file: ./vlm_deploy/VILA/Dockerfile
           ssh: default=${{ env.SSH_AUTH_SOCK }}
 
@@ -106,14 +106,14 @@ jobs:
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           # Qwen deployment 업데이트
-          find vlm_deploy/deploy/k8s/Qwen -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:$IMAGE_TAG|g" {} +
+          find vlm_deploy/deploy/k8s/Qwen -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/qwen-server:$IMAGE_TAG|g" {} +
           kubectl apply -f vlm_deploy/deploy/k8s/Qwen --recursive
 
       - name: Deploy VILA to Kubernetes
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           # VILA deployment 업데이트
-          find vlm_deploy/deploy/k8s/VILA -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/qwen-server:$IMAGE_TAG|g" {} +
+          find vlm_deploy/deploy/k8s/VILA -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/vila-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/vila-server:$IMAGE_TAG|g" {} +
           kubectl apply -f vlm_deploy/deploy/k8s/VILA --recursive
 
       - name: Wait for Qwen deployment to be ready

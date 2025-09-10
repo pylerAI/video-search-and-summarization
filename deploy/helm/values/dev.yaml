@@ -19,7 +19,7 @@ vss:
           image:
             pullPolicy: IfNotPresent
             repository: harbor.pyler.local/apps/dev/vss-engine
-            tag: 8f70a345ab6356309a6af06689c97f9d32abcb4a
+            tag: IMAGE_TAG
           env:
           - name: VLM_MODEL_TO_USE
             value: "openai-compat"
@@ -28,7 +28,7 @@ vss:
           - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
             value: "VILA1.5-40B"
           - name: VIA_VLM_ENDPOINT
-            value: "http://vila-server-service:8000"
+            value: "http://vila-server-service:8000/v1"
           # - name: MODEL_PATH
           #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
           - name: ENABLE_AUDIO
@@ -80,11 +80,17 @@ vss:
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  # USE EXTERNAL VLM
+  # USE EXTERNAL VLM - GPU 리소스 할당 비활성화
+  resources:
+    requests:
+      nvidia.com/gpu: 1
+    limits:
+      nvidia.com/gpu: 1
+  # 기존 GPU 할당 주석 처리
   # resources:
   #   limits:
   #     nvidia.com/gpu: 2
-      # nvidia.com/gpu: 3 # CV Pipeline
+  #     nvidia.com/gpu: 3 # CV Pipeline
   workloadSpecs:
     dummy: {}
     wl-env:
