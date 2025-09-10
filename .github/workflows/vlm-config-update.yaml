@@ -1,0 +1,82 @@
+name: VLM Config Update
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'deploy/k8s/vlm/Qwen/model-config.yaml'
+      - 'deploy/k8s/vlm/VILA/model-config.yaml'
+
+  workflow_call:
+    inputs:
+      config_only:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+
+jobs:
+  update-config-and-restart:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Apply ConfigMaps
+        run: |
+          echo "=== ConfigMap 업데이트 ==="
+          kubectl apply -f deploy/k8s/vlm/Qwen/model-config.yaml
+          kubectl apply -f deploy/k8s/vlm/VILA/model-config.yaml
+          
+          echo "=== 현재 ConfigMap 상태 ==="
+          kubectl get configmaps -n vss | grep -E "(vila|qwen)-model-config"
+
+      - name: Restart deployments
+        run: |
+          echo "=== 서버 재시작 ==="
+          # ConfigMap 변경으로 인한 자동 재시작
+          kubectl rollout restart deployment/qwen-server -n vss
+          kubectl rollout restart deployment/vila-server -n vss
+          
+          echo "=== 재시작 명령 실행 완료 ==="
+
+      - name: Wait for deployments to be ready
+        run: |
+          echo "=== 서버 재시작 대기 ==="
+          kubectl rollout status deployment/qwen-server -n vss --timeout=900s
+          kubectl rollout status deployment/vila-server -n vss --timeout=900s
+          
+          echo "=== 서버 상태 확인 ==="
+          kubectl get pods -n vss -l app=qwen-server
+          kubectl get pods -n vss -l app=vila-server
+
+      - name: Verify deployments
+        run: |
+          echo "=== 전체 서비스 상태 ==="
+          kubectl get pods -n vss | grep -E "(vila|qwen)"
+          kubectl get svc -n vss | grep -E "(vila|qwen)"
+          
+          echo "=== ConfigMap 내용 확인 ==="
+          echo "--- VILA ConfigMap ---"
+          kubectl get configmap vila-model-config -n vss -o yaml
+          echo "--- Qwen ConfigMap ---"
+          kubectl get configmap qwen-model-config -n vss -o yaml

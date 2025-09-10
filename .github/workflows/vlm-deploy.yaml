@@ -5,7 +5,8 @@ on:
     branches:
       - develop
     paths:
-      - 'vlm_deploy/**'
+      - 'vlm_deploy/Qwen/**'
+      - 'vlm_deploy/VILA/**'
 
   workflow_call:
     inputs:
@@ -106,15 +107,15 @@ jobs:
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           # Qwen deployment 업데이트
-          find vlm_deploy/deploy/k8s/Qwen -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/qwen-server:$IMAGE_TAG|g" {} +
-          kubectl apply -f vlm_deploy/deploy/k8s/Qwen --recursive
+          find deploy/k8s/vlm/Qwen -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/qwen-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/qwen-server:$IMAGE_TAG|g" {} +
+          kubectl apply -f deploy/k8s/vlm/Qwen --recursive
 
       - name: Deploy VILA to Kubernetes
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           # VILA deployment 업데이트
-          find vlm_deploy/deploy/k8s/VILA -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/vila-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/vila-server:$IMAGE_TAG|g" {} +
-          kubectl apply -f vlm_deploy/deploy/k8s/VILA --recursive
+          find deploy/k8s/vlm/VILA -type f -name "*.yaml" -exec sed -i "s|harbor.pyler.local/apps/vila-server:.*|${{ vars.HARBOR_REGISTRY }}/apps/vila-server:$IMAGE_TAG|g" {} +
+          kubectl apply -f deploy/k8s/vlm/VILA --recursive
 
       - name: Wait for Qwen deployment to be ready
         run: |

@@ -1,0 +1,67 @@
+name: VSS VLM Model Config Update
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'deploy/k8s/dev/vss-vlm-config.yaml'
+
+  workflow_call:
+    inputs:
+      config_only:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+
+jobs:
+  update-config-and-restart:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Update VSS VLM ConfigMap
+        run: |
+          echo "=== VSS VLM ConfigMap 업데이트 ==="
+          kubectl apply -f deploy/k8s/dev/vss-vlm-config.yaml
+          
+          echo "=== 현재 VSS VLM ConfigMap 상태 ==="
+          kubectl get configmap vss-vlm-config -n vss -o yaml
+
+      - name: Restart VSS deployment
+        run: |
+          echo "=== VSS 서버 재시작 ==="
+          kubectl rollout restart deployment/vss-vss-deployment -n vss
+          kubectl rollout status deployment/vss-vss-deployment -n vss --timeout=900s
+          
+          echo "=== VSS 서버 상태 확인 ==="
+          kubectl get pods -n vss -l app=vss-vss-deployment
+
+      - name: Verify deployment
+        run: |
+          echo "=== VSS 서비스 상태 ==="
+          kubectl get pods -n vss | grep vss
+          kubectl get svc -n vss | grep vss
+          
+          echo "=== VSS VLM ConfigMap 내용 확인 ==="
+          kubectl get configmap vss-vlm-config -n vss -o yaml

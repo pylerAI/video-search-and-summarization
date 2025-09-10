@@ -23,36 +23,10 @@ spec:
         image: harbor.pyler.local/apps/vila-server:IMAGE_TAG
         ports:
         - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: vila-model-config
         env:
-        - name: VILA_MODEL_PATH
-          value: "Efficient-Large-Model/VILA1.5-40B"
-        - name: VILA_CONV_MODE
-          value: "hermes-2"
-        - name: VILA_HOST
-          value: "0.0.0.0"
-        - name: VILA_PORT
-          value: "8000"
-        - name: VILA_WORKERS
-          value: "1"
-
-
-        # NGC 캐시 설정
-        - name: NGC_MODEL_CACHE
-          value: /tmp/via-ngc-model-cache
-        - name: HF_HOME
-          value: /tmp/via-ngc-model-cache/huggingface
-        - name: TRANSFORMERS_CACHE
-          value: /tmp/via-ngc-model-cache/transformers
-
-        # VIA와 연동을 위한 설정
-        - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-          value: "VILA1.5-40b"
-        - name: VLM_MODEL_TO_USE
-          value: "openai-compat"
-        - name: VIA_VLM_ENDPOINT
-          value: "http://vila-server-service:8000"
-        - name: OPENAI_API_KEY
-          value: "fake_key"
         - name: NVIDIA_API_KEY
           valueFrom:
             secretKeyRef:

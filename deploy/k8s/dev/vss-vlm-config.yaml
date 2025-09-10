@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vss-vlm-config
+  namespace: vss
+  labels:
+    app: vss-vss-deployment
+data:
+  VLM_MODEL_TO_USE: "openai-compat"
+  OPENAI_API_KEY: "fake_key"
+  VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-3B"
+  VIA_VLM_ENDPOINT: "http://vila-server-service:8000/v1"

@@ -22,13 +22,25 @@ vss:
             tag: IMAGE_TAG
           env:
           - name: VLM_MODEL_TO_USE
-            value: "openai-compat"
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: VLM_MODEL_TO_USE
           - name: OPENAI_API_KEY
-            value: "fake_key"
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: OPENAI_API_KEY
           - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-            value: "VILA1.5-40B"
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
           - name: VIA_VLM_ENDPOINT
-            value: "http://vila-server-service:8000/v1"
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: VIA_VLM_ENDPOINT
           # - name: MODEL_PATH
           #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
           - name: ENABLE_AUDIO

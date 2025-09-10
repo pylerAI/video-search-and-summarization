@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - develop
+    paths-ignore:
+      - 'deploy/k8s/vlm/Qwen/model-config.yaml'
+      - 'deploy/k8s/vlm/VILA/model-config.yaml'
+      - 'deploy/k8s/dev/vss-vlm-config.yaml'
+      - 'vlm_deploy/Qwen/**'
+      - 'vlm_deploy/VILA/**'
 
   workflow_call:
     inputs:
