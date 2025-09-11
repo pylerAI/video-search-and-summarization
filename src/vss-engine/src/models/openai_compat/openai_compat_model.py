@@ -70,8 +70,8 @@ def tensor_to_base64_jpeg(tensor, idx=0):
 def sanitize_model_id(model_id):
     """
     Sanitize model ID for system compatibility.
-    - Keep alphanumeric, hyphens, and underscores as-is
-    - Replace dots with hyphens
+    - Keep alphanumeric, hyphens, underscores, and dots as-is
+    - Keep dots as-is
     - Replace forward slashes with hyphens
     - Remove any other special characters
     """
