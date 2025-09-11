@@ -537,13 +537,13 @@ class SummarizationQuery(ViaBaseModel):
     )
     model: str = Field(
         description="Model to use for this query.",
-        examples=["vila-1.5"],
+        examples=["VILA1.5-40B", "Qwen-Qwen2.5-VL-32B-Instruct"],
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
     api_type: str = Field(
         description="API used to access model.",
-        examples=["internal"],
+        examples=["openai"],
         max_length=32,
         pattern=r"^[A-Za-z]*$",
         default="",
