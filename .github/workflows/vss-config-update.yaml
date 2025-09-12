@@ -50,9 +50,20 @@ jobs:
 
       - name: Restart VSS deployment
         run: |
-          echo "=== VSS 서버 재시작 ==="
-          kubectl rollout restart deployment/vss-vss-deployment -n vss
-          kubectl rollout status deployment/vss-vss-deployment -n vss --timeout=900s
+          echo "=== VSS 서버 재시작 (scale 0 → 1) ==="
+          # Scale down to 0
+          kubectl scale deployment/vss-vss-deployment --replicas=0 -n vss
+          echo "=== VSS 서버 스케일 다운 완료 ==="
+          
+          # Wait for pods to terminate
+          kubectl wait --for=delete pod -l app=vss-vss-deployment -n vss --timeout=60s || true
+          
+          # Scale up to 1
+          kubectl scale deployment/vss-vss-deployment --replicas=1 -n vss
+          echo "=== VSS 서버 스케일 업 완료 ==="
+          
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/vss-vss-deployment -n vss --timeout=300s
           
           echo "=== VSS 서버 상태 확인 ==="
           kubectl get pods -n vss -l app=vss-vss-deployment

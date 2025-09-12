@@ -52,18 +52,31 @@ jobs:
 
       - name: Restart deployments
         run: |
-          echo "=== 서버 재시작 ==="
-          # ConfigMap 변경으로 인한 자동 재시작
-          kubectl rollout restart deployment/qwen-server -n vss
-          kubectl rollout restart deployment/vila-server -n vss
+          echo "=== 서버 재시작 (scale 0 → 1) ==="
+          
+          # Qwen 서버 재시작
+          echo "=== Qwen 서버 스케일 다운 ==="
+          kubectl scale deployment/qwen-server --replicas=0 -n vss
+          kubectl wait --for=delete pod -l app=qwen-server -n vss --timeout=60s || true
+          
+          echo "=== Qwen 서버 스케일 업 ==="
+          kubectl scale deployment/qwen-server --replicas=1 -n vss
+          
+          # VILA 서버 재시작
+          echo "=== VILA 서버 스케일 다운 ==="
+          kubectl scale deployment/vila-server --replicas=0 -n vss
+          kubectl wait --for=delete pod -l app=vila-server -n vss --timeout=60s || true
+          
+          echo "=== VILA 서버 스케일 업 ==="
+          kubectl scale deployment/vila-server --replicas=1 -n vss
           
           echo "=== 재시작 명령 실행 완료 ==="
 
       - name: Wait for deployments to be ready
         run: |
           echo "=== 서버 재시작 대기 ==="
-          kubectl rollout status deployment/qwen-server -n vss --timeout=900s
-          kubectl rollout status deployment/vila-server -n vss --timeout=900s
+          kubectl rollout status deployment/qwen-server -n vss --timeout=300s
+          kubectl rollout status deployment/vila-server -n vss --timeout=300s
           
           echo "=== 서버 상태 확인 ==="
           kubectl get pods -n vss -l app=qwen-server
