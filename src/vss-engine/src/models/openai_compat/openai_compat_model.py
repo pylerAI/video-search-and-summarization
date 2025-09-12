@@ -333,7 +333,7 @@ class CompOpenAIModel:
                 + "Make sure the answer contain correct timestamps."
             )
 
-            logger.debug(f"PROMPT is  {PROMPT}")
+            logger.info(f"PROMPT is:  {PROMPT}")
             messages = [
                 {
                     "role": "user",
@@ -355,7 +355,7 @@ class CompOpenAIModel:
                     logger.info("No change in NV key")
 
             with TimeMeasure("OpenAI model inference"):
-                logger.debug("Invoke call")
+                logger.info("Invoke call")
                 try:
                     if self._model:
                         response_obj = self._model.invoke(
@@ -378,8 +378,8 @@ class CompOpenAIModel:
                         content = ""
                         for choice in resp.choices:
                             content += str(choice.message.content)
-                    logger.debug("Invoke call done")
-                    logger.debug(f"content is {str(content)}")
+                    logger.info("Invoke call done")
+                    logger.info(f"Response: {str(content)}")
                     response = content
                 except Exception as ex:
                     import traceback
