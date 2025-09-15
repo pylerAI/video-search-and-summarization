@@ -1,5 +1,7 @@
 from pprint import pprint
 import argparse
+import subprocess
+import shutil
 import base64
 import json
 import os
@@ -41,6 +43,8 @@ import asyncio
 import cv2
 from anyio.lowlevel import RunVar
 from anyio import CapacityLimiter
+
+from model_setup import prepare_model, VlmModelType, TrtLlmMode
 
 class TextContent(BaseModel):
     type: Literal["text"]
@@ -173,18 +177,52 @@ def get_literal_values(cls, field_name: str):
 async def lifespan(app: FastAPI):
     global model, model_name, tokenizer, image_processor, context_len
     disable_torch_init()
+    
+    # Get configuration from args
     model_path = app.args.model_path
     model_name = get_model_name_from_path(model_path)
-    # tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_name, None)
-    model = llava.load(model_path)
-    # model = None
-    print(f"{model_name=} {model_path=} loaded successfully. Context length: {context_len}")
+    model_type = getattr(app.args, 'model_type', VlmModelType.VILA_15)
+    trt_engine_dir = getattr(app.args, 'trt_engine_dir', None)
+    trt_llm_mode = getattr(app.args, 'trt_llm_mode', TrtLlmMode.FP16)
+    vlm_batch_size = getattr(app.args, 'vlm_batch_size', 1)
+    force_rebuild = os.environ.get("VILA_FORCE_ENGINE_BUILD", "false") == "true"
+    
+    # Prepare model: download from NGC if needed, setup TRT engines
+    try:
+        final_model_path, final_trt_engine_dir, use_trt = prepare_model(
+            model_path=model_path,
+            model_type=model_type,
+            trt_engine_dir=trt_engine_dir,
+            trt_llm_mode=trt_llm_mode,
+            vlm_batch_size=vlm_batch_size,
+            force_rebuild=force_rebuild
+        )
+        
+        # Update args with final paths
+        app.args.model_path = final_model_path
+        app.args.use_trt = use_trt
+        app.args.trt_engine_dir = final_trt_engine_dir
+        
+    except Exception as e:
+        print(f"Model preparation failed: {e}")
+        raise
+    
+    # Load the model (TRT or regular)
+    if use_trt:
+        # TODO: Load TRT model here when TRT support is implemented
+        print(f"TRT model loading not yet implemented. Engine dir: {final_trt_engine_dir}")
+        model = None
+    else:
+        import llava
+        model = llava.load(final_model_path)
+    
+    print(f"{model_name=} {final_model_path=} loaded successfully. Context length: {context_len}")
     print("start & set capacity limiter to 1")
     RunVar("_default_thread_limiter").set(CapacityLimiter(1))
     global globallock
     globallock = asyncio.Lock()
     yield
-    scheduler.shutdown()  # Ensure the scheduler stops when the app shuts down
+    # No scheduler to shutdown in this simplified version
 
 
 app = FastAPI(lifespan=lifespan)
@@ -317,7 +355,7 @@ if __name__ == "__main__":
     global host, port
     host = os.getenv("VILA_HOST", "0.0.0.0")
     port = os.getenv("VILA_PORT", 8000)
-    model_path = os.getenv("VILA_MODEL_PATH", "Efficient-Large-Model/NVILA-8B")
+    model_path = os.getenv("VILA_MODEL_PATH", "Efficient-Large-Model/VILA1.5-3b")
     conv_mode = os.getenv("VILA_CONV_MODE", "auto")
     workers = os.getenv("VILA_WORKERS", 1)
 
@@ -326,6 +364,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=port)
     parser.add_argument("--model-path", type=str, default=model_path)
     parser.add_argument("--conv-mode", type=str, default=conv_mode)
+    parser.add_argument("--model-type", type=str, default=VlmModelType.VILA_15, 
+                        choices=[VlmModelType.VILA_15, VlmModelType.NVILA])
+    parser.add_argument("--trt-engine-dir", type=str, default=None)
+    parser.add_argument("--trt-llm-mode", type=str, default=TrtLlmMode.FP16,
+                        choices=[TrtLlmMode.FP16, TrtLlmMode.FP8, TrtLlmMode.INT8, TrtLlmMode.INT4, TrtLlmMode.INT4_AWQ])
+    parser.add_argument("--vlm-batch-size", type=int, default=1)
+    parser.add_argument("--use-trt", action="store_true", default=False)
     # parser.add_argument("--workers", type=int, default=1)
     app.args = parser.parse_args()
     port = int(app.args.port)

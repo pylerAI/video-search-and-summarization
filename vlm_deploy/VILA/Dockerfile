@@ -1,5 +1,13 @@
 FROM nvcr.io/nvidia/pytorch:25.01-py3
-RUN apt-get update && apt-get install -y libgl1
+# Install additional system packages
+RUN apt-get update && apt-get install -y libgl1 wget
+
+# Install NGC CLI for model downloads
+RUN wget -O ngccli_linux.zip https://ngc.nvidia.com/downloads/ngccli_linux.zip && \
+    unzip ngccli_linux.zip && \
+    chmod u+x ngc-cli/ngc && \
+    mv ngc-cli/ngc /usr/local/bin/ngc && \
+    rm -rf ngc-cli ngccli_linux.zip
 WORKDIR /app
 
 RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o ~/miniconda.sh \
@@ -42,10 +50,33 @@ ENV CUDA_HOME="/usr/local/cuda-12.8"
 ENV TORCH_CUDA_ARCH_LIST="10.0"
 RUN conda run -n vila pip install --no-build-isolation flash-attn
 
+# Install additional Python packages for NGC and logging
+RUN conda run -n vila pip install loguru requests
+
+# Install TensorRT-LLM for engine building (if needed)
+# Note: This may require specific CUDA/TensorRT versions
+# RUN conda run -n vila pip install tensorrt-llm
+
 COPY serving/server.py serving/server.py
+COPY model_setup.py model_setup.py
+COPY ngc_model_downloader.py ngc_model_downloader.py
+COPY trt_helper/ trt_helper/
 
 ENV VILA_PORT=8001
 ENV VILA_MODEL_PATH="Efficient-Large-Model/VILA1.5-3b"
 ENV VILA_CONV_MODE="auto"
+ENV VILA_MODEL_TYPE="vila-1.5"
+ENV VILA_TRT_LLM_MODE="fp16"
+ENV VILA_BATCH_SIZE="1"
+# Set NGC_API_KEY as an environment variable (to be passed at runtime)
+ENV NGC_API_KEY=""
+# Set NGC model cache directory
+ENV NGC_MODEL_CACHE="/app/.via/ngc_model_cache"
 
-CMD conda run -n vila --no-capture-output python -u -W ignore serving/server.py --port $VILA_PORT --model-path "$VILA_MODEL_PATH" --conv-mode $VILA_CONV_MODE
+CMD conda run -n vila --no-capture-output python -u -W ignore serving/server.py \
+    --port $VILA_PORT \
+    --model-path "$VILA_MODEL_PATH" \
+    --conv-mode $VILA_CONV_MODE \
+    --model-type $VILA_MODEL_TYPE \
+    --trt-llm-mode $VILA_TRT_LLM_MODE \
+    --vlm-batch-size $VILA_BATCH_SIZE
