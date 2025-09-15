@@ -1338,6 +1338,17 @@ class AlertInfo(ViaBaseModel):
 # ===================== Models required by /alerts API
 
 
+class PostAnalyticsInfo(ViaBaseModel):
+    """Post analytics info"""
+
+    asset_id: str = Field(
+        description="asset_id", max_length=100,
+    )
+
+
+# ===================== Models required by /analytics API
+
+
 class ViaServer:
     def __init__(self, args) -> None:
         self._args = args
@@ -3005,6 +3016,23 @@ class ViaServer:
                 }
                 for alert in reversed(alerts)
             ]
+
+        # ======================= Alerts API
+
+        @self._app.post(
+            f"{API_PREFIX}/analytics",
+            summary="Post analytics",
+            description="post analytics",
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+            },
+            tags=["Analytics"],
+        )
+        def post_analytics(query: PostAnalyticsInfo):
+            logger.info("Received analytics post asset_id for %s", str(query.asset_id))
+
+            return Response(status_code=200)
 
         # ======================= Alerts API
 
