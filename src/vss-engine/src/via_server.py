@@ -3032,6 +3032,12 @@ class ViaServer:
         def post_analyze(query: PostAnalyzeInfo):
             logger.info("Received analyze post asset_id for %s", str(query.asset_id))
 
+            asset = self._asset_manager.get_asset(query.asset_id)
+            self._stream_handler.analyze(
+                asset_id=query.asset_id,
+                assets=[asset]
+            )
+
             return Response(status_code=200)
 
         # ======================= Analyze API

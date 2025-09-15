@@ -2996,6 +2996,21 @@ class ViaStreamHandler:
             max_workers=max_workers, thread_name_prefix=f"{prefix}-{str(uuid.uuid4())[:8]}"
         )
 
+    def analyze(self, asset_id: str, assets: list[Asset]):
+        """Analyze the asset"""
+        logger.info("Analyzing asset %s", asset_id)
+
+        # TODO: check asset summarize status
+
+        req_info = RequestInfo()
+        req_info.assets = assets
+        req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets)
+
+        req_info._ctx_mgr.analyze(
+            asset_id=asset_id,
+        )
+        return
+
 
 def handle_rtsp_input(stream_handler: ViaStreamHandler, args):
     asset_id = str(uuid.uuid4())
