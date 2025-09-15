@@ -1338,8 +1338,8 @@ class AlertInfo(ViaBaseModel):
 # ===================== Models required by /alerts API
 
 
-class PostAnalyticsInfo(ViaBaseModel):
-    """Post analytics info"""
+class PostAnalyzeInfo(ViaBaseModel):
+    """Post analyze info"""
 
     asset_id: str = Field(
         description="asset_id", max_length=100,
@@ -3020,21 +3020,21 @@ class ViaServer:
         # ======================= Alerts API
 
         @self._app.post(
-            f"{API_PREFIX}/analytics",
-            summary="Post analytics",
-            description="post analytics",
+            f"{API_PREFIX}/analyze",
+            summary="Post analyze",
+            description="post analyze",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
             },
-            tags=["Analytics"],
+            tags=["Analyze"],
         )
-        def post_analytics(query: PostAnalyticsInfo):
-            logger.info("Received analytics post asset_id for %s", str(query.asset_id))
+        def post_analyze(query: PostAnalyzeInfo):
+            logger.info("Received analyze post asset_id for %s", str(query.asset_id))
 
             return Response(status_code=200)
 
-        # ======================= Alerts API
+        # ======================= Analyze API
 
     def _setup_exception_handlers(self):
         # Handle incorrect request schema (user error)
