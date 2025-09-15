@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 
 import requests.exceptions
 
-from via_logger import logger
+from loguru import logger
 
 
 def download_model(ngc_model: str, download_path_prefix: str, model_type: str = ""):

@@ -209,9 +209,16 @@ async def lifespan(app: FastAPI):
     
     # Load the model (TRT or regular)
     if use_trt:
-        # TODO: Load TRT model here when TRT support is implemented
-        print(f"TRT model loading not yet implemented. Engine dir: {final_trt_engine_dir}")
-        model = None
+        from vila15_model import Vila15
+        model = Vila15(
+            final_model_path,
+            use_trt=app.args.use_trt,
+            trt_engine_dir=trt_engine_dir,
+            max_batch_size=vlm_batch_size,
+            async_output=True,
+        )
+        if model.TRTLLM_EXECUTOR_INFLIGHT_BATCHING:
+            batch_size = 1
     else:
         import llava
         model = llava.load(final_model_path)

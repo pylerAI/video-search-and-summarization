@@ -40,7 +40,8 @@ RUN conda run -n vila pip install opencv-python-headless
 RUN conda run -n vila pip install ps3-torch --no-deps && \
  conda run -n vila pip install timm && \
  conda run -n vila pip install triton && \
- conda run -n vila pip install tiktoken ftfy wcwidth
+ conda run -n vila pip install tiktoken ftfy wcwidth \
+ conda run -n vila pip install ngcsdk
 
 RUN conda run -n vila pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 RUN conda run -n vila pip install -U "deepspeed>=0.14.4"
@@ -63,7 +64,7 @@ COPY ngc_model_downloader.py ngc_model_downloader.py
 COPY trt_helper/ trt_helper/
 
 ENV VILA_PORT=8001
-ENV VILA_MODEL_PATH="Efficient-Large-Model/VILA1.5-3b"
+ENV VILA_MODEL_PATH="ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8"
 ENV VILA_CONV_MODE="auto"
 ENV VILA_MODEL_TYPE="vila-1.5"
 ENV VILA_TRT_LLM_MODE="fp16"
@@ -71,7 +72,7 @@ ENV VILA_BATCH_SIZE="1"
 # Set NGC_API_KEY as an environment variable (to be passed at runtime)
 ENV NGC_API_KEY=""
 # Set NGC model cache directory
-ENV NGC_MODEL_CACHE="/app/.via/ngc_model_cache"
+ENV NGC_MODEL_CACHE="/tmp/via-ngc-model-cache"
 
 CMD conda run -n vila --no-capture-output python -u -W ignore serving/server.py \
     --port $VILA_PORT \
