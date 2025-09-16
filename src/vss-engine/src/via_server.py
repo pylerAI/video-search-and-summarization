@@ -1345,6 +1345,12 @@ class PostAnalyzeInfo(ViaBaseModel):
         description="asset_id", max_length=100,
     )
 
+    doc_type: Optional[str] = Field(
+        default=None,
+        description="doc_type",
+        max_length=100,
+    )
+
 
 # ===================== Models required by /analytics API
 
@@ -3035,6 +3041,7 @@ class ViaServer:
             asset = self._asset_manager.get_asset(query.asset_id)
             self._stream_handler.analyze(
                 asset_id=query.asset_id,
+                doc_type=query.doc_type,
                 assets=[asset]
             )
 

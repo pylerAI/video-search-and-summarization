@@ -2996,7 +2996,7 @@ class ViaStreamHandler:
             max_workers=max_workers, thread_name_prefix=f"{prefix}-{str(uuid.uuid4())[:8]}"
         )
 
-    def analyze(self, asset_id: str, assets: list[Asset]):
+    def analyze(self, asset_id: str, doc_type: str, assets: list[Asset]):
         """Analyze the asset"""
         logger.info("Analyzing asset %s", asset_id)
 
@@ -3008,6 +3008,7 @@ class ViaStreamHandler:
 
         req_info._ctx_mgr.analyze(
             asset_id=asset_id,
+            doc_type=doc_type,
         )
         return
 
