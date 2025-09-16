@@ -3038,13 +3038,30 @@ class ViaServer:
             logger.info("Received analyze post asset_id for %s", str(query.asset_id))
 
             asset = self._asset_manager.get_asset(query.asset_id)
-            self._stream_handler.analyze(
+            response = self._stream_handler.analyze(
                 asset_id=query.asset_id,
                 doc_type=query.doc_type,
                 assets=[asset]
             )
 
-            return Response(status_code=200)
+            if response["result"] == "success":
+                return Response(
+                    status_code=200,
+                    result=response["result"],
+                    message=response["message"],
+                    asset_id=response["asset_id"],
+                    collection_name=response["collection_name"],
+                    doc_types=response["doc_types"],
+                    total_count=response["total_count"],
+                    success_count=response["success_count"],
+                    failed_count=response["failed_count"],
+                )
+            else:
+                return Response(
+                    status_code=500,
+                    result=response["result"],
+                    message=response["message"],
+                )
 
         # ======================= Analyze API
 

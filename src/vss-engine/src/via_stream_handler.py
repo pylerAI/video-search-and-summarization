@@ -3006,11 +3006,11 @@ class ViaStreamHandler:
         req_info.assets = assets
         req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets)
 
-        req_info._ctx_mgr.analyze(
+        response = req_info._ctx_mgr.analyze(
             asset_id=asset_id,
             doc_type=doc_type,
         )
-        return
+        return response
 
 
 def handle_rtsp_input(stream_handler: ViaStreamHandler, args):
