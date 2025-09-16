@@ -18,7 +18,6 @@ import re
 
 import torch
 import torch.nn as nn
-from timm.models.layers import Mlp
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 
 
@@ -63,64 +62,10 @@ class DownSampleBlock(nn.Module):
         if h % 2 == 1:
             x = torch.concat([x, torch.zeros((n, w, 1, c), dtype=x.dtype).to(x.device)], dim=2).contiguous()
             n, w, h, c = x.size()
-        x = x.contiguous()
         x = x.view(n, w, int(h / 2), int(c * 2))
         x = x.permute(0, 2, 1, 3).contiguous()
         x = x.view(n, int(h / 2), int(w / 2), int(c * 4))
-        x = x.permute(0, 2, 1, 3).contiguous()
         return x
-
-
-class DownSample2x2BlockFix(nn.Module):
-    def forward(self, x):
-        vit_embeds = x
-        h = w = int(vit_embeds.shape[1] ** 0.5)
-        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], h, w, -1)
-        vit_embeds = flat_square_2x2(vit_embeds)
-        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
-        return vit_embeds
-
-
-def flat_square_2x2(x):
-    n, w, h, c = x.size()
-    if w % 2 == 1:
-        x = torch.concat([x, torch.zeros((n, 1, h, c), dtype=x.dtype).to(x.device)], dim=1).contiguous()
-        n, w, h, c = x.size()
-    x = x.contiguous()
-    if h % 2 == 1:
-        x = torch.concat([x, torch.zeros((n, w, 1, c), dtype=x.dtype).to(x.device)], dim=2).contiguous()
-        n, w, h, c = x.size()
-    x = x.view(n, w, int(h / 2), int(c * 2))
-    x = x.permute(0, 2, 1, 3).contiguous()
-    x = x.view(n, int(h / 2), int(w / 2), int(c * 4))
-    x = x.permute(0, 2, 1, 3).contiguous()
-    return x
-
-
-class DownSample3x3BlockFix(nn.Module):
-    def forward(self, x):
-        vit_embeds = x
-        h = w = int(vit_embeds.shape[1] ** 0.5)
-        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], h, w, -1)
-        vit_embeds = flat_square_3x3(vit_embeds)
-        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
-        return vit_embeds
-
-
-def flat_square_3x3(x):
-    n, w, h, c = x.size()
-    if w % 3 != 0:
-        x = torch.concat([x, torch.zeros((n, 3 - (w % 3), h, c), dtype=x.dtype).to(x.device)], dim=1).contiguous()
-        n, w, h, c = x.size()
-    x = x.contiguous()
-    if h % 3 != 0:
-        x = torch.concat([x, torch.zeros((n, w, 3 - (h % 3), c), dtype=x.dtype).to(x.device)], dim=2).contiguous()
-        n, w, h, c = x.size()
-    x = x.view(n, w, int(h / 3), int(c * 3))
-    x = x.permute(0, 2, 1, 3).contiguous()
-    x = x.view(n, int(h / 3), int(w / 3), int(c * 9))
-    x = x.permute(0, 2, 1, 3).contiguous()
-    return x
 
 
 class MultimodalProjectorConfig(PretrainedConfig):
@@ -137,7 +82,6 @@ class MultimodalProjector(PreTrainedModel):
     def __init__(self, mm_projector_cfg: MultimodalProjectorConfig, config: PretrainedConfig):
         super().__init__(mm_projector_cfg)
         mm_projector_type = mm_projector_cfg.mm_projector_type
-        self.downsample_rate = 1
         if mm_projector_type == "identity":
             self.layers = IdentityMap()
         elif mm_projector_type == "linear":
@@ -147,65 +91,6 @@ class MultimodalProjector(PreTrainedModel):
                 DownSampleBlock(),
                 nn.LayerNorm(config.mm_hidden_size * 4),
                 nn.Linear(config.mm_hidden_size * 4, config.hidden_size),
-                nn.GELU(),
-                nn.Linear(config.hidden_size, config.hidden_size),
-            )
-            self.downsample_rate = 2
-        elif mm_projector_type == "mlp_downsample_2x2_fix":
-            self.layers = nn.Sequential(
-                DownSample2x2BlockFix(),
-                nn.LayerNorm(config.mm_hidden_size * 4),
-                nn.Linear(config.mm_hidden_size * 4, config.hidden_size),
-                nn.GELU(),
-                nn.Linear(config.hidden_size, config.hidden_size),
-            )
-            self.downsample_rate = 2
-        elif mm_projector_type == "mlp_downsample_3x3_fix":
-            self.layers = nn.Sequential(
-                DownSample3x3BlockFix(),
-                nn.LayerNorm(config.mm_hidden_size * 9),
-                nn.Linear(config.mm_hidden_size * 9, config.mm_hidden_size * 3),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size * 3),
-                nn.Linear(config.mm_hidden_size * 3, config.hidden_size),
-                nn.GELU(),
-                nn.Linear(config.hidden_size, config.hidden_size),
-            )
-            self.downsample_rate = 3
-        elif mm_projector_type == "mlp_downsample_3x3_s2":
-            self.layers = nn.Sequential(
-                DownSample3x3BlockFix(),
-                nn.LayerNorm(config.mm_hidden_size * 9),
-                nn.Linear(config.mm_hidden_size * 9, config.mm_hidden_size * 3),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size * 3),
-                nn.Linear(config.mm_hidden_size * 3, config.mm_hidden_size),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size),
-                nn.Linear(config.mm_hidden_size, config.mm_hidden_size // 3),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size // 3),
-                nn.Linear(config.mm_hidden_size // 3, config.hidden_size),
-                nn.GELU(),
-                nn.Linear(config.hidden_size, config.hidden_size),
-            )
-        elif mm_projector_type == "mlp_downsample_3x3_s2_new":
-            self.layers = nn.Sequential(
-                DownSample3x3BlockFix(),
-                nn.LayerNorm(config.mm_hidden_size * 9),
-                nn.Linear(config.mm_hidden_size * 9, config.mm_hidden_size * 4),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size * 4),
-                nn.Linear(config.mm_hidden_size * 4, config.mm_hidden_size * 2),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size * 2),
-                nn.Linear(config.mm_hidden_size * 2, config.mm_hidden_size),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size),
-                nn.Linear(config.mm_hidden_size, config.mm_hidden_size // 3),
-                nn.GELU(),
-                nn.LayerNorm(config.mm_hidden_size // 3),
-                nn.Linear(config.mm_hidden_size // 3, config.hidden_size),
                 nn.GELU(),
                 nn.Linear(config.hidden_size, config.hidden_size),
             )
@@ -221,34 +106,7 @@ class MultimodalProjector(PreTrainedModel):
             else:
                 raise ValueError(f"Unknown projector type: {mm_projector_type}")
 
-        if getattr(config, "ps3", False):
-            if getattr(config, "look_close_mode", None) == "after_prompt":
-                if getattr(config, "top_down_prompt_head_type", "linear") == "linear":
-                    self.top_down_prompt_head = nn.Linear(config.hidden_size, config.mm_hidden_size)
-                elif getattr(config, "top_down_prompt_head_type", "linear") == "mlp":
-                    self.top_down_prompt_head = Mlp(
-                        in_features=config.hidden_size,
-                        hidden_features=config.mm_hidden_size * 2,
-                        out_features=config.mm_hidden_size,
-                        norm_layer=nn.LayerNorm,
-                    )
-                else:
-                    raise NotImplementedError
-
-                for n, p in self.top_down_prompt_head.named_parameters():
-                    if "norm" not in n:
-                        p.data.uniform_(-0.02, 0.02)
-
-            if getattr(config, "high_res_pos_embed", False):
-                self.high_res_pos_embed = nn.Parameter(torch.zeros(1, config.mm_low_res_token_num, config.hidden_size))
-                self.high_res_scale_embed = nn.ParameterList(
-                    [nn.Parameter(torch.zeros(1, 1, config.hidden_size)) for _ in range(config.mm_scale_num)]
-                )
-
-    def forward(self, x, forward_top_down_prompt_head=False, *args, **kwargs):
-        if forward_top_down_prompt_head:
-            return self.top_down_prompt_head(x)
-
+    def forward(self, x, *args, **kwargs):
         return self.layers(x)
 
 

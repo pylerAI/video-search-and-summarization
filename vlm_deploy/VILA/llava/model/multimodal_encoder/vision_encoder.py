@@ -20,9 +20,7 @@ from abc import abstractmethod
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from accelerate.hooks import add_hook_to_module
-from einops import rearrange
 from s2wrapper import forward as multiscale_forward
 from transformers import AutoConfig, PreTrainedModel
 from transformers.image_processing_utils import BaseImageProcessor
@@ -130,49 +128,22 @@ class VisionTower(nn.Module):
             torch.arange(embeddings.num_positions).expand((1, -1)).to(old_embeddings.weight.device)
         )
 
-    def forward(
-        self,
-        images,
-        top_down_prompts=None,
-        num_look_close=1,
-        num_token_look_close=None,
-        smooth_selection_prob=False,
-        gt_selection_maps=None,
-        only_select_first_n_scale=None,
-    ):
-        if "ps3" in self.vision_tower.config.model_type.lower():
-            image_forward_outs = self.vision_tower(
-                images.to(device=self.device, dtype=self.dtype),
-                prompt=top_down_prompts,
-                output_hidden_states=True,
-                num_look_close=num_look_close,
-                num_token_look_close=num_token_look_close,
-                smooth_selection_prob=smooth_selection_prob,
-                gt_selection_maps=gt_selection_maps,
-                only_select_first_n_scale=only_select_first_n_scale,
-            )
-            image_features = self.feature_select(image_forward_outs).to(images.dtype)
-            selection_maps = image_forward_outs.selection_maps
-            selection_probs = image_forward_outs.selection_probs
-
-            return image_features, selection_maps, selection_probs
-
-        else:
-            if type(images) is list:
-                image_features = []
-                for image in images:
-                    image_forward_out = self.vision_tower(
-                        image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
-                        output_hidden_states=True,
-                    )
-                    image_feature = self.feature_select(image_forward_out).to(image.dtype)
-                    image_features.append(image_feature)
-            else:
-                image_forward_outs = self.vision_tower(
-                    images.to(device=self.device, dtype=self.dtype),
+    def forward(self, images):
+        if type(images) is list:
+            image_features = []
+            for image in images:
+                image_forward_out = self.vision_tower(
+                    image.to(device=self.device, dtype=self.dtype).unsqueeze(0),
                     output_hidden_states=True,
                 )
-                image_features = self.feature_select(image_forward_outs).to(images.dtype)
+                image_feature = self.feature_select(image_forward_out).to(image.dtype)
+                image_features.append(image_feature)
+        else:
+            image_forward_outs = self.vision_tower(
+                images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True,
+            )
+            image_features = self.feature_select(image_forward_outs).to(images.dtype)
 
         return image_features
 
@@ -211,8 +182,8 @@ class VisionTowerS2(VisionTower):
         self.scales = list(map(int, args.s2_scales.split(",")))
         self.scales.sort()
         self.max_split_size = args.s2_max_split_size
-        self.resize_output_to_scale_idx = getattr(args, "s2_resize_output_to_scale_idx", 0)
 
+    @torch.no_grad()
     def forward_feature(self, images):
         image_forward_outs = self.vision_tower(
             images.to(device=self.device, dtype=self.dtype), output_hidden_states=True
@@ -220,54 +191,19 @@ class VisionTowerS2(VisionTower):
         image_features = self.feature_select(image_forward_outs).to(images.dtype)
         return image_features
 
+    @torch.no_grad()
     def forward(self, images):
         if type(images) is list:
             image_features = []
             for image in images:
                 image_feature = multiscale_forward(
-                    self.forward_feature,
-                    image.unsqueeze(0),
-                    img_sizes=self.scales,
-                    max_split_size=self.max_split_size,
-                    resize_output_to_idx=self.resize_output_to_scale_idx,
+                    self.forward_feature, image.unsqueeze(0), img_sizes=self.scales, max_split_size=self.max_split_size
                 )
                 image_features.append(image_feature)
         else:
             image_features = multiscale_forward(
-                self.forward_feature,
-                images,
-                img_sizes=self.scales,
-                max_split_size=self.max_split_size,
-                resize_output_to_idx=self.resize_output_to_scale_idx,
+                self.forward_feature, images, img_sizes=self.scales, max_split_size=self.max_split_size
             )
-
-        return image_features
-
-    @property
-    def hidden_size(self):
-        return self.config.hidden_size * len(self.scales)
-
-
-class VisionTowerDynamicS2(VisionTower):
-    def __init__(self, vision_tower, args, delay_load=False):
-        super().__init__(vision_tower, args, delay_load)
-
-        self.scales = list(map(int, args.s2_scales.split(",")))
-        self.scales.sort()
-        self.max_split_size = args.s2_max_split_size
-        self.resize_output_to_scale_idx = getattr(args, "s2_resize_output_to_scale_idx", 0)
-
-    def forward_feature(self, images):
-        image_forward_outs = self.vision_tower(
-            images.to(device=self.device, dtype=self.dtype), output_hidden_states=True
-        )
-        image_features = self.feature_select(image_forward_outs).to(images.dtype)
-        return image_features
-
-    def forward(self, images):
-        assert type(images) is not list
-
-        image_features = self.forward_feature(images)
 
         return image_features
 

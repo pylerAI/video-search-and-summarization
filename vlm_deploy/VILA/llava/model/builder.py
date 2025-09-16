@@ -15,12 +15,14 @@
 
 
 import os
+import shutil
 import warnings
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, PretrainedConfig
 
-from llava.model import LlavaLlamaModel, LlavaTopDownLlamaModel
+from llava.constants import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IMAGE_PATCH_TOKEN
+from llava.model import *
 from llava.model.utils import is_mm_model
 
 
@@ -108,13 +110,44 @@ def load_pretrained_model(
             print("Merging LoRA weights...")
             model = model.merge_and_unload()
             print("Model is loaded...")
+        ## TODO @yunhao: mind fixing this
+        elif model_base is not None:
+            # this may be mm projector only
+            print("Loading LLaVA from base model...")
+            cfg_pretrained = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+            mm_config_wrapper(config, kwargs)
+            if "mpt" in model_name.lower():
+                if not os.path.isfile(os.path.join(model_path, "configuration_mpt.py")):
+                    shutil.copyfile(
+                        os.path.join(model_base, "configuration_mpt.py"),
+                        os.path.join(model_path, "configuration_mpt.py"),
+                    )
+                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True)
+                model = LlavaMPTForCausalLM.from_pretrained(
+                    model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs
+                )
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, legacy=False)
+                model = LlavaLlamaForCausalLM.from_pretrained(
+                    model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs
+                )
         else:
             config = AutoConfig.from_pretrained(model_path)
             config.resume_path = model_path
             prepare_config_for_eval(config, kwargs)
-            if "topdown" in config.model_type.lower():
-                model = LlavaTopDownLlamaModel(config=config, low_cpu_mem_usage=True, **kwargs)
+            if "mpt" in model_name.lower():
+                model = LlavaMPTForCausalLM.from_pretrained(model_path, config=config, low_cpu_mem_usage=True, **kwargs)
+            elif "mistral" in model_name.lower() or "mixtral" in model_name.lower():
+                model = LlavaMistralForCausalLM.from_pretrained(
+                    model_path, config=config, low_cpu_mem_usage=True, **kwargs
+                )
+            elif "gemma" in model_name.lower():
+                model = LlavaGemmaForCausalLM.from_pretrained(
+                    model_path, config=config, low_cpu_mem_usage=True, **kwargs
+                )
             else:
+                # kentang-mit@: llama-2 model
+                # config._attn_implementation = "flash_attention_2"
                 model = LlavaLlamaModel(config=config, low_cpu_mem_usage=True, **kwargs)
             tokenizer = model.tokenizer
     else:
@@ -132,15 +165,25 @@ def load_pretrained_model(
             print("Convert to FP16...")
             model.to(torch.float16)
         else:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, legacy=False)
-            model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+            if "mpt" in model_name.lower():
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path, low_cpu_mem_usage=True, trust_remote_code=True, **kwargs
+                )
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, legacy=False)
+                model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
     model.eval()
     image_processor = None
     if is_mm_model(model_path):
+        mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
+        mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
+        if mm_use_im_patch_token:
+            tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
+        if mm_use_im_start_end:
+            tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
         model.resize_token_embeddings(len(tokenizer))
         vision_tower = model.get_vision_tower()
-        if vision_tower is None:
-            raise ValueError("Vision tower failed to load!")
         vision_tower.to(device=device, dtype=torch.float16)
         # vision_tower.to(device=device, dtype=torch.bfloat16)
         mm_projector = model.get_mm_projector()
@@ -156,6 +199,18 @@ def load_pretrained_model(
     return tokenizer, model, image_processor, context_len
 
 
+def parse_model_name_or_path(config: PretrainedConfig, model_name="llm", suffix="_cfg"):
+    target_model = f"{model_name}{suffix}"
+    target_cfg = getattr(config, target_model, None)
+
+    if isinstance(target_cfg, str):
+        return target_cfg
+    elif isinstance(target_cfg, dict):
+        return target_cfg["architectures"][0]
+    else:
+        raise ValueError(f"Invalid {target_model} configuration!")
+
+
 def prepare_config_for_eval(config: PretrainedConfig, kwargs: dict):
     try:
         # compatible with deprecated config convention
@@ -165,3 +220,7 @@ def prepare_config_for_eval(config: PretrainedConfig, kwargs: dict):
         raise ValueError(f"Invalid configuration! Cannot find vision_tower in config:\n{config}")
 
     config.model_dtype = kwargs.pop("torch_dtype").__str__()
+    # siglip does not support device_map = "auto"
+    vision_tower_name = parse_model_name_or_path(config, "vision_tower")
+    if "siglip" in vision_tower_name.lower():
+        kwargs["device_map"] = "cuda"

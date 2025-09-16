@@ -14,18 +14,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# This file is modified from https://github.com/haotian-liu/LLaVA/
+from unittest.case import _id as __id
+from unittest.case import skip as __skip
 
-CONTROLLER_HEART_BEAT_EXPIRATION = 30
-WORKER_HEART_BEAT_INTERVAL = 15
 
-LOGDIR = "."
+def requires_gpu(reason=None):
+    import torch
 
-# Model Constants
-IGNORE_INDEX = -100
-IMAGE_TOKEN_INDEX = -200
-DEFAULT_IMAGE_TOKEN = "<image>"
-DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
-DEFAULT_IM_START_TOKEN = "<im_start>"
-DEFAULT_IM_END_TOKEN = "<im_end>"
-IMAGE_PLACEHOLDER = "<image-placeholder>"
+    reason = "no GPUs detected. Only test in GPU environemnts" if reason is None else reason
+    if not torch.cuda.is_available():
+        return __skip(reason)
+    return __id
+
+
+def requires_lustre(reason=None):
+    import os.path as osp
+
+    if not (osp.isdir("/lustre") or osp.isdir("/mnt")):
+        reason = "lustre path is not avaliable." if reason is None else reason
+        return __skip(reason)
+    return __id

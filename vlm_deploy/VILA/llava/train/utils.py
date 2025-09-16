@@ -15,7 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import json
 import os
 import pathlib
 import re
@@ -82,7 +81,6 @@ def get_checkpoint_path(output_dir: str, checkpoint_prefix: str = "checkpoint") 
 def prepare_config_for_training(
     config: PretrainedConfig, model_args: dataclass, training_args: dataclass, data_args: dataclass
 ) -> None:
-    config.chat_template = model_args.chat_template
     assert model_args.vision_tower is not None, "requires vision tower"
     # set module configurations
     if getattr(config, "llm_cfg", None) is None:
@@ -98,8 +96,6 @@ def prepare_config_for_training(
     config.tune_language_model = training_args.tune_language_model
     config.tune_vision_tower = training_args.tune_vision_tower
     config.tune_mm_projector = training_args.tune_mm_projector
-    # ps3 training configs
-    config.ps3_grad_checkpointing = training_args.ps3_grad_checkpointing
     # set data args
     # Get the image_aspect_ratio from the config if is defined there
     # (case of resuming from a checkpoint) or from the data_args
@@ -119,21 +115,27 @@ def prepare_config_for_training(
     ):
         config.deepspeed = training_args.deepspeed
 
-    for key, value in model_args.__dict__.items():
-        try:
-            value = json.loads(value)
-        except:
-            pass
-        setattr(config, key, value)
+    # extra vision tower configuration
+    if getattr(config, "vision_tower_cfg", None) is not None:
+        # Set the vision config as per the command-line flags, except
+        # if the vision config is already defined in the config file (case
+        # of resuming from a checkpoint).
+        if getattr(config, "mm_vision_select_layer", None) is None:
+            config.mm_vision_select_layer = model_args.mm_vision_select_layer
+        if getattr(config, "mm_vision_select_feature", None) is None:
+            config.mm_vision_select_feature = model_args.mm_vision_select_feature
+        # vision tower configurations
+        config.vision_resolution = model_args.vision_resolution
+        config.interpolate_mode = model_args.interpolate_mode
+        config.drop_path_rate = model_args.drop_path_rate
+        config.s2 = model_args.s2
+        config.s2_scales = model_args.s2_scales
+        config.s2_max_split_size = model_args.s2_max_split_size
 
 
 def vision_resolution_elevation(model: PreTrainedModel, config: PretrainedConfig):
     vision_tower = model.get_vision_tower()
-    if (
-        vision_tower is not None
-        and "radio" not in vision_tower.__class__.__name__.lower()
-        and "ps3" not in vision_tower.__class__.__name__.lower()
-    ):
+    if vision_tower is not None and "radio" not in vision_tower.__class__.__name__.lower():
         vision_tower._maybe_resize_pos_embeds(
             model=vision_tower.vision_tower,
             image_processor=vision_tower.image_processor,
@@ -156,10 +158,7 @@ def calculate_loss_weight(labels, ignore_index=-100):
 
     padding_mask = shift_labels.eq(ignore_index)  # IGNORE_INDEX = -100 by default
     num_active_elements = padding_mask.numel() - padding_mask.long().sum()
-
-    # global_active_sum = copy.deepcopy(num_active_elements)
-    global_active_sum = num_active_elements.detach().clone()
-
+    global_active_sum = copy.deepcopy(num_active_elements)
     dist.all_reduce(global_active_sum)
     loss_weight = num_active_elements / global_active_sum * dist.get_world_size()
     return loss_weight
