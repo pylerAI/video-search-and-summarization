@@ -3051,20 +3051,12 @@ class ViaServer:
             if response["result"] == "success":
                 return JSONResponse(
                     status_code=200,
-                    result=response["result"],
-                    message=response["message"],
-                    asset_id=response["asset_id"],
-                    collection_name=response["collection_name"],
-                    doc_types=response["doc_types"],
-                    total_count=response["total_count"],
-                    success_count=response["success_count"],
-                    failed_count=response["failed_count"],
+                    content=response  # 전체 response dictionary를 content로 전달
                 )
             else:
                 return JSONResponse(
                     status_code=500,
-                    result=response["result"],
-                    message=response["message"],
+                    content=response  # 전체 response dictionary를 content로 전달
                 )
 
         # ======================= Analyze API
