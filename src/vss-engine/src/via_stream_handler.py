@@ -1084,147 +1084,147 @@ class ViaStreamHandler:
                         add_doc_latency = add_doc_end_time - add_doc_start_time
                         self._metrics.add_doc_latency.observe(add_doc_latency)
 
-        if req_info.is_live:
-            live_stream_id = req_info.assets[0].asset_id
-            lsinfo = self._live_stream_info_map[live_stream_id]
+        # if req_info.is_live:
+        #     live_stream_id = req_info.assets[0].asset_id
+        #     lsinfo = self._live_stream_info_map[live_stream_id]
 
-            if not response.is_live_stream_ended:
-                logger.info(
-                    "Generated new response for live-stream %s, query %s, chunk %r, summary %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    chunk,
-                    vlm_response,
-                )
-                req_info.processed_chunk_list.append(response)
-                req_info.chunk_count += 1
+        #     if not response.is_live_stream_ended:
+        #         logger.info(
+        #             "Generated new response for live-stream %s, query %s, chunk %r, summary %s",
+        #             live_stream_id,
+        #             req_info.request_id,
+        #             chunk,
+        #             vlm_response,
+        #         )
+        #         req_info.processed_chunk_list.append(response)
+        #         req_info.chunk_count += 1
 
-            req_info.processed_chunk_list.sort(key=lambda x: x.chunk.chunkIdx)
+        #     req_info.processed_chunk_list.sort(key=lambda x: x.chunk.chunkIdx)
 
-            gathered_chunks = 0
-            gathered_chunks_total_duration = 0
+        #     gathered_chunks = 0
+        #     gathered_chunks_total_duration = 0
 
-            if req_info.summary_duration > 0:
-                summ_batch_size = req_info.summary_duration // req_info.chunk_size
+        #     if req_info.summary_duration > 0:
+        #         summ_batch_size = req_info.summary_duration // req_info.chunk_size
 
-            if req_info.processed_chunk_list:
-                curIdx = req_info.processed_chunk_list[0].chunk.chunkIdx
-                gathered_chunks = 1
+        #     if req_info.processed_chunk_list:
+        #         curIdx = req_info.processed_chunk_list[0].chunk.chunkIdx
+        #         gathered_chunks = 1
 
-                for processed_chunk in req_info.processed_chunk_list[1:]:
-                    if processed_chunk.chunk.chunkIdx != curIdx + 1:
-                        break
-                    curIdx += 1
-                    gathered_chunks += 1
-                    if (req_info.summary_duration > 0) and (gathered_chunks == summ_batch_size):
-                        break
+        #         for processed_chunk in req_info.processed_chunk_list[1:]:
+        #             if processed_chunk.chunk.chunkIdx != curIdx + 1:
+        #                 break
+        #             curIdx += 1
+        #             gathered_chunks += 1
+        #             if (req_info.summary_duration > 0) and (gathered_chunks == summ_batch_size):
+        #                 break
 
-            # Calculate the total duration of gathered chunks
-            gathered_chunks_total_duration = (
-                ntp_to_unix_timestamp(
-                    req_info.processed_chunk_list[gathered_chunks - 1].chunk.end_ntp
-                )
-                - ntp_to_unix_timestamp(req_info.processed_chunk_list[0].chunk.start_ntp)
-                if req_info.processed_chunk_list
-                else 0
-            )
+        #     # Calculate the total duration of gathered chunks
+        #     gathered_chunks_total_duration = (
+        #         ntp_to_unix_timestamp(
+        #             req_info.processed_chunk_list[gathered_chunks - 1].chunk.end_ntp
+        #         )
+        #         - ntp_to_unix_timestamp(req_info.processed_chunk_list[0].chunk.start_ntp)
+        #         if req_info.processed_chunk_list
+        #         else 0
+        #     )
 
-            logger.info(
-                "Gathered %d chunks, total chunk duration \
-                    is %.2f sec for query %s, summary duration %d sec",
-                gathered_chunks,
-                gathered_chunks_total_duration,
-                req_info.request_id,
-                req_info.summary_duration,
-            )
+        #     logger.info(
+        #         "Gathered %d chunks, total chunk duration \
+        #             is %.2f sec for query %s, summary duration %d sec",
+        #         gathered_chunks,
+        #         gathered_chunks_total_duration,
+        #         req_info.request_id,
+        #         req_info.summary_duration,
+        #     )
 
-            if (
-                (
-                    req_info.summary_duration == 0
-                    or req_info._ctx_mgr is None
-                    or (
-                        (req_info.summary_duration > 0)
-                        and (gathered_chunks == req_info.summary_duration // req_info.chunk_size)
-                    )
-                    or response.is_live_stream_ended
-                )
-                and gathered_chunks > 0
-                and not lsinfo.stop
-            ):
-                if response.is_live_stream_ended and req_info.last_chunk is not None:
-                    last_chunk = req_info.last_chunk.model_copy(deep=True)
-                    last_chunk.start_ntp = last_chunk.end_ntp
-                    last_chunk.start_ntp_float = last_chunk.end_ntp_float
-                    last_chunk.start_pts = last_chunk.end_pts
-                    last_chunk.chunkIdx = last_chunk.chunkIdx + 1
-                    last_chunk.is_last = True
-                    last_meta = vars(last_chunk)
-                    last_meta["cv_meta"] = ""
-                    last_meta["uuid"] = req_info.stream_id
+        #     if (
+        #         (
+        #             req_info.summary_duration == 0
+        #             or req_info._ctx_mgr is None
+        #             or (
+        #                 (req_info.summary_duration > 0)
+        #                 and (gathered_chunks == req_info.summary_duration // req_info.chunk_size)
+        #             )
+        #             or response.is_live_stream_ended
+        #         )
+        #         and gathered_chunks > 0
+        #         and not lsinfo.stop
+        #     ):
+        #         if response.is_live_stream_ended and req_info.last_chunk is not None:
+        #             last_chunk = req_info.last_chunk.model_copy(deep=True)
+        #             last_chunk.start_ntp = last_chunk.end_ntp
+        #             last_chunk.start_ntp_float = last_chunk.end_ntp_float
+        #             last_chunk.start_pts = last_chunk.end_pts
+        #             last_chunk.chunkIdx = last_chunk.chunkIdx + 1
+        #             last_chunk.is_last = True
+        #             last_meta = vars(last_chunk)
+        #             last_meta["cv_meta"] = ""
+        #             last_meta["uuid"] = req_info.stream_id
 
-                    if req_info.chunk_type == "segment":
-                        last_meta["source"] = "segment"
-                        data = segment_to_meta(req_info, self.coarse_idx)
-                        last_meta["coarse_grained_scene_id"] = self.coarse_idx
-                        last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
-                    print(f"last_meta: {last_meta}")
-                    req_info._ctx_mgr.add_doc(
-                        ".",
-                        doc_i=(
-                            last_chunk.chunkIdx * 2
-                            if req_info.enable_audio
-                            else last_chunk.chunkIdx
-                        ),
-                        doc_meta=last_meta,
-                    )
-                # Summary Duration not specified or total duration is greater than summary duration.
-                logger.info(
-                    "Generating summary for live stream %s request %s with asset id %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    req_info.stream_id,
-                )
+        #             if req_info.chunk_type == "segment":
+        #                 last_meta["source"] = "segment"
+        #                 data = segment_to_meta(req_info, self.coarse_idx)
+        #                 last_meta["coarse_grained_scene_id"] = self.coarse_idx
+        #                 last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
+        #             print(f"last_meta: {last_meta}")
+        #             req_info._ctx_mgr.add_doc(
+        #                 ".",
+        #                 doc_i=(
+        #                     last_chunk.chunkIdx * 2
+        #                     if req_info.enable_audio
+        #                     else last_chunk.chunkIdx
+        #                 ),
+        #                 doc_meta=last_meta,
+        #             )
+        #         # Summary Duration not specified or total duration is greater than summary duration.
+        #         logger.info(
+        #             "Generating summary for live stream %s request %s with asset id %s",
+        #             live_stream_id,
+        #             req_info.request_id,
+        #             req_info.stream_id,
+        #         )
 
-                if len(lsinfo.pending_futures) > 1:
-                    logger.warning(
-                        "Possible high load on the system detected. This may result in higher"
-                        " response times. Try reducing number of streams or increasing the chunk"
-                        " size or tuning the CA-RAG config for reduced latency."
-                    )
+        #         if len(lsinfo.pending_futures) > 1:
+        #             logger.warning(
+        #                 "Possible high load on the system detected. This may result in higher"
+        #                 " response times. Try reducing number of streams or increasing the chunk"
+        #                 " size or tuning the CA-RAG config for reduced latency."
+        #             )
 
-                fut = req_info._output_process_thread_pool.submit(
-                    self._process_output,
-                    req_info,
-                    False,
-                    req_info.processed_chunk_list[:gathered_chunks],
-                )
-                lsinfo.pending_futures.append(fut)
+        #         fut = req_info._output_process_thread_pool.submit(
+        #             self._process_output,
+        #             req_info,
+        #             False,
+        #             req_info.processed_chunk_list[:gathered_chunks],
+        #         )
+        #         lsinfo.pending_futures.append(fut)
 
-                def handle_future_done(fut: concurrent.futures.Future):
-                    if fut.exception():
-                        logger.error("".join(traceback.format_exception(fut.exception())))
+        #         def handle_future_done(fut: concurrent.futures.Future):
+        #             if fut.exception():
+        #                 logger.error("".join(traceback.format_exception(fut.exception())))
 
-                fut.add_done_callback(handle_future_done)
-                fut.add_done_callback(lsinfo.pending_futures.remove)
-                req_info.processed_chunk_list = req_info.processed_chunk_list[gathered_chunks:]
+        #         fut.add_done_callback(handle_future_done)
+        #         fut.add_done_callback(lsinfo.pending_futures.remove)
+        #         req_info.processed_chunk_list = req_info.processed_chunk_list[gathered_chunks:]
 
-            if response.is_live_stream_ended:
-                if lsinfo.stop:
-                    req_info.status = RequestInfo.Status.STOPPING
-                    for fut in lsinfo.pending_futures:
-                        fut.cancel()
+        #     if response.is_live_stream_ended:
+        #         if lsinfo.stop:
+        #             req_info.status = RequestInfo.Status.STOPPING
+        #             for fut in lsinfo.pending_futures:
+        #                 fut.cancel()
 
-                # Queue that the request be marked completed
-                # once all pending aggregation requests are completed.
-                fut = req_info._output_process_thread_pool.submit(
-                    self._process_output, req_info, True, []
-                )
-                fut.add_done_callback(
-                    lambda fut, tpool=req_info._output_process_thread_pool: tpool.shutdown(
-                        wait=False
-                    )
-                )
-            return
+        #         # Queue that the request be marked completed
+        #         # once all pending aggregation requests are completed.
+        #         fut = req_info._output_process_thread_pool.submit(
+        #             self._process_output, req_info, True, []
+        #         )
+        #         fut.add_done_callback(
+        #             lambda fut, tpool=req_info._output_process_thread_pool: tpool.shutdown(
+        #                 wait=False
+        #             )
+        #         )
+        #     return
 
         # Cache the processed chunk of a file
         req_info.processed_chunk_list.append(response)

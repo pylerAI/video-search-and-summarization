@@ -487,7 +487,7 @@ class VlmProcess(ViaProcessBase):
         input_queue_lock=None,
     ) -> None:
         super().__init__(
-            batch_size=args.vlm_batch_size,
+            batch_size=100,
             gpu_id=gpu_id,
             disabled=disabled,
             input_queue=input_queue,
@@ -521,7 +521,7 @@ class VlmProcess(ViaProcessBase):
 
         from models.openai_compat.openai_compat_model import CompOpenAIModel
         self._model = CompOpenAIModel(True)
-        self._batch_size = 1
+        self._batch_size = 100
         return True
 
     def _deinitialize(self):
@@ -1230,6 +1230,7 @@ class VlmPipeline:
             and (not vlm_input_height)
             and (not enable_audio)
         ):
+            print(f"Enqueueing chunk to VLM pipeline: {chunk.streamId}")
             self._vlm_procs[curr_chunk_counter % self._num_vlm_procs].enqueue_chunk(
                 chunk,
                 request_params=request_params,
@@ -1237,6 +1238,7 @@ class VlmPipeline:
                 enqueue_time=time.time(),
             )
         else:
+            print(f"Enqueueing chunk to Decoder pipeline: {chunk.streamId}")
             self._decoder_procs[curr_chunk_counter % self._args.num_gpus].enqueue_chunk(
                 chunk,
                 request_params=request_params,

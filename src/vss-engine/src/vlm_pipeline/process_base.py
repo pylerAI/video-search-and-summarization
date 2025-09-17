@@ -244,13 +244,15 @@ class ViaProcessBase(mp_ctx.Process):
         self._drop_chunks_stream_list = []
         self._cmd_handler_thread = Thread(target=self._cmd_handler_thread_func)
         self._cmd_handler_thread.start()
-
+        
         if not self._supports_batching():
+            print(f"_supports_batching: {self._supports_batching()}")
             self._batch_size = 1
 
         self._future_result_tpool = concurrent.futures.ThreadPoolExecutor(
             max_workers=self._num_futures_threads
         )
+        print(f"self._num_futures_threads: {self._num_futures_threads}")
         torch.cuda.empty_cache()
         self._init_done_event.set()
 

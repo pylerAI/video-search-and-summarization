@@ -2578,9 +2578,13 @@ class ViaServer:
                 return EventSourceResponse(message_generator(), send_timeout=5, ping=1)
             else:
                 # Non-streaming output. Wait for request to be completed.
+                start_time = time.time()
                 await self._stream_handler.wait_for_request_done(request_id)
                 req_info, resp_list = self._stream_handler.get_response(request_id)
                 self._stream_handler.check_status_remove_req_id(request_id)
+
+                end_time = time.time()
+                print(f"Time taken to reach wait_for_request_done: {end_time - start_time} {assetList[0].path}")
                 if req_info.status == RequestInfo.Status.FAILED:
                     raise ViaException("Failed to generate summary", "InternalServerError", 500)
 
@@ -3045,7 +3049,7 @@ class ViaServer:
             )
 
             if response["result"] == "success":
-                return Response(
+                return JSONResponse(
                     status_code=200,
                     result=response["result"],
                     message=response["message"],
@@ -3057,7 +3061,7 @@ class ViaServer:
                     failed_count=response["failed_count"],
                 )
             else:
-                return Response(
+                return JSONResponse(
                     status_code=500,
                     result=response["result"],
                     message=response["message"],
