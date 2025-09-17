@@ -266,6 +266,7 @@ class ViaProcessBase(mp_ctx.Process):
                 continue
             with self._qlock:
                 qsize = self._queue.qsize()
+                print(f"qsize: {qsize}")
 
                 if (len(items) + qsize) == 0:
                     time.sleep(0.01)

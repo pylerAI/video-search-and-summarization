@@ -1345,7 +1345,7 @@ class PostAnalyzeInfo(ViaBaseModel):
         description="asset_id", max_length=100,
     )
 
-    doc_type: Optional[Literal["summary", "summary_fine", "summary_coarse"]] = Field(
+    doc_type: Optional[Literal["summary", "summary_fine", "summary_coarse", "summary_fine_coarse"]] = Field(
         default=None,
         description="doc_type",
     )
