@@ -3007,7 +3007,7 @@ class ViaStreamHandler:
 
         req_info = RequestInfo()
         req_info.assets = assets
-        req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets, get_ctx_mgr=False)
+        req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets, ctx_mgr_reset=False)
 
         response = req_info._ctx_mgr.analyze(
             asset_id=asset_id,
