@@ -1440,7 +1440,7 @@ class ViaStreamHandler:
             message="VLM Pipeline-" + str(req_info.request_id), color="green"
         )
 
-    def get_ctx_mgr(self, assets: list[Asset]) -> ContextManager | None:
+    def get_ctx_mgr(self, assets: list[Asset], ctx_mgr_reset: bool = True) -> ContextManager | None:
         """
         Return a ContextManager associated with the given assets.
         """
@@ -1452,6 +1452,9 @@ class ViaStreamHandler:
                         req_matches = False
                         break
                 if req_matches:
+                    if not ctx_mgr_reset:
+                        return request_info._ctx_mgr
+
                     # Remove old data for the same asset
                     if request_info.enable_chat:
                         request_info._ctx_mgr.reset(
@@ -3004,7 +3007,7 @@ class ViaStreamHandler:
 
         req_info = RequestInfo()
         req_info.assets = assets
-        req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets)
+        req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets, get_ctx_mgr=False)
 
         response = req_info._ctx_mgr.analyze(
             asset_id=asset_id,
