@@ -487,7 +487,7 @@ class VlmProcess(ViaProcessBase):
         input_queue_lock=None,
     ) -> None:
         super().__init__(
-            batch_size=10,
+            batch_size=1,
             gpu_id=gpu_id,
             disabled=disabled,
             input_queue=input_queue,
@@ -497,7 +497,7 @@ class VlmProcess(ViaProcessBase):
         self._args = args
         self._asset_dir = asset_dir
         self._num_gpus = args.num_gpus
-        self._num_futures_threads = max(1, 10 // 2)
+        self._num_futures_threads = max(1, args.vlm_batch_size // 2)
 
     def _initialize(self):
         # Create an instance of EmbeddingHelper to retrieve chunk embeddings
@@ -521,7 +521,7 @@ class VlmProcess(ViaProcessBase):
 
         from models.openai_compat.openai_compat_model import CompOpenAIModel
         self._model = CompOpenAIModel(True)
-        self._batch_size = 10
+        self._batch_size = 1
         return True
 
     def _deinitialize(self):
