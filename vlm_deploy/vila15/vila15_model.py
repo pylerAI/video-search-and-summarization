@@ -22,7 +22,7 @@ import torch
 from filelock import FileLock
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 
-from via_logger import TimeMeasure, logger
+from loguru import logger
 
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
@@ -36,7 +36,7 @@ class Vila15:
     TRTLLM_EXECUTOR_INFLIGHT_BATCHING = True
 
     def __init__(
-        self, model_path, use_trt=False, trt_engine_dir="", async_output=False, max_batch_size=None
+        self, model_path, use_trt=True, trt_engine_dir="", async_output=False, max_batch_size=None
     ) -> None:
         disable_torch_init()
         self._model = None
@@ -88,46 +88,44 @@ class Vila15:
             ).squeeze(0)
             logger.info(f"LoRA weights loaded from {lora_trt_weights_path}")
 
-        with TimeMeasure("VILA TRT model load"):
+        # Load the TRT model
+        import tensorrt_llm.bindings.executor as trtllm
 
-            # Load the TRT model
-            import tensorrt_llm.bindings.executor as trtllm
+        if self._lora_weights is not None:
+            self._trt_lora_config = trtllm.LoraConfig(
+                self._lora_config_id, self._lora_weights, self._lora_config
+            )
+        else:
+            self._trt_lora_config = None
 
-            if self._lora_weights is not None:
-                self._trt_lora_config = trtllm.LoraConfig(
-                    self._lora_config_id, self._lora_weights, self._lora_config
+        with open(os.path.join(trt_engine_dir, "config.json")) as f:
+            logger.debug("Loading config from %s", os.path.join(trt_engine_dir, "config.json"))
+            config = json.load(f)
+            if config["build_config"]["plugin_config"]["lora_plugin"]:
+                peft_config = trtllm.PeftCacheConfig(
+                    device_cache_percent=float(
+                        os.environ.get("TRT_LLM_LORA_CACHE_DEVICE_MEM_USAGE_FRACTION", "")
+                        or 0.1
+                    ),
+                    host_cache_size=int(
+                        os.environ.get("TRT_LLM_LORA_CACHE_HOST_MEM_USAGE_BYTES", "")
+                        or 10 * 1024 * 1024 * 1024
+                    ),
                 )
             else:
-                self._trt_lora_config = None
+                peft_config = trtllm.PeftCacheConfig()
 
-            with open(os.path.join(trt_engine_dir, "config.json")) as f:
-                logger.debug("Loading config from %s", os.path.join(trt_engine_dir, "config.json"))
-                config = json.load(f)
-                if config["build_config"]["plugin_config"]["lora_plugin"]:
-                    peft_config = trtllm.PeftCacheConfig(
-                        device_cache_percent=float(
-                            os.environ.get("TRT_LLM_LORA_CACHE_DEVICE_MEM_USAGE_FRACTION", "")
-                            or 0.1
-                        ),
-                        host_cache_size=int(
-                            os.environ.get("TRT_LLM_LORA_CACHE_HOST_MEM_USAGE_BYTES", "")
-                            or 10 * 1024 * 1024 * 1024
-                        ),
-                    )
-                else:
-                    peft_config = trtllm.PeftCacheConfig()
-
-            executor_config = trtllm.ExecutorConfig(
-                kv_cache_config=trtllm.KvCacheConfig(
-                    free_gpu_memory_fraction=float(
-                        os.environ.get("TRT_LLM_MEM_USAGE_FRACTION", "") or 0.4
-                    )
-                ),
-                peft_cache_config=peft_config,
-            )
-            self._executor = trtllm.Executor(
-                trt_engine_dir, trtllm.ModelType.DECODER_ONLY, executor_config
-            )
+        executor_config = trtllm.ExecutorConfig(
+            kv_cache_config=trtllm.KvCacheConfig(
+                free_gpu_memory_fraction=float(
+                    os.environ.get("TRT_LLM_MEM_USAGE_FRACTION", "") or 0.4
+                )
+            ),
+            peft_cache_config=peft_config,
+        )
+        self._executor = trtllm.Executor(
+            trt_engine_dir, trtllm.ModelType.DECODER_ONLY, executor_config
+        )
         self._output_tpool = (
             concurrent.futures.ThreadPoolExecutor(
                 max_workers=max_batch_size if self.TRTLLM_EXECUTOR_INFLIGHT_BATCHING else 2
@@ -170,9 +168,8 @@ class Vila15:
 
     def _postprocess(self, req_id, output_ids, input_token_length):
         if req_id:
-            with TimeMeasure("TRT generate"):
-                responses = self._executor.await_responses(req_id)
-                self._inflight_req_ids.remove(req_id)
+            responses = self._executor.await_responses(req_id)
+            self._inflight_req_ids.remove(req_id)
             output_ids = torch.tensor([responses[0].result.output_token_ids[0]])
             output_token_length = output_ids.shape[-1]
 
@@ -190,6 +187,8 @@ class Vila15:
         """
         # Split the input into chunks.
         prompt_chunks = prompt.split("<image>")
+        logger.debug(f"Prompt split into {len(prompt_chunks)} chunks by <image> tag")
+        logger.debug(f"Image embeds shape: {image_embeds.shape}")
         input_ids = []
         extra_input_ids = []
         extra_input_id = self._next_extra_id

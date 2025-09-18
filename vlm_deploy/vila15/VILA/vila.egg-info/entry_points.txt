@@ -1,0 +1,5 @@
+[console_scripts]
+vila-eval = llava.cli.eval:main
+vila-infer = llava.cli.infer:main
+vila-run = llava.cli.run:main
+vila-upload = llava.cli.upload2hf:main

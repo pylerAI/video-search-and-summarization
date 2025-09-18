@@ -18,7 +18,7 @@ import tensorrt as trt
 import torch
 from transformers import AutoConfig, AutoModel
 
-from via_logger import TimeMeasure, logger
+from loguru import logger
 
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
@@ -41,7 +41,7 @@ class Vila15EmbeddingGenerator:
     """Visual Embedding Generator for the VILA 1.5 model"""
 
     def __init__(
-        self, model_path: str, use_trt=False, trt_engine_dir="", async_output=False
+        self, model_path: str, use_trt=True, trt_engine_dir="", async_output=False
     ) -> None:
         """Vila15EmbeddingGenerator initializer
 
@@ -55,35 +55,34 @@ class Vila15EmbeddingGenerator:
         self._use_trt = use_trt
         self._config = AutoConfig.from_pretrained(model_path)
 
-        with TimeMeasure("VILA Embeddings TRT Model load"):
-            # Load TRT model from serialized engine
-            vision_encoder_path = os.path.join(
-                trt_engine_dir, "visual_engines", "visual_encoder.engine"
-            )
-            logger.info(f"Loading engine from {vision_encoder_path}")
-            with open(vision_encoder_path, "rb") as f:
-                engine_buffer = f.read()
-            logger.info(f"Creating session from engine {vision_encoder_path}")
-            self.visual_encoder_session = Session.from_serialized_engine(engine_buffer)
+        # Load TRT model from serialized engine
+        vision_encoder_path = os.path.join(
+            trt_engine_dir, "visual_engines", "visual_encoder.engine"
+        )
+        logger.info(f"Loading engine from {vision_encoder_path}")
+        with open(vision_encoder_path, "rb") as f:
+            engine_buffer = f.read()
+        logger.info(f"Creating session from engine {vision_encoder_path}")
+        self.visual_encoder_session = Session.from_serialized_engine(engine_buffer)
 
-            # Load layers that are required for additional processing after
-            # passing the frames through TRT engine
-            device_map = {
-                "model.vision_tower": "meta",
-                "model.embed_tokens": "cuda",
-                "model.layers": "meta",
-                "model.norm": "meta",
-                "lm_head": "meta",
-                "model.mm_projector": "meta",
-            }
-            self._model = AutoModel.from_pretrained(
-                model_path,
-                low_cpu_mem_usage=True,
-                device_map=device_map,
-                # torch_dtype=torch.float16,
-            )
-            self.stream = torch.cuda.Stream(torch.cuda.current_device())
-            torch.cuda.set_stream(self.stream)
+        # Load layers that are required for additional processing after
+        # passing the frames through TRT engine
+        device_map = {
+            "model.vision_tower": "meta",
+            "model.embed_tokens": "cuda",
+            "model.layers": "meta",
+            "model.norm": "meta",
+            "lm_head": "meta",
+            "model.mm_projector": "meta",
+        }
+        self._model = AutoModel.from_pretrained(
+            model_path,
+            low_cpu_mem_usage=True,
+            device_map=device_map,
+            # torch_dtype=torch.float16,
+        )
+        self.stream = torch.cuda.Stream(torch.cuda.current_device())
+        torch.cuda.set_stream(self.stream)
         self._output_tpool = (
             concurrent.futures.ThreadPoolExecutor(max_workers=2) if async_output else None
         )
@@ -103,28 +102,27 @@ class Vila15EmbeddingGenerator:
         Returns:
             List of embeddings tensor for all input chunks
         """
-        with TimeMeasure("VILA Embeddings generation"):
-            visual_outputs_batch = []
-            for frames_tensor in frames_tensor_batch:
-                # TRT mode
-                from tensorrt_llm.runtime import TensorInfo
+        visual_outputs_batch = []
+        for frames_tensor in frames_tensor_batch:
+            # TRT mode
+            from tensorrt_llm.runtime import TensorInfo
 
-                visual_output_info = self.visual_encoder_session.infer_shapes(
-                    [TensorInfo("input", trt.DataType.HALF, frames_tensor.shape)]
+            visual_output_info = self.visual_encoder_session.infer_shapes(
+                [TensorInfo("input", trt.DataType.HALF, frames_tensor.shape)]
+            )
+            visual_outputs = {
+                t.name: torch.empty(
+                    tuple(t.shape[:3]),
+                    dtype=trt_dtype_to_torch(t.dtype),
+                    device=frames_tensor.device,
                 )
-                visual_outputs = {
-                    t.name: torch.empty(
-                        tuple(t.shape[:3]),
-                        dtype=trt_dtype_to_torch(t.dtype),
-                        device=frames_tensor.device,
-                    )
-                    for t in visual_output_info
-                }
-                ok = self.visual_encoder_session.run(
-                    {"input": frames_tensor}, visual_outputs, self.stream.cuda_stream
-                )
-                assert ok, "Runtime execution failed for vision encoder session"
-                visual_outputs_batch.append(visual_outputs["output"])
-            self.stream.synchronize()
+                for t in visual_output_info
+            }
+            ok = self.visual_encoder_session.run(
+                {"input": frames_tensor}, visual_outputs, self.stream.cuda_stream
+            )
+            assert ok, "Runtime execution failed for vision encoder session"
+            visual_outputs_batch.append(visual_outputs["output"])
+        self.stream.synchronize()
 
-            return visual_outputs_batch
+        return visual_outputs_batch

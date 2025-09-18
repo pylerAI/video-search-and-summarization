@@ -39,11 +39,13 @@ class Vila15Context:
             self._roles = self._conv.roles
         self.messages = []
 
-    def set_video_embeds(self, chunks, video_embeds, video_frames, video_frames_times):
+        self._video_frames_times = None
+        self._video_embeds = None
+
+    def set_video_embeds(self, video_embeds=None, video_frames_times=None,):
         """Set the chunks, and corresponding video embeddings and frame times.
         Accepts batched inputs (lists)"""
         self._video_frames_times = video_frames_times
-        self._chunks = chunks
 
         self._video_embeds = video_embeds
         self._video_embeds = torch.stack([v.half().cuda() for v in self._video_embeds])
@@ -67,7 +69,10 @@ class Vila15Context:
             self._conv.messages = []
 
         # Add the <image> tag to the prompt, to mark where the video embeddings should be inserted
-        inp = "<image>\n" * len(self._video_frames_times[0])
+        if self._video_frames_times is not None and len(self._video_frames_times) > 0:
+            inp = "<image>\n" * len(self._video_frames_times[0])
+        else:
+            inp = "<image>\n"
 
         # Add the user prompt to the conversation context
         self._conv.append_message(self._conv.roles[0], inp + query)

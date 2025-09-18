@@ -99,6 +99,36 @@ rm -rf "${OUTPUT_DIR}"
 # TRT-LLM does not understand the arch LitaLlamaForCausalLM, instead modify it to LlamaForCausalLM
 sed -i 's/LitaLlamaForCausalLM/LlamaForCausalLM/g' $TMP_CONV_DIR/config.json
 
+# Dynamically set VLM BATCH_SIZE based on available GPU memory
+if [ $BATCH_SIZE -eq 1 ]; then
+    GPU_MEM=0
+    if [[ $NUM_GPUS -gt 0 ]]; then
+        GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 | awk '{print $1}')
+    fi
+    echo "Total GPU memory is $GPU_MEM MiB per GPU"
+
+    if [[ $TRT_LLM_MODE == "fp16" ]]; then
+        if [[ $GPU_MEM -gt 80000 ]]; then
+            BATCH_SIZE=16
+        elif [[ $GPU_MEM -gt 46000 ]]; then
+            BATCH_SIZE=2
+        else
+            BATCH_SIZE=1
+        fi
+    else
+        if [[ $GPU_MEM -gt 80000 ]]; then
+            BATCH_SIZE=128
+        elif [[ $GPU_MEM -gt 46000 ]]; then
+            BATCH_SIZE=16
+        else
+            BATCH_SIZE=3
+        fi
+    fi
+    echo "Auto-selecting VLM Batch Size to $BATCH_SIZE"
+else
+    echo "Using VLM Batch Size $BATCH_SIZE"
+fi
+
 # Build the TRT-LLM engine for the model
 if ! trtllm-build \
     --checkpoint_dir "$TMP_CONV_DIR" \

@@ -17,7 +17,7 @@ from ngc_model_downloader import download_model
 
 # Location to download and cache NGC models
 NGC_MODEL_CACHE = os.environ.get("NGC_MODEL_CACHE", "") or os.path.expanduser(
-    "~/.via/ngc_model_cache/"
+    "/tmp/via-ngc-model-cache"
 )
 
 FORCE_TRT = True
@@ -79,7 +79,7 @@ def setup_trt_engine(
     model_path: str,
     model_type: str,
     trt_engine_dir: Optional[str] = None,
-    trt_llm_mode: str = "fp16",
+    trt_llm_mode: str = "fp8",
     vlm_batch_size: int = 1,
     force_rebuild: bool = False
 ) -> Tuple[str, bool]:
@@ -221,7 +221,7 @@ def _build_engine_from_scratch(model_path: str, trt_engine_dir: str, trt_llm_mod
     logger.info("Building TRT engine from scratch...")
     
     # Find the build script
-    base_path = os.path.abspath(os.path.dirname(__file__))
+    base_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     build_script = os.path.join(base_path, "trt_helper/build_engine.sh")
     
     if not os.path.exists(build_script):
@@ -238,14 +238,17 @@ def _build_engine_from_scratch(model_path: str, trt_engine_dir: str, trt_llm_mod
     ]
     
     logger.info(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # result = subprocess.run(cmd, capture_output=True, text=True)
     
-    if result.returncode != 0:
-        logger.error(f"Engine build failed with return code {result.returncode}")
-        logger.error(f"STDOUT: {result.stdout}")
-        logger.error(f"STDERR: {result.stderr}")
-        raise RuntimeError("Failed to generate TRT-LLM engine")
-        
+    # if result.returncode != 0:
+    #     logger.error(f"Engine build failed with return code {result.returncode}")
+    #     logger.error(f"STDOUT: {result.stdout}")
+    #     logger.error(f"STDERR: {result.stderr}")
+    #     raise RuntimeError("Failed to generate TRT-LLM engine")
+    result = subprocess.run(cmd)
+    if result.returncode:
+        raise Exception("Failed to generate TRT-LLM engine")
+       
     logger.info("Successfully built TRT engine from scratch")
 
 
