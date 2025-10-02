@@ -329,17 +329,23 @@ class CompOpenAIModel:
                 + " : "
                 + string_of_times
                 + "."
-                + prompt
                 + "Make sure the answer contain correct timestamps."
             )
 
-            logger.debug(f"PROMPT is  {PROMPT}")
+            logger.debug(f"System PROMPT is  {PROMPT}")
+            logger.debug(f"User PROMPT is  {prompt}")
             messages = [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": PROMPT}
+                    ],
+                },
                 {
                     "role": "user",
                     "content": [
                         *image_list,
-                        {"type": "text", "text": PROMPT},
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ]

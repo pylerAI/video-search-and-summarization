@@ -301,12 +301,27 @@ def process_multimodal_input(
             for content in message.content:
                 if content.type == "text":
                     if content.text:
-                        logger.debug(f"Processing text content: {content.text[:50]}...")
-                        prompt_parts.append(content.text)
+                        logger.debug(f"Processing text content from {message.role}: {content.text[:50]}...")
+                        
+                        if message.role == "system":
+                            logger.debug(f"System message text: '{content.text}'")
+
+                            times = extract_video_frames_times(content.text)
+                            logger.debug(f"Extracted times from system message: {times}")
+                            if times:
+                                media_content["string_of_times"] = times
+                                logger.debug(f"Extracted {len(times)} timestamps from system message")
+
+                            prompt_parts.append(content.text)
+
+                        elif message.role == "user":
+                            logger.debug(f"user message text: '{content.text[:100]}'")
+                            prompt_parts.append(content.text)
+
+                            times = extract_video_frames_times(content.text)
                         
                         # 🔍 DEBUG TIMESTAMP EXTRACTION
                         logger.debug(f"Full text content: '{content.text}'")
-                        times = extract_video_frames_times(content.text)
                         logger.debug(f"Extracted times: {times}")
                         logger.debug(f"Number of extracted times: {len(times) if times else 0}")
                         logger.debug(f"Type of times: {type(times)}")

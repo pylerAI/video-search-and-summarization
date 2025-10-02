@@ -57,6 +57,9 @@ logger.addHandler(term_out)
 
 log_file = logging.handlers.TimedRotatingFileHandler("/tmp/via-logs/via_engine.log")
 log_file.setLevel(LOG_PERF_LEVEL)
+if os.environ.get("VSS_LOG_LEVEL"):
+    log_file.setLevel(os.environ.get("VSS_LOG_LEVEL").upper())
+
 log_file.setFormatter(LogFormatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(log_file)
 

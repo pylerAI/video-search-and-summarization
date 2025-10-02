@@ -22,7 +22,7 @@ import torch
 from filelock import FileLock
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 
-from loguru import logger
+from vila_logger import logger
 
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
@@ -30,7 +30,6 @@ import llava.model.language_model.llava_llama  # noqa: E402, F401
 from llava.conversation import conv_templates  # noqa: E402
 from llava.mm_utils import get_model_name_from_path  # noqa: E402
 from llava.utils import disable_torch_init  # noqa: E402
-
 
 class Vila15:
     TRTLLM_EXECUTOR_INFLIGHT_BATCHING = True
@@ -279,48 +278,8 @@ class Vila15:
         numpy.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        prompt_template_with_timestamp = ""
-        string_of_times = ""
-        string_timestamp = ""
-        time_format_str = ""
 
-        # Need to handle if batch size is not 1
-        tidx = 0
-        if len(video_frames_times) == 1:
-            video_frames_times_ = video_frames_times[0]
-            num_of_embeds_in_one_chunk = int(len(video_frames_times_))
-            for j in range(num_of_embeds_in_one_chunk):
-                if chunk:
-                    if tidx <= len(chunk):
-                        string_timestamp = chunk[tidx].get_timestamp(video_frames_times_[j])
-                        if not time_format_str:
-                            if chunk[tidx].file.startswith("rtsp://"):
-                                time_format_str = " at timestamps in RFC3339 format"
-                            else:
-                                time_format_str = " at timestamps in seconds"
-                    else:
-                        logger.error("Chunk ID going out of chunk size")
-                        string_timestamp = str(video_frames_times_[j])
-                        time_format_str = " at timestamps in seconds"
-
-                else:
-                    string_timestamp = str(video_frames_times_[j])
-                    time_format_str = " at timestamps in seconds"
-
-                string_of_times += "<" + string_timestamp + "> "
-
-            prompt_template_with_timestamp = (
-                "<|im_start|>system\n These are images sampled from a video "
-                + time_format_str
-                + " : "
-                + string_of_times
-                + "."
-                + "Make sure the answer contain correct timestamps.<|im_end|>"
-            )
-
-        if prompt_template_with_timestamp:
-            prompt = prompt_template_with_timestamp + prompt
-
+        logger.debug(f"Prompt: {prompt}")
         # Tokenize the prompt, create a batched input_ids of the same size as video_embeds
         input_ids, extra_input_ids = self._get_input_ids_from_prompt(prompt, video_embeds[0])
 

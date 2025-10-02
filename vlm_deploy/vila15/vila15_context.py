@@ -15,6 +15,7 @@ import sys
 
 import torch
 
+from vila_logger import logger
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
 
@@ -84,7 +85,7 @@ class Vila15Context:
 
         # Convert the conversation to a string prompt
         prompt = self._conv.get_prompt()
-
+        logger.debug(f"Prompt from vila context: {prompt}")
         # Generate a response from the VLM model
         return self._model.generate(
             prompt, self._video_embeds, self._video_frames_times, generation_config, chunk=chunk
