@@ -1,0 +1,333 @@
+# ==============================================================================
+# VS Code Project .gitignore
+# ==============================================================================
+
+# VS Code specific files and folders
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+.history/
+
+# ==============================================================================
+# Operating System Files
+# ==============================================================================
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ==============================================================================
+# Editor and IDE Files
+# ==============================================================================
+
+# JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ==============================================================================
+# Language Specific
+# ==============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+.pytype/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+cython_debug/
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.pipenv/
+Pipfile.lock
+poetry.lock
+.pdm.toml
+__pypackages__/
+
+# JavaScript/Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.npm
+.eslintcache
+*.tgz
+.yarn-integrity
+.pnp.*
+jspm_packages/
+
+# TypeScript
+*.tsbuildinfo
+
+# Java
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+target/
+.classpath
+.project
+.settings/
+
+# C/C++
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+vendor/
+
+# Rust
+target/
+Cargo.lock
+
+# ==============================================================================
+# Development and Build Tools
+# ==============================================================================
+
+# Package managers
+package-lock.json
+yarn.lock
+composer.lock
+
+# Build outputs
+build/
+dist/
+out/
+target/
+bin/
+obj/
+.next/
+.nuxt/
+.output/
+.vercel/
+
+# Webpack
+.webpack/
+
+# Parcel
+.cache/
+.parcel-cache/
+
+# Rollup
+rollup.config.*.js
+
+# ==============================================================================
+# Databases
+# ==============================================================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ==============================================================================
+# Logs and Runtime
+# ==============================================================================
+
+# Log files
+*.log
+logs/
+log/
+*.log.*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage reports
+coverage/
+.nyc_output/
+lcov.info
+
+# ==============================================================================
+# Documentation
+# ==============================================================================
+
+# Generated documentation
+docs/_build/
+site/
+.sphinx/
+.mkdocs/
+
+# ==============================================================================
+# Security and Secrets
+# ==============================================================================
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+.env.*.local
+
+# API keys and secrets
+secrets/
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+config/secrets.yml
+config/database.yml
+
+# ==============================================================================
+# Temporary and Cache Files
+# ==============================================================================
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.cache
+.cache/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Archive files
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# ==============================================================================
+# Project Specific
+# ==============================================================================
+
+# Add your project-specific ignores here
+# examples:
+# config/local.yml
+# uploads/
+# storage/
+# public/uploads/
