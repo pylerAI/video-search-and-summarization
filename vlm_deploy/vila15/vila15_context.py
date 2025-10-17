@@ -43,6 +43,23 @@ class Vila15Context:
         self._video_frames_times = None
         self._video_embeds = None
 
+    def set_system_message(self, system_message: str):
+        """Set the system message for the conversation.
+        
+        Args:
+            system_message: The system message text to use
+        """
+        if system_message:
+            logger.debug(f"Setting system message: {system_message[:100]}...")
+            # For hermes-2 format, we need to format the system message properly
+            if "hermes" in self._conv.version:
+                self._conv.system = f"<|im_start|>system\n{system_message}"
+            else:
+                self._conv.system = system_message
+            logger.debug(f"Updated conversation system message: {self._conv.system[:100]}...")
+        else:
+            logger.debug("No system message provided, using default")
+
     def set_video_embeds(self, video_embeds=None, video_frames_times=None,):
         """Set the chunks, and corresponding video embeddings and frame times.
         Accepts batched inputs (lists)"""

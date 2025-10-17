@@ -167,7 +167,7 @@ def chat_completions(request: ChatCompletionRequest):
             return handle_test_api_call(request)
         
         # Process multimodal input - pass components as parameters
-        prompt_text, media_content = process_multimodal_input(
+        prompt_text, media_content, system_message = process_multimodal_input(
             request.messages, 
             components.frame_processor, 
             components.emb_generator
@@ -175,13 +175,15 @@ def chat_completions(request: ChatCompletionRequest):
         
         logger.debug(f"Processed prompt length: {len(prompt_text)} characters")
         logger.debug(f"Media content keys: {list(media_content.keys())}")
+        logger.debug(f"System message: {system_message[:100] if system_message else 'None'}...")
 
         # Generate response using VILA model - pass model as parameter
         response_content = generate_response(
             prompt_text, 
             media_content, 
             request, 
-            components.model
+            components.model,
+            system_message
         )
         
         # Ensure response content is a string before calling split()
@@ -280,9 +282,14 @@ def process_multimodal_input(
     messages: List[ChatMessage], 
     frame_processor, 
     emb_generator
-) -> tuple[str, dict]:
-    """Process multimodal input from messages - BATCH PROCESS IMAGES"""
+) -> tuple[str, dict, str]:
+    """Process multimodal input from messages - BATCH PROCESS IMAGES
+    
+    Returns:
+        tuple[str, dict, str]: (prompt_text, media_content, system_message)
+    """
     prompt_parts = []
+    system_message = None
     media_content = {
         "images": [],
         "videos": [],
@@ -295,8 +302,17 @@ def process_multimodal_input(
     
     for message in messages:
         if isinstance(message.content, str):
-            logger.debug(f"Processing text content: {message.content[:50]}...")
-            prompt_parts.append(message.content)
+            if message.role == "system":
+                logger.debug(f"Processing system message (string): {message.content[:50]}...")
+                system_message = message.content
+                # Extract timestamps from system message
+                times = extract_video_frames_times(message.content)
+                if times:
+                    media_content["string_of_times"] = times
+                    logger.debug(f"Extracted {len(times)} timestamps from system message")
+            else:
+                logger.debug(f"Processing text content: {message.content[:50]}...")
+                prompt_parts.append(message.content)
         elif isinstance(message.content, list):
             for content in message.content:
                 if content.type == "text":
@@ -305,6 +321,7 @@ def process_multimodal_input(
                         
                         if message.role == "system":
                             logger.debug(f"System message text: '{content.text}'")
+                            system_message = content.text
 
                             times = extract_video_frames_times(content.text)
                             logger.debug(f"Extracted times from system message: {times}")
@@ -312,29 +329,15 @@ def process_multimodal_input(
                                 media_content["string_of_times"] = times
                                 logger.debug(f"Extracted {len(times)} timestamps from system message")
 
-                            prompt_parts.append(content.text)
-
                         elif message.role == "user":
                             logger.debug(f"user message text: '{content.text[:100]}'")
                             prompt_parts.append(content.text)
 
+                            # Also check user message for timestamps (backup)
                             times = extract_video_frames_times(content.text)
-                        
-                        # 🔍 DEBUG TIMESTAMP EXTRACTION
-                        logger.debug(f"Full text content: '{content.text}'")
-                        logger.debug(f"Extracted times: {times}")
-                        logger.debug(f"Number of extracted times: {len(times) if times else 0}")
-                        logger.debug(f"Type of times: {type(times)}")
-                        
-                        if times:
-                            media_content["string_of_times"] = times
-                            
-                            # Additional debugging
-                            if isinstance(times, list):
-                                logger.debug(f"First few times: {times[:5]}")
-                                logger.debug(f"Last few times: {times[-5:]}")
-                            else:
-                                logger.debug(f"Times is not a list: {times}")
+                            if times and not media_content.get("string_of_times"):
+                                media_content["string_of_times"] = times
+                                logger.debug(f"Extracted {len(times)} timestamps from user message as backup")
                                 
                 elif content.type == "image_url":
                     # Collect images, don't process yet
@@ -389,15 +392,17 @@ def process_multimodal_input(
     logger.debug(f"Final prompt length: {len(prompt_text)} characters")
     logger.debug(f"Total images processed: {len(all_image_urls)}")
     logger.debug(f"Total embeddings generated: {len(media_content.get('embeddings', []))}")
+    logger.debug(f"Extracted system message: {system_message[:100] if system_message else 'None'}...")
     
-    return prompt_text, media_content
+    return prompt_text, media_content, system_message
 
 
 def generate_response(
     prompt_text: str, 
     media_content: dict, 
     request: ChatCompletionRequest,
-    model
+    model,
+    system_message: str = None
 ) -> str:
     """Generate response - handle multiple embeddings correctly"""
     if model is None:
@@ -408,6 +413,10 @@ def generate_response(
     
     try:
         ctx = Vila15Context(model)
+        
+        # Set the system message if provided
+        if system_message:
+            ctx.set_system_message(system_message)
         
         if media_content.get("embeddings"):
             embeddings = media_content["embeddings"]
