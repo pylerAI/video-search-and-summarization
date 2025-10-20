@@ -121,6 +121,17 @@ class ServerComponents:
 # Global instance of components
 components = ServerComponents()
 
+# Helper functions (implement these based on your existing code)
+def load_video(video_url: str):
+    """Load video from URL"""
+    # Your existing video loading logic
+    pass
+
+def sample_frames_from_video(video_path: str, num_frames: int):
+    """Sample frames from video"""
+    # Your existing frame sampling logic
+    pass
+
 # Create FastAPI app
 app = FastAPI(
     title="VILA Multimodal API",
@@ -178,9 +189,27 @@ def list_models():
         ]
     }
 
+@app.get("/debug/frame_processor")
+def debug_frame_processor():
+    """Debug endpoint to check frame processor status"""
+    if components.frame_processor is None:
+        return {"error": "Frame processor not initialized"}
+    
+    try:
+        # Get preprocessing info
+        info = components.frame_processor.get_preprocessing_info()
+        return {
+            "frame_processor_type": str(type(components.frame_processor)),
+            "preprocessing_info": info,
+            "has_process_image": hasattr(components.frame_processor, 'process_image')
+        }
+    except Exception as e:
+        return {"error": f"Failed to get frame processor info: {str(e)}"}
+    
+
 @app.post("/v1/chat/completions")
 def chat_completions(request: ChatCompletionRequest):
-    """Main chat completions endpoint with comprehensive logging"""
+    """Main chat completions endpoint"""
     request_id = uuid.uuid4().hex[:8]
     
     # STEP 1: LOG INCOMING REQUEST
@@ -194,7 +223,9 @@ def chat_completions(request: ChatCompletionRequest):
     for i, msg in enumerate(request.messages):
         conv_logger.info(f"[REQ-{request_id}] Message {i+1} - Role: {msg.role}")
         
-        if isinstance(msg.content, list):
+        if isinstance(msg.content, str):
+            conv_logger.info(f"[REQ-{request_id}] Message {i+1} - Content (string): {msg.content[:200]}...")
+        elif isinstance(msg.content, list):
             conv_logger.info(f"[REQ-{request_id}] Message {i+1} - Content (list): {len(msg.content)} items")
             for j, content_item in enumerate(msg.content):
                 conv_logger.debug(f"[REQ-{request_id}] Message {i+1} - Item {j+1}: type={content_item.type}")
@@ -203,8 +234,6 @@ def chat_completions(request: ChatCompletionRequest):
                 elif content_item.type == "image_url":
                     url = content_item.image_url.get("url", "")
                     conv_logger.debug(f"[REQ-{request_id}] Message {i+1} - Item {j+1} image_url: {url[:50]}...")
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported message content type")
     
     try:
         # STEP 2: VALIDATE COMPONENTS
@@ -309,13 +338,28 @@ def chat_completions(request: ChatCompletionRequest):
         conv_logger.info(f"[REQ-{request_id}] FINAL RESPONSE: {response_content}")
         
         return final_response
+                        "content": response_content or ""
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            }
+        }
+        
+        prompt_logger.info(f"[REQ-{request_id}] 🎉 REQUEST COMPLETED SUCCESSFULLY")
+        conv_logger.info(f"[REQ-{request_id}] FINAL RESPONSE: {response_content}")
+        
+        return final_response
         
     except Exception as e:
         prompt_logger.error(f"[REQ-{request_id}] ❌ ERROR in chat completion: {str(e)}")
         import traceback
         prompt_logger.error(f"[REQ-{request_id}] ❌ Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 def is_test_api_call(messages: List[ChatMessage]) -> bool:
     """Detect test API calls"""
@@ -340,7 +384,6 @@ def is_test_api_call(messages: List[ChatMessage]) -> bool:
                     return False
     return True
 
-
 def is_empty_timestamp_content(text: str) -> bool:
     """Check if text has empty timestamp section"""
     if not text:
@@ -350,7 +393,6 @@ def is_empty_timestamp_content(text: str) -> bool:
     import re
     pattern = r"video.*?:\s*\."
     return bool(re.search(pattern, text, re.IGNORECASE))
-
 
 def handle_test_api_call(request: ChatCompletionRequest):
     """Handle test API calls"""
@@ -376,19 +418,18 @@ def handle_test_api_call(request: ChatCompletionRequest):
         }
     }
 
-
 def process_multimodal_input(
     messages: List[ChatMessage], 
     frame_processor, 
-    emb_generator,
-    request_id: str
+    emb_generator
 ) -> tuple[str, dict, str]:
-    """Process multimodal input from messages with comprehensive logging"""
+    """Process multimodal input from messages - BATCH PROCESS IMAGES
     
-    prompt_logger.info(f"[REQ-{request_id}] 🔄 PROCESSING MULTIMODAL INPUT")
-    
-    system_message = ""
-    user_prompt_parts = []
+    Returns:
+        tuple[str, dict, str]: (prompt_text, media_content, system_message)
+    """
+    prompt_parts = []
+    system_message = None
     media_content = {
         "images": [],
         "videos": [],
@@ -399,109 +440,100 @@ def process_multimodal_input(
     # Collect ALL images first, then process in batch
     all_image_urls = []
     
-    prompt_logger.info(f"[REQ-{request_id}] Processing {len(messages)} messages")
-    
-    for i, message in enumerate(messages):
-        conv_logger.debug(f"[REQ-{request_id}] Processing message {i+1}: role={message.role}")
-        conv_logger.debug(f"[REQ-{request_id}] Message content type: {type(message.content)}")
-                
-        if isinstance(message.content, list):
-            conv_logger.debug(f"[REQ-{request_id}] Message {i+1} - List content: {len(message.content)} items")
-            
-            for j, content in enumerate(message.content):
-                conv_logger.debug(f"[REQ-{request_id}] Message {i+1} - Item {j+1}: type={content.type}")
-                
+    for message in messages:
+        if isinstance(message.content, str):
+            if message.role == "system":
+                logger.debug(f"Processing system message (string): {message.content[:50]}...")
+                system_message = message.content
+                # Extract timestamps from system message
+                times = extract_video_frames_times(message.content)
+                if times:
+                    media_content["string_of_times"] = times
+                    logger.debug(f"Extracted {len(times)} timestamps from system message")
+            else:
+                logger.debug(f"Processing text content: {message.content[:50]}...")
+                prompt_parts.append(message.content)
+        elif isinstance(message.content, list):
+            for content in message.content:
                 if content.type == "text":
                     if content.text:
-                        conv_logger.debug(f"[REQ-{request_id}] Message {i+1} - Item {j+1} text: {content.text[:100]}...")
+                        logger.debug(f"Processing text content from {message.role}: {content.text[:50]}...")
                         
                         if message.role == "system":
-                            conv_logger.info(f"[REQ-{request_id}] Found SYSTEM text: {content.text[:100]}...")
+                            logger.debug(f"System message text: '{content.text}'")
                             system_message = content.text
+
                             times = extract_video_frames_times(content.text)
-                            conv_logger.debug(f"[REQ-{request_id}] Extracted {len(times) if times else 0} timestamps from system message")
+                            logger.debug(f"Extracted times from system message: {times}")
                             if times:
                                 media_content["string_of_times"] = times
+                                logger.debug(f"Extracted {len(times)} timestamps from system message")
 
                         elif message.role == "user":
-                            conv_logger.info(f"[REQ-{request_id}] Found USER text: {content.text[:100]}...")
-                            user_prompt_parts.append(content.text)
-                            # Also check user message for timestamps (fallback)
+                            logger.debug(f"user message text: '{content.text[:100]}'")
+                            prompt_parts.append(content.text)
+
+                            # Also check user message for timestamps (backup)
                             times = extract_video_frames_times(content.text)
-                            if times and not media_content["string_of_times"]:
+                            if times and not media_content.get("string_of_times"):
                                 media_content["string_of_times"] = times
-                                conv_logger.debug(f"[REQ-{request_id}] Extracted {len(times)} timestamps from user message as fallback")
+                                logger.debug(f"Extracted {len(times)} timestamps from user message as backup")
                                 
                 elif content.type == "image_url":
                     # Collect images, don't process yet
                     image_url = content.image_url["url"]
                     all_image_urls.append(image_url)
-                    image_logger.debug(f"[REQ-{request_id}] Collected image URL: {image_url[:50]}...")
-
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported message content type")
-    
-    conv_logger.info(f"[REQ-{request_id}] EXTRACTION COMPLETE:")
-    conv_logger.info(f"[REQ-{request_id}] - System message: {len(system_message)} chars")
-    conv_logger.info(f"[REQ-{request_id}] - User prompt parts: {len(user_prompt_parts)} parts")
-    conv_logger.info(f"[REQ-{request_id}] - Images to process: {len(all_image_urls)}")
-    conv_logger.info(f"[REQ-{request_id}] - Timestamps found: {len(media_content.get('string_of_times', []))}")
+                    logger.debug(f"Collected image URL: {image_url[:50]}...")
     
     # NOW BATCH PROCESS ALL IMAGES AT ONCE
     if all_image_urls:
-        image_logger.info(f"[REQ-{request_id}] 🖼️  BATCH PROCESSING {len(all_image_urls)} IMAGES")
         try:
+            logger.debug(f"Batch processing {len(all_image_urls)} images...")
+            
             # Validate components
             if frame_processor is None:
-                image_logger.error(f"[REQ-{request_id}] ❌ Frame processor not available")
                 raise RuntimeError("Frame processor not available")
             if emb_generator is None:
-                image_logger.error(f"[REQ-{request_id}] ❌ Embedding generator not available")
                 raise RuntimeError("Embedding generator not available")
             
             # Process all images to tensors
             all_image_tensors = []
             for i, image_url in enumerate(all_image_urls):
-                image_logger.debug(f"[REQ-{request_id}] Loading image {i+1}/{len(all_image_urls)}: {image_url[:50]}...")
+                logger.debug(f"Loading image {i+1}/{len(all_image_urls)}: {image_url[:50]}...")
                 
                 pil_image = load_image(image_url, preprocess=False)
-                image_logger.debug(f"[REQ-{request_id}] Loaded image {i+1}: size={pil_image.size}, mode={pil_image.mode}")
+                logger.debug(f"Loaded image {i+1}: size={pil_image.size}, mode={pil_image.mode}")
                 
                 image_tensor = frame_processor.process_image(pil_image)
-                image_logger.debug(f"[REQ-{request_id}] Processed image {i+1} to tensor: {image_tensor.shape}")
+                logger.debug(f"Processed image {i+1} to tensor: {image_tensor.shape}")
                 
                 all_image_tensors.append(image_tensor)
             
             # BATCH GENERATE EMBEDDINGS FOR ALL IMAGES AT ONCE
-            image_logger.info(f"[REQ-{request_id}] 🧠 Generating embeddings for {len(all_image_tensors)} tensors...")
+            logger.debug(f"Generating embeddings for {len(all_image_tensors)} tensors...")
             all_embeddings = emb_generator.get_embeddings(all_image_tensors)  # Pass ALL tensors
             
-            image_logger.info(f"[REQ-{request_id}] ✅ Generated embeddings: count={len(all_embeddings)}")
+            logger.debug(f"Generated embeddings: count={len(all_embeddings)}")
             for i, emb in enumerate(all_embeddings):
-                image_logger.debug(f"[REQ-{request_id}] Embedding {i}: shape={emb.shape}")
+                logger.debug(f"Embedding {i}: shape={emb.shape}")
             
             # Store ALL embeddings
             media_content["embeddings"] = all_embeddings
             
         except Exception as e:
-            image_logger.error(f"[REQ-{request_id}] ❌ Failed to batch process images: {str(e)}")
+            logger.error(f"Failed to batch process images: {str(e)}")
             import traceback
-            image_logger.error(f"[REQ-{request_id}] ❌ Full traceback: {traceback.format_exc()}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=400, detail=f"Failed to process images: {str(e)}")
     
-    # Build prompt text - only use user prompt parts, not system message
-    prompt_text = " ".join(user_prompt_parts) if user_prompt_parts else ""
+    # Build prompt text
+    prompt_text = " ".join(prompt_parts) if prompt_parts else ""
     
-    prompt_logger.info(f"[REQ-{request_id}] ✅ MULTIMODAL PROCESSING COMPLETE")
-    prompt_logger.info(f"[REQ-{request_id}] - Final user prompt: {len(prompt_text)} chars")
-    prompt_logger.info(f"[REQ-{request_id}] - System message: {len(system_message)} chars") 
-    prompt_logger.info(f"[REQ-{request_id}] - Images processed: {len(all_image_urls)}")
-    prompt_logger.info(f"[REQ-{request_id}] - Embeddings generated: {len(media_content.get('embeddings', []))}")
+    logger.debug(f"Final prompt length: {len(prompt_text)} characters")
+    logger.debug(f"Total images processed: {len(all_image_urls)}")
+    logger.debug(f"Total embeddings generated: {len(media_content.get('embeddings', []))}")
+    logger.debug(f"Extracted system message: {system_message[:100] if system_message else 'None'}...")
     
-    conv_logger.debug(f"[REQ-{request_id}] FINAL USER PROMPT: {prompt_text}")
-    conv_logger.debug(f"[REQ-{request_id}] FINAL SYSTEM MESSAGE: {system_message}")
-    
-    # Return user prompt, media content, and system message separately
     return prompt_text, media_content, system_message
 
 
@@ -510,135 +542,103 @@ def generate_response(
     media_content: dict, 
     request: ChatCompletionRequest,
     model,
-    system_message: str = "",
-    request_id: str = ""
+    system_message: str = None
 ) -> str:
-    """Generate response with comprehensive logging"""
-    model_logger.info(f"[REQ-{request_id}] 🤖 VILA MODEL GENERATION")
-    model_logger.info(f"[REQ-{request_id}] User prompt: {prompt_text[:100]}...")
-    model_logger.info(f"[REQ-{request_id}] System message: {system_message[:100] if system_message else 'None'}...")
-    
+    """Generate response - handle multiple embeddings correctly"""
     if model is None:
-        model_logger.error(f"[REQ-{request_id}] ❌ Model not available")
         raise RuntimeError("Model not available")
     
     sys.path.append(os.path.dirname(__file__) + "/../..")
     from vila15_context import Vila15Context
     
     try:
-        model_logger.debug(f"[REQ-{request_id}] Creating VILA context...")
         ctx = Vila15Context(model)
         
         # Set the system message if provided
         if system_message:
-            model_logger.info(f"[REQ-{request_id}] Setting system message: {system_message[:100]}...")
             ctx.set_system_message(system_message)
-        else:
-            model_logger.debug(f"[REQ-{request_id}] No system message provided, using default")
         
         if media_content.get("embeddings"):
             embeddings = media_content["embeddings"]
             string_of_times = media_content.get("string_of_times", [])
             
-            model_logger.info(f"[REQ-{request_id}] 🔢 PROCESSING EMBEDDINGS:")
-            model_logger.info(f"[REQ-{request_id}] - Number of embeddings: {len(embeddings)}")
-            model_logger.info(f"[REQ-{request_id}] - Number of timestamps: {len(string_of_times)}")
+            logger.debug(f"🔍 DEBUGGING EMBEDDINGS:")
+            logger.debug(f"Number of embeddings: {len(embeddings)}")
             
             # Debug each embedding
             total_tokens = 0
             for i, emb in enumerate(embeddings):
-                model_logger.debug(f"[REQ-{request_id}] Embedding {i}: shape={emb.shape}")
+                logger.debug(f"Embedding {i}: shape={emb.shape}")
                 if len(emb.shape) >= 2:
                     tokens_for_this_embedding = emb.shape[1]
                     total_tokens += tokens_for_this_embedding
-                    model_logger.debug(f"[REQ-{request_id}]   Will create {tokens_for_this_embedding} tokens")
+                    logger.debug(f"  Will create {tokens_for_this_embedding} tokens")
             
-            model_logger.info(f"[REQ-{request_id}] - Total tokens from all embeddings: {total_tokens}")
+            logger.debug(f"Total tokens from all embeddings: {total_tokens}")
             
             # Sanity check - prevent token explosion
             if total_tokens > 3000:  # Conservative limit
-                model_logger.error(f"[REQ-{request_id}] 🚨 TOO MANY TOKENS: {total_tokens}")
+                logger.error(f"🚨 TOO MANY TOKENS: {total_tokens}")
                 return f"Error: Too many image tokens ({total_tokens}). Check embedding processing."
             
             # Prepare timestamps
             if not string_of_times:
                 # Create default timestamps for each embedding
                 string_of_times = [float(i) for i in range(len(embeddings))]
-                model_logger.debug(f"[REQ-{request_id}] Created default timestamps: {string_of_times}")
             elif len(string_of_times) != len(embeddings):
-                model_logger.warning(f"[REQ-{request_id}] ⚠️  Timestamp count ({len(string_of_times)}) != embedding count ({len(embeddings)})")
+                logger.warning(f"Timestamp count ({len(string_of_times)}) != embedding count ({len(embeddings)})")
                 # Pad or truncate as needed
                 while len(string_of_times) < len(embeddings):
                     string_of_times.append(float(len(string_of_times)))
                 string_of_times = string_of_times[:len(embeddings)]
-                model_logger.debug(f"[REQ-{request_id}] Adjusted timestamps: {string_of_times}")
             
-            model_logger.info(f"[REQ-{request_id}] - Final timestamps: {string_of_times}")
+            logger.debug(f"Using timestamps: {string_of_times}")
             
-            model_logger.debug(f"[REQ-{request_id}] Setting video embeds in context...")
+            
+            logger.debug(f"Setting video embeds: {len(embeddings)} embeddings")
             ctx.set_video_embeds(
                 video_embeds=embeddings,        # ALL embeddings
                 video_frames_times=[string_of_times]  # Timestamps for all embeddings
             )
-            model_logger.debug(f"[REQ-{request_id}] ✅ Video embeds set successfully")
-        else:
-            model_logger.info(f"[REQ-{request_id}] No embeddings to process")
         
-        model_logger.info(f"[REQ-{request_id}] 🎯 Asking VILA model...")
-        model_logger.debug(f"[REQ-{request_id}] Final prompt for VILA: {prompt_text}")
+        logger.debug(f"Generating response for prompt: {prompt_text}")
         
-        # Generate response with system message
-        vlm_response_stats = ctx.ask(prompt_text, system_message=system_message)
-        
-        model_logger.debug(f"[REQ-{request_id}] VILA model response received")
-        model_logger.debug(f"[REQ-{request_id}] Response type: {type(vlm_response_stats)}")
+        # Generate response
+        vlm_response_stats = ctx.ask(prompt_text)
         
         # Handle response (same as before)
         if isinstance(vlm_response_stats, tuple):
             vlm_response, stats = vlm_response_stats
-            model_logger.debug(f"[REQ-{request_id}] Response is tuple, extracted response")
         else:
             vlm_response = vlm_response_stats
-            model_logger.debug(f"[REQ-{request_id}] Response is direct value")
 
         if hasattr(vlm_response, "result"):
-            model_logger.debug(f"[REQ-{request_id}] Response is a Future object, getting result...")
+            logger.debug("Response is a Future object, getting result...")
             try:
                 actual_result = vlm_response.result()
-                model_logger.debug(f"[REQ-{request_id}] Future result type: {type(actual_result)}")
-                
                 if isinstance(actual_result, tuple) and len(actual_result) == 2:
                     outputs_list, stats_list = actual_result
                     if outputs_list and len(outputs_list) > 0:
                         vlm_response = outputs_list[0]
-                        model_logger.debug(f"[REQ-{request_id}] Extracted response from outputs_list: {vlm_response[:100]}...")
                     else:
                         vlm_response = ""
-                        model_logger.warning(f"[REQ-{request_id}] ⚠️  Empty outputs_list")
                 else:
                     vlm_response = str(actual_result) if actual_result is not None else ""
-                    model_logger.debug(f"[REQ-{request_id}] Direct result: {vlm_response[:100]}...")
             except Exception as future_error:
-                model_logger.error(f"[REQ-{request_id}] ❌ Error getting result from Future: {future_error}")
+                logger.error(f"Error getting result from Future: {future_error}")
                 vlm_response = ""
         
         if vlm_response is None:
-            model_logger.warning(f"[REQ-{request_id}] ⚠️  Response is None, setting to empty string")
             vlm_response = ""
         elif not isinstance(vlm_response, str):
-            model_logger.debug(f"[REQ-{request_id}] Converting response to string: {type(vlm_response)}")
             vlm_response = str(vlm_response)
-
-        model_logger.info(f"[REQ-{request_id}] ✅ VILA GENERATION COMPLETE")
-        model_logger.info(f"[REQ-{request_id}] - Final response length: {len(vlm_response)} characters")
-        model_logger.debug(f"[REQ-{request_id}] - Final response: {vlm_response}")
 
         return vlm_response
         
     except Exception as e:
-        model_logger.error(f"[REQ-{request_id}] ❌ Error in generating response: {str(e)}")
+        logger.error(f"Error in generating response: {str(e)}")
         import traceback
-        model_logger.error(f"[REQ-{request_id}] ❌ Full traceback: {traceback.format_exc()}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise
 
 
@@ -697,6 +697,82 @@ def initialize_model(args):
         logger.error(f"Failed to initialize model: {str(e)}")
         raise RuntimeError(f"Model initialization failed: {str(e)}")
 
+@app.get("/debug/test_embedding")
+def debug_test_embedding():
+    """Debug endpoint to test embedding generation with a simple image"""
+    try:
+        from PIL import Image
+        import numpy as np
+        
+        # Create a simple test image
+        test_image = Image.new('RGB', (256, 256), color='red')
+        
+        # Process with frame processor
+        if components.frame_processor is None:
+            return {"error": "Frame processor not available"}
+        
+        tensor = components.frame_processor.process_image(test_image)
+        
+        # Generate embeddings
+        if components.emb_generator is None:
+            return {"error": "Embedding generator not available"}
+        
+        embeddings = components.emb_generator.get_embeddings([tensor])
+        
+        # Safe embedding info
+        embedding_info = {
+            "embeddings_type": str(type(embeddings)),
+            "embeddings_length": len(embeddings) if isinstance(embeddings, (list, tuple)) else "not_iterable"
+        }
+        
+        if isinstance(embeddings, (list, tuple)) and len(embeddings) > 0:
+            first_emb = embeddings[0]
+            embedding_info["first_embedding_type"] = str(type(first_emb))
+            if hasattr(first_emb, 'shape'):
+                embedding_info["first_embedding_shape"] = str(first_emb.shape)
+            if hasattr(first_emb, 'dtype'):
+                embedding_info["first_embedding_dtype"] = str(first_emb.dtype)
+        
+        return {
+            "success": True,
+            "tensor_shape": str(tensor.shape),
+            "tensor_dtype": str(tensor.dtype),
+            "embedding_info": embedding_info
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+# Add this debug function to check the regex
+@app.get("/debug/timestamp_extraction")
+def debug_timestamp_extraction():
+    """Debug timestamp extraction"""
+    test_text = "These are images sampled from a video at timestamps in seconds : <90.01> <91.93> <93.8> <95.68> <97.6> <99.47> <101.35> <103.27> <105.15> <107.02>"
+    
+    try:
+        from process_prompt import extract_video_frames_times
+        
+        result = extract_video_frames_times(test_text)
+        
+        return {
+            "input_text": test_text,
+            "extracted_times": result,
+            "count": len(result) if result else 0,
+            "type": str(type(result)),
+            "first_5": result[:5] if result and len(result) > 5 else result,
+            "last_5": result[-5:] if result and len(result) > 5 else []
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 if __name__ == "__main__":
     # Parse arguments

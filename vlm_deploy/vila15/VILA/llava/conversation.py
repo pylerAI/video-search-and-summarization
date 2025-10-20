@@ -18,6 +18,20 @@
 import dataclasses
 from enum import Enum, auto
 from typing import List
+import os
+from loguru import logger
+
+# Configure conversation-specific logging
+os.makedirs("logs", exist_ok=True)
+
+# Conversation Logger
+conv_flow_logger = logger.bind(component="conversation_flow")
+logger.add("logs/conversation_flow.log",
+          level="DEBUG",
+          rotation="10 MB",
+          retention="7 days",
+          format="{time:YYYY-MM-DD HH:mm:ss} | CONV_FLOW | {function}:{line} | {message}",
+          filter=lambda record: record["extra"].get("component") == "conversation_flow")
 
 
 class SeparatorStyle(Enum):
@@ -49,27 +63,58 @@ class Conversation:
     skip_next: bool = False
 
     def get_prompt(self):
+        conv_flow_logger.info("🔄 GET_PROMPT CALLED")
+        conv_flow_logger.info(f"Conversation system: '{self.system}'")
+        conv_flow_logger.info(f"Conversation roles: {self.roles}")
+        conv_flow_logger.info(f"Separator style: {self.sep_style}")
+        conv_flow_logger.info(f"Version: {self.version}")
+        conv_flow_logger.info(f"Sep: '{self.sep}', Sep2: '{self.sep2}'")
+        conv_flow_logger.info(f"Number of messages: {len(self.messages)}")
+        
+        for i, msg in enumerate(self.messages):
+            conv_flow_logger.debug(f"Message {i}: role='{msg[0]}', content='{str(msg[1])[:100]}...'")
+        
         messages = self.messages
+        conv_flow_logger.debug(f"Initial messages: {messages}")
+        
         if len(messages) > 0 and type(messages[0][1]) is tuple:
+            conv_flow_logger.info("📝 Processing tuple message format")
             messages = self.messages.copy()
             init_role, init_msg = messages[0].copy()
+            conv_flow_logger.debug(f"Init role: '{init_role}', init_msg type: {type(init_msg)}")
+            
             init_msg = init_msg[0].replace("<image>", "").strip()
+            conv_flow_logger.debug(f"Init msg after processing: '{init_msg}'")
+            
             if "mmtag" in self.version:
+                conv_flow_logger.info("Using MMTAG format processing")
                 messages[0] = (init_role, init_msg)
                 messages.insert(0, (self.roles[0], "<Image><image></Image>"))
                 messages.insert(1, (self.roles[1], "Received."))
             else:
+                conv_flow_logger.info("Using standard image format processing")
                 messages[0] = (init_role, "<image>\n" + init_msg)
+                
+            conv_flow_logger.debug(f"Messages after tuple processing: {messages}")
+        else:
+            conv_flow_logger.info("📝 Using messages as-is (no tuple processing needed)")
 
         if self.sep_style == SeparatorStyle.SINGLE:
+            conv_flow_logger.info("🔧 Using SINGLE separator style")
             ret = self.system + self.sep
+            conv_flow_logger.debug(f"Started with system + sep: '{ret}'")
             for role, message in messages:
                 if message:
                     if type(message) is tuple:
                         message, _, _ = message
-                    ret += role + ": " + message + self.sep
+                        conv_flow_logger.debug(f"Extracted tuple message: '{message}'")
+                    addition = role + ": " + message + self.sep
+                    conv_flow_logger.debug(f"Adding: '{addition}'")
+                    ret += addition
                 else:
-                    ret += role + ":"
+                    addition = role + ":"
+                    conv_flow_logger.debug(f"Adding empty message: '{addition}'")
+                    ret += addition
         elif self.sep_style == SeparatorStyle.TWO:
             seps = [self.sep, self.sep2]
             ret = self.system + seps[0]
@@ -91,14 +136,21 @@ class Conversation:
                 else:
                     ret += role
         elif self.sep_style == SeparatorStyle.MPT:
+            conv_flow_logger.info("🔧 Using MPT separator style")
             ret = self.system + self.sep
+            conv_flow_logger.debug(f"Started with system + sep: '{ret}'")
             for role, message in messages:
                 if message:
                     if type(message) is tuple:
                         message, _, _ = message
-                    ret += role + message + self.sep
+                        conv_flow_logger.debug(f"Extracted tuple message: '{message}'")
+                    addition = role + message + self.sep
+                    conv_flow_logger.debug(f"Adding: '{addition}'")
+                    ret += addition
                 else:
-                    ret += role
+                    addition = role
+                    conv_flow_logger.debug(f"Adding empty message: '{addition}'")
+                    ret += addition
         elif self.sep_style == SeparatorStyle.LLAMA_2 or self.sep_style == SeparatorStyle.MISTRAL:
             if self.sep_style == SeparatorStyle.LLAMA_2:
                 wrap_sys = lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n"
@@ -140,12 +192,28 @@ class Conversation:
                 else:
                     ret += ""
         else:
+            conv_flow_logger.error(f"❌ Invalid separator style: {self.sep_style}")
             raise ValueError(f"Invalid style: {self.sep_style}")
 
+        conv_flow_logger.info("✅ PROMPT GENERATION COMPLETE")
+        conv_flow_logger.info(f"Final prompt length: {len(ret)} characters")
+        conv_flow_logger.debug(f"Final prompt: '{ret}'")
+        
+        # Log prompt structure
+        lines = ret.split('\n')
+        conv_flow_logger.debug(f"Prompt structure ({len(lines)} lines):")
+        for i, line in enumerate(lines[:5]):  # First 5 lines
+            conv_flow_logger.debug(f"  Line {i+1}: '{line}'")
+        if len(lines) > 5:
+            conv_flow_logger.debug(f"  ... ({len(lines)-5} more lines)")
+        
         return ret
 
     def append_message(self, role, message):
+        conv_flow_logger.info(f"➕ APPENDING MESSAGE: role='{role}', message='{str(message)[:100]}...'")
+        conv_flow_logger.debug(f"Messages before append: {self.messages}")
         self.messages.append([role, message])
+        conv_flow_logger.debug(f"Messages after append: {self.messages}")
 
     def get_images(self, return_pil=False):
         images = []

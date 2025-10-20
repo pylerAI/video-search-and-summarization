@@ -24,6 +24,20 @@ from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 
 from vila_logger import logger
 
+# Add detailed logging for VILA model operations
+from loguru import logger as log
+
+# Configure specialized loggers for model operations
+import logging
+logging.getLogger("transformers").setLevel(logging.WARNING)
+logging.getLogger("torch").setLevel(logging.WARNING)
+
+# Setup VILA model logger
+vila_model_logger = log.bind(component="vila_model")
+vila_model_logger.add("logs/vila_model.log", 
+                      format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | VILA_MODEL | {message}",
+                      level="DEBUG", rotation="10 MB", compression="zip")
+
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
 import llava.model.language_model.llava_llama  # noqa: E402, F401
@@ -37,13 +51,29 @@ class Vila15:
     def __init__(
         self, model_path, use_trt=True, trt_engine_dir="", async_output=False, max_batch_size=None
     ) -> None:
+        vila_model_logger.info("🚀 VILA 1.5 MODEL INITIALIZATION STARTED")
+        vila_model_logger.info(f"Model path: {model_path}")
+        vila_model_logger.info(f"Use TRT: {use_trt}")
+        vila_model_logger.info(f"TRT engine dir: {trt_engine_dir}")
+        vila_model_logger.info(f"Async output: {async_output}")
+        vila_model_logger.info(f"Max batch size: {max_batch_size}")
+        
         disable_torch_init()
         self._model = None
+        
+        vila_model_logger.debug("Loading model configuration...")
         self._model_config = AutoConfig.from_pretrained(model_path).llm_cfg
+        vila_model_logger.debug(f"Model config loaded: {self._model_config}")
+        
+        vila_model_logger.debug("Loading generation configuration...")
         self._generation_config = GenerationConfig.from_pretrained(model_path + "/llm")
+        vila_model_logger.debug(f"Generation config: {self._generation_config}")
+        
         self._max_batch_size = max_batch_size
         self._inflight_req_ids = []
         self._next_extra_id = 1
+        
+        vila_model_logger.debug("Basic initialization complete")
 
         self._lora_config = None
         self._lora_weights = None
@@ -245,65 +275,116 @@ class Vila15:
         Returns:
             List of responses for the batch of chunks
         """
+        vila_model_logger.info("🎯 VILA MODEL GENERATION STARTED")
+        vila_model_logger.info(f"Prompt length: {len(prompt)} characters")
+        vila_model_logger.debug(f"Full prompt: '{prompt}'")
+        
+        # Safely log video embeds shape
+        try:
+            if video_embeds is not None and len(video_embeds) > 0:
+                embed_shapes = [embed.shape for embed in video_embeds]
+                vila_model_logger.info(f"Video embeds shape: {embed_shapes}")
+            else:
+                vila_model_logger.info("Video embeds shape: None")
+        except Exception as e:
+            vila_model_logger.warning(f"Could not log video embeds shape: {e}")
+            
+        vila_model_logger.info(f"Video frames times: {video_frames_times}")
+        vila_model_logger.info(f"Generation config received: {generation_config}")
+        vila_model_logger.info(f"Chunk info: {chunk}")
+        
         import tensorrt_llm.bindings.executor as trtllm
 
         # Populate default values for the VLM generation parameters
+        vila_model_logger.debug("🔧 CONFIGURING GENERATION PARAMETERS")
         if not generation_config:
             generation_config = {}
+            vila_model_logger.debug("Using empty generation config")
 
         if "temperature" not in generation_config:
             generation_config["temperature"] = 0.4
+            vila_model_logger.debug("Set default temperature: 0.4")
 
         if generation_config["temperature"] == 0:
             generation_config.pop("temperature")
+            vila_model_logger.debug("Removed temperature=0 (greedy sampling)")
 
         if "max_new_tokens" not in generation_config:
             generation_config["max_new_tokens"] = 512
+            vila_model_logger.debug("Set default max_new_tokens: 512")
 
         if "top_p" not in generation_config:
             generation_config["top_p"] = 1
+            vila_model_logger.debug("Set default top_p: 1")
 
         if "top_k" not in generation_config:
             generation_config["top_k"] = 100
+            vila_model_logger.debug("Set default top_k: 100")
         generation_config["top_k"] = int(generation_config["top_k"])
 
         if "seed" in generation_config:
             seed = generation_config["seed"]
             generation_config.pop("seed")
+            vila_model_logger.debug(f"Using provided seed: {seed}")
         else:
             seed = 1
+            vila_model_logger.debug("Using default seed: 1")
+            
+        vila_model_logger.info(f"Final generation config: {generation_config}")
+        vila_model_logger.info(f"Using seed: {seed}")
 
         # Set the seed
+        vila_model_logger.debug("🎲 SETTING RANDOM SEEDS")
         random.seed(seed)
         numpy.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+        vila_model_logger.debug(f"All random seeds set to: {seed}")
 
         logger.debug(f"Prompt: {prompt}")
+        vila_model_logger.info("🔤 TOKENIZING PROMPT")
+        vila_model_logger.debug(f"Tokenizing prompt: '{prompt}'")
         # Tokenize the prompt, create a batched input_ids of the same size as video_embeds
         input_ids, extra_input_ids = self._get_input_ids_from_prompt(prompt, video_embeds[0])
+        vila_model_logger.debug(f"Input IDs shape: {input_ids.shape}")
+        vila_model_logger.debug(f"Extra input IDs: {extra_input_ids}")
+        vila_model_logger.info(f"Tokenization complete - input tokens: {input_ids.shape[-1]}")
 
+        vila_model_logger.info("🖼️ PREPARING VIDEO EMBEDDINGS")
+        vila_model_logger.debug(f"Video embeds original shape: {video_embeds[0].shape}")
         prompt_table = video_embeds[0].view(
             (
                 video_embeds[0].shape[0] * video_embeds[0].shape[1],
                 video_embeds[0].shape[2],
             )
         )
+        vila_model_logger.debug(f"Prompt table reshaped: {prompt_table.shape}")
         prompt_table = prompt_table.cuda().to(dtype=torch.float16).unsqueeze(0)
+        vila_model_logger.debug(f"Prompt table final shape: {prompt_table.shape}")
+        vila_model_logger.info("Video embeddings prepared and moved to GPU")
 
         # Populate TRT-LLM SamplingConfig
+        vila_model_logger.info("⚙️ CONFIGURING TRT-LLM SAMPLING")
         req_id = None
         output_ids = None
 
         output_config = trtllm.OutputConfig(exclude_input_from_output=True)
         max_new_tokens = generation_config.pop("max_new_tokens")
+        vila_model_logger.debug(f"Max new tokens: {max_new_tokens}")
         sampling_config = trtllm.SamplingConfig(**generation_config, seed=seed)
+        vila_model_logger.debug(f"Sampling config created: {sampling_config}")
+        vila_model_logger.info("TRT-LLM sampling configuration complete")
         output_ids = []
+        vila_model_logger.info("🚀 STARTING MODEL INFERENCE")
         with torch.no_grad():
+            vila_model_logger.debug("Creating prompt tuning config...")
             prompt_tuning_config = trtllm.PromptTuningConfig(
                 embedding_table=prompt_table[0].detach(),
                 input_token_extra_ids=extra_input_ids,
             )
+            vila_model_logger.debug("Prompt tuning config created")
+            
+            vila_model_logger.debug("Creating TRT-LLM request...")
             request = trtllm.Request(
                 input_token_ids=input_ids.tolist(),
                 max_tokens=max_new_tokens,
@@ -314,19 +395,33 @@ class Vila15:
                 pad_id=self._tokenizer.pad_token_id,
                 lora_config=self._trt_lora_config,
             )
+            vila_model_logger.debug(f"Request created - input tokens: {len(input_ids.tolist())}, max_tokens: {max_new_tokens}")
+            
             # Recreate TRT Lora Config with just the ID. Sending a 2nd request
             # with the same ID and weights in the config results in an error
             if self._trt_lora_config:
                 self._trt_lora_config = trtllm.LoraConfig(self._lora_config_id)
+                vila_model_logger.debug(f"LoRA config recreated with ID: {self._lora_config_id}")
+            
+            vila_model_logger.info("📤 ENQUEUEING REQUEST TO TRT-LLM EXECUTOR")
             req_id = self._executor.enqueue_request(request)
+            vila_model_logger.info(f"Request enqueued with ID: {req_id}")
             self._inflight_req_ids.append(req_id)
+            vila_model_logger.debug(f"Inflight requests: {len(self._inflight_req_ids)}")
 
+        vila_model_logger.info("🔄 PROCESSING MODEL OUTPUT")
         if self._output_tpool:
-            return self._output_tpool.submit(
+            vila_model_logger.debug("Using async output processing")
+            result = self._output_tpool.submit(
                 self._postprocess, req_id, output_ids, input_ids.shape[-1]
             )
+            vila_model_logger.info("Async processing task submitted")
+            return result
         else:
-            return self._postprocess(req_id, output_ids, input_ids.shape[-1])
+            vila_model_logger.debug("Using sync output processing")
+            result = self._postprocess(req_id, output_ids, input_ids.shape[-1])
+            vila_model_logger.info("✅ MODEL GENERATION COMPLETE")
+            return result
 
     @staticmethod
     def get_model_info():
