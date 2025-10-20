@@ -16,7 +16,6 @@ import sys
 import torch
 from loguru import logger
 
-from vila_logger import logger as vila_logger
 sys.path.append(os.path.dirname(__file__) + "/VILA")
 
 # Configure context-specific logging

@@ -22,8 +22,6 @@ import torch
 from filelock import FileLock
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 
-from vila_logger import logger
-
 # Add detailed logging for VILA model operations
 from loguru import logger as log
 
@@ -81,7 +79,7 @@ class Vila15:
 
         lora_model_path = os.environ.get("VILA_LORA_PATH", "")
         if lora_model_path:
-            logger.info("LoRA model path is set: %s", lora_model_path)
+            vila_model_logger.info("LoRA model path is set: %s", lora_model_path)
             lock_file_path = os.path.join(lora_model_path, ".lock")
             lora_trt_weights_path = os.path.join(lora_model_path, "trt_weights")
             with FileLock(lock_file_path):
@@ -90,7 +88,7 @@ class Vila15:
                 ) or not os.path.isfile(
                     os.path.join(lora_trt_weights_path, "model.lora_weights.npy")
                 ):
-                    logger.info("Converting LoRA weights ...")
+                    vila_model_logger.info("Converting LoRA weights ...")
                     result = subprocess.run(
                         [
                             "python3",
@@ -106,7 +104,7 @@ class Vila15:
                         ]
                     )
                     if result.returncode:
-                        logger.error("Failed to convert LoRA weights")
+                        vila_model_logger.error("Failed to convert LoRA weights")
                         raise Exception("Failed to convert LoRA weights")
 
             self._lora_config = torch.from_numpy(
@@ -115,7 +113,7 @@ class Vila15:
             self._lora_weights = torch.from_numpy(
                 numpy.load(os.path.join(lora_trt_weights_path, "model.lora_weights.npy"))
             ).squeeze(0)
-            logger.info(f"LoRA weights loaded from {lora_trt_weights_path}")
+            vila_model_logger.info(f"LoRA weights loaded from {lora_trt_weights_path}")
 
         # Load the TRT model
         import tensorrt_llm.bindings.executor as trtllm
@@ -128,7 +126,7 @@ class Vila15:
             self._trt_lora_config = None
 
         with open(os.path.join(trt_engine_dir, "config.json")) as f:
-            logger.debug("Loading config from %s", os.path.join(trt_engine_dir, "config.json"))
+            vila_model_logger.debug("Loading config from %s", os.path.join(trt_engine_dir, "config.json"))
             config = json.load(f)
             if config["build_config"]["plugin_config"]["lora_plugin"]:
                 peft_config = trtllm.PeftCacheConfig(
@@ -216,8 +214,7 @@ class Vila15:
         """
         # Split the input into chunks.
         prompt_chunks = prompt.split("<image>")
-        logger.debug(f"Prompt split into {len(prompt_chunks)} chunks by <image> tag")
-        logger.debug(f"Image embeds shape: {image_embeds.shape}")
+        
         input_ids = []
         extra_input_ids = []
         extra_input_id = self._next_extra_id
@@ -341,7 +338,6 @@ class Vila15:
         torch.cuda.manual_seed_all(seed)
         vila_model_logger.debug(f"All random seeds set to: {seed}")
 
-        logger.debug(f"Prompt: {prompt}")
         vila_model_logger.info("🔤 TOKENIZING PROMPT")
         vila_model_logger.debug(f"Tokenizing prompt: '{prompt}'")
         # Tokenize the prompt, create a batched input_ids of the same size as video_embeds
