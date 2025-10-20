@@ -1,3 +1,5 @@
+import asyncio
+import concurrent.futures
 import sys
 import os
 import time
@@ -72,6 +74,14 @@ logger.add(sys.stderr, level="INFO")
 
 logger.info("Logging system initialized with multiple log files")
 
+# Create thread pool executor for CPU-intensive operations
+CPU_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,  # Adjust based on your CPU cores
+    thread_name_prefix="vila-cpu"
+)
+
+logger.info(f"Initialized CPU thread pool with {CPU_EXECUTOR._max_workers} workers")
+
 # Your existing imports
 from model_setup import prepare_model, VlmModelType, TrtLlmMode
 from process_prompt import extract_video_frames_times
@@ -137,14 +147,34 @@ app.add_middleware(
 )
 
 @app.get("/health")
-def health_check():
+async def health_check():
     """Health check endpoint"""
+    if components.is_initialized():
+        return {"status": "healthy", "model": components.model_type}
+    else:
+        return {"status": "unhealthy", "error": "Components not fully initialized"}
+
+@app.get("/metrics")
+async def get_metrics():
+    """Get server performance metrics"""
     return {
-        "status": "healthy" if components.is_initialized() else "initializing",
-        "model": components.model_type,
-        "timestamp": time.time(),
-        "components_ready": components.is_initialized()
+        "thread_pool": {
+            "active_threads": CPU_EXECUTOR._threads,
+            "max_workers": CPU_EXECUTOR._max_workers,
+            "queue_size": CPU_EXECUTOR._work_queue.qsize() if hasattr(CPU_EXECUTOR._work_queue, 'qsize') else 0
+        },
+        "model_status": {
+            "initialized": components.is_initialized(),
+            "model_type": components.model_type if components.is_initialized() else None
+        }
     }
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on shutdown"""
+    logger.info("Shutting down server...")
+    CPU_EXECUTOR.shutdown(wait=True)
+    logger.info("Thread pool executor shutdown complete")
 
 @app.get("/debug/status")
 def debug_status():
@@ -178,9 +208,10 @@ def list_models():
     }
 
 @app.post("/v1/chat/completions")
-def chat_completions(request: ChatCompletionRequest):
-    """Main chat completions endpoint with comprehensive logging"""
+async def chat_completions(request: ChatCompletionRequest):
+    """Main chat completions endpoint with comprehensive async logging"""
     request_id = uuid.uuid4().hex[:8]
+    start_time = time.time()
     
     # STEP 1: LOG INCOMING REQUEST
     prompt_logger.info(f"🚀 [REQ-{request_id}] INCOMING REQUEST")
@@ -233,7 +264,7 @@ def chat_completions(request: ChatCompletionRequest):
         
         # STEP 4: PROCESS MULTIMODAL INPUT
         prompt_logger.info(f"[REQ-{request_id}] ✅ STEP 4: Processing multimodal input")
-        prompt_text, media_content, system_message = process_multimodal_input(
+        prompt_text, media_content, system_message = await process_multimodal_input(
             request.messages, 
             components.frame_processor, 
             components.emb_generator,
@@ -252,7 +283,7 @@ def chat_completions(request: ChatCompletionRequest):
 
         # STEP 5: GENERATE RESPONSE
         prompt_logger.info(f"[REQ-{request_id}] ✅ STEP 5: Generating VILA response")
-        response_content = generate_response(
+        response_content = await generate_response(
             prompt_text, 
             media_content, 
             request, 
@@ -304,7 +335,13 @@ def chat_completions(request: ChatCompletionRequest):
             }
         }
         
-        prompt_logger.info(f"[REQ-{request_id}] 🎉 REQUEST COMPLETED SUCCESSFULLY")
+        # PERFORMANCE METRICS
+        total_time = time.time() - start_time
+        prompt_logger.info(f"[REQ-{request_id}] ⚡ ASYNC PERFORMANCE METRICS:")
+        prompt_logger.info(f"[REQ-{request_id}] - Total request time: {total_time:.3f}s")
+        prompt_logger.info(f"[REQ-{request_id}] - Tokens per second: {completion_tokens/total_time:.1f}" if total_time > 0 else f"[REQ-{request_id}] - Tokens per second: N/A")
+        
+        prompt_logger.info(f"[REQ-{request_id}] 🎉 ASYNC REQUEST COMPLETED SUCCESSFULLY")
         conv_logger.info(f"[REQ-{request_id}] FINAL RESPONSE: {response_content}")
         
         return final_response
@@ -376,7 +413,7 @@ def handle_test_api_call(request: ChatCompletionRequest):
     }
 
 
-def process_multimodal_input(
+async def process_multimodal_input(
     messages: List[ChatMessage], 
     frame_processor, 
     emb_generator,
@@ -458,22 +495,31 @@ def process_multimodal_input(
                 image_logger.error(f"[REQ-{request_id}] ❌ Embedding generator not available")
                 raise RuntimeError("Embedding generator not available")
             
-            # Process all images to tensors
+            # Process all images to tensors asynchronously
             all_image_tensors = []
-            for i, image_url in enumerate(all_image_urls):
+            
+            async def process_single_image(i, image_url):
+                """Process a single image asynchronously"""
                 image_logger.debug(f"[REQ-{request_id}] Loading image {i+1}/{len(all_image_urls)}: {image_url[:50]}...")
                 
-                pil_image = load_image(image_url, preprocess=False)
+                # Run CPU-intensive operations in thread pool
+                loop = asyncio.get_event_loop()
+                pil_image = await loop.run_in_executor(CPU_EXECUTOR, load_image, image_url, False)
                 image_logger.debug(f"[REQ-{request_id}] Loaded image {i+1}: size={pil_image.size}, mode={pil_image.mode}")
                 
-                image_tensor = frame_processor.process_image(pil_image)
+                image_tensor = await loop.run_in_executor(CPU_EXECUTOR, frame_processor.process_image, pil_image)
                 image_logger.debug(f"[REQ-{request_id}] Processed image {i+1} to tensor: {image_tensor.shape}")
                 
-                all_image_tensors.append(image_tensor)
+                return image_tensor
             
-            # BATCH GENERATE EMBEDDINGS FOR ALL IMAGES AT ONCE
+            # Process all images concurrently
+            image_tasks = [process_single_image(i, url) for i, url in enumerate(all_image_urls)]
+            all_image_tensors = await asyncio.gather(*image_tasks)
+            
+            # BATCH GENERATE EMBEDDINGS FOR ALL IMAGES AT ONCE (ASYNC)
             image_logger.info(f"[REQ-{request_id}] 🧠 Generating embeddings for {len(all_image_tensors)} tensors...")
-            all_embeddings = emb_generator.get_embeddings(all_image_tensors)  # Pass ALL tensors
+            loop = asyncio.get_event_loop()
+            all_embeddings = await loop.run_in_executor(CPU_EXECUTOR, emb_generator.get_embeddings, all_image_tensors)
             
             image_logger.info(f"[REQ-{request_id}] ✅ Generated embeddings: count={len(all_embeddings)}")
             for i, emb in enumerate(all_embeddings):
@@ -504,7 +550,7 @@ def process_multimodal_input(
     return prompt_text, media_content, system_message
 
 
-def generate_response(
+async def generate_response(
     prompt_text: str, 
     media_content: dict, 
     request: ChatCompletionRequest,
@@ -603,7 +649,7 @@ def generate_response(
         if hasattr(vlm_response, "result"):
             model_logger.debug(f"[REQ-{request_id}] Response is a Future object, getting result...")
             try:
-                actual_result = vlm_response.result()
+                actual_result = await asyncio.wrap_future(vlm_response)
                 model_logger.debug(f"[REQ-{request_id}] Future result type: {type(actual_result)}")
                 
                 if isinstance(actual_result, tuple) and len(actual_result) == 2:
@@ -722,11 +768,16 @@ if __name__ == "__main__":
         logger.error(f"Failed to start server: {e}")
         sys.exit(1)
     
-    # Start server
+    # Start server with optimized async configuration (without uvloop)
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
-        workers=1,
-        log_level="info"
+        workers=1,  # Single worker for GPU workloads to avoid contention
+        log_level="info",
+        access_log=False,  # Reduce I/O overhead
+        use_colors=False,  # Reduce formatting overhead
+        limit_concurrency=100,  # Max concurrent connections
+        limit_max_requests=1000,  # Restart worker after N requests (memory cleanup)
+        timeout_keep_alive=5,  # Keep-alive timeout
     )
