@@ -1,4 +1,4 @@
-<h2><img align="center" src="https://github.com/user-attachments/assets/cbe0d62f-c856-4e0b-b3ee-6184b7c4d96f">NVIDIA AI Blueprint: Video Search and Summarization</h2>
+<h2>NVIDIA AI Blueprint: Video Search and Summarization</h2>
 
 ### Table of Contents
 - [Overview](#overview)
@@ -19,6 +19,7 @@ This repository is what powers the [build experience](https://build.nvidia.com/n
 Insightful, accurate, and interactive video analytics AI agents enable a range of industries to make better decisions faster. These AI agents are given tasks through natural language and can perform complex operations like video summarization and visual question-answering, unlocking entirely new application possibilities. The NVIDIA AI Blueprint makes it easy to get started building and customizing video analytics AI agents for video search and summarization — all powered by generative AI, vision language models (VLMs) like Cosmos Nemotron VLMs, large language models (LLMs) like Llama Nemotron LLMs, NVIDIA NeMo Retriever, and NVIDIA NIM.
 
 ## Use Case / Problem Description
+
 The NVIDIA AI Blueprint for Video Search and Summarization addresses the challenge of efficiently analyzing and summarizing large volumes of video data. This can be used to create vision AI agents, that can be applied to a multitude of use cases such as monitoring smart spaces, warehouse automation, and SOP validation. This is important where quick and accurate video analysis can lead to better decision-making and enhanced operational efficiency.
 
 ## Software Components
@@ -28,7 +29,7 @@ The NVIDIA AI Blueprint for Video Search and Summarization addresses the challen
 
 1. **NIM microservices**: Here are models used in this blueprint:
 
-    - [VILA](https://build.nvidia.com/nvidia/vila)
+    - [Cosmos-Reason1-7B](https://build.nvidia.com/nvidia/cosmos-reason1-7b)
     - [meta / llama-3.1-70b-instruct](https://build.nvidia.com/meta/llama-3_1-70b-instruct)
     - [llama-3_2-nv-embedqa-1b-v2](https://build.nvidia.com/nvidia/llama-3_2-nv-embedqa-1b-v2)
     - [llama-3_2-nv-rerankqa-1b-v2](https://build.nvidia.com/nvidia/llama-3_2-nv-rerankqa-1b-v2)
@@ -51,6 +52,7 @@ This blueprint is designed for ease of setup with extensive configuration option
 ## Repository Structure Overview
 - `deploy/`: Contains scripts for docker compose and helm chart deployment, along with notebook for Brev launchable deployment.
 - `src/`: Source code for the video search and summarization agent.
+- `examples/`: Training notebooks for using VSS and usecase examples.
 
 ## Documentation
 
@@ -71,11 +73,11 @@ The platform requirement can vary depending on the configuration and deployment 
 
 | Deployment Type | VLM | LLM | Embedding (llama-3.2-nv-embedqa-1b-v2) | Reranker (llama-3.2-nv-rerankqa-1b-v2) | Minimum GPU Requirement | 
 | ------------------|-----|-----|-----------|----------| --------------- | 
-| Local deployment (Default topology) | Local (VILA 1.5)| Local (Llama 3.1 70B) | Local | Local | 8xB200, 8xH200, 8xH100, 8xA100 (80GB), 8xL40S | 
-| Local deployment (Reduced Compute) | Local (NVILA 15b) | Local (Llama 3.1 70B) | Local | Local | 4xB200, 4xH200, 4xH100, 4xA100 (80GB), 6xL40S |
-| Local deployment (Single GPU) | Local (NVILA 15b) | Local (Llama 3.1 8b low mem mode) | Local | Local | 1xB200, 1xH200, 1xH100, 1xA100 (80GB) |
-| Local VLM deployment | Local | Remote | Remote | Remote | 1xB200, 1xH200, 1xH100, 2xA100 (80GB), 2xL40S |
-| Complete remote deployment | Remote| Remote | Remote | Remote | Minimum 8GB VRAM GPU | 
+| Local deployment (Default topology) | Local (Cosmos Reason1 7B)| Local (Llama 3.1 70B) | Local | Local | 8xB200, 8xH200, 8xH100, 8xA100 (80GB), 8xL40S, 8xRTX PRO 6000 Blackwell |
+| Local deployment (Reduced Compute) | Local (Cosmos Reason1 7B) | Local (Llama 3.1 70B) | Local | Local | 4xB200, 4xH200, 4xH100, 4xA100 (80GB), 6xL40S, 4xRTX PRO 6000 Blackwell |
+| Local deployment (Single GPU) | Local (Cosmos Reason1 7B) | Local (Llama 3.1 8b low mem mode) | Local | Local | 1xB200, 1xH200, 1xH100, 1xA100 (80GB), 1xRTX PRO 6000 Blackwell, DGX Spark |
+| Local VLM deployment | Local(Cosmos Reason1 7B) | Remote | Remote | Remote | 1xB200, 1xH200, 1xH100, 2xA100 (80GB), 1xL40S, 1xRTX PRO 6000 Blackwell, Jetson Thor, DGX Spark |
+| Complete remote deployment | Remote| Remote | Remote | Remote | Minimum 8GB VRAM GPU, Jetson Thor, DGX Spark |
 
 
 ## Quickstart Guide
@@ -93,34 +95,46 @@ Follow the steps from the [documentation](https://docs.nvidia.com/vss/latest/con
 
 For custom VSS deployments through Docker Compose, multiple samples are provided to show different combinations of remote and local model deployments. The `/deploy/docker` directory contains a README with all the details. [Link to README](deploy/docker/README.md)
 
-#### System Requirements
+#### System Requirements (x86 systems)
 
 - Ubuntu 22.04
-- NVIDIA driver 535.161.08 (Recommended minimum version). NVIDIA driver 570.86.15 (for H200). NVIDIA driver 570.133.20 (for B200)
-- CUDA 12.2+ (CUDA driver installed with NVIDIA driver)
+- NVIDIA driver 580.65.06 (Recommended minimum version)
+- CUDA 13.0+ (CUDA driver installed with NVIDIA driver)
 - NVIDIA Container Toolkit 1.13.5+
 - Docker 27.5.1+
 - Docker Compose 2.32.4
+
+Please refer to [Prerequisites section here for more information](https://docs.nvidia.com/vss/latest/content/prereqs_x86.html#prerequisites).
+
+#### System Requirements (NVIDIA Jetson Thor)
+
+Please refer to [NVIDIA Jetson Thor Setup Instructions](https://docs.nvidia.com/vss/latest/content/prereqs_thor.html).
+
+#### System Requirements (NVIDIA DGX Spark)
+
+Please refer to [NVIDIA DGX Spark Setup Instructions](https://docs.nvidia.com/vss/latest/content/prereqs_dgx_spark.html).
 
 
 ### Helm Chart Deployment
 
 **Ideal for:** Production deployments that need to integrate with other systems. Helm offers advantages such as easy upgrades, rollbacks, and management of complex deployments.
 
-The `/deploy/helm/` directory contains a `nvidia-blueprint-vss-2.3.1.tgz` file which can be used to spin up VSS. Refer to the [documentation here](https://docs.nvidia.com/vss/latest/content/run_via.html#) for detailed instructions.
+The `/deploy/helm/` directory contains a `nvidia-blueprint-vss-2.4.0.tgz` file which can be used to spin up VSS. Refer to the [documentation here](https://docs.nvidia.com/vss/latest/content/vss_dep_helm.html#) for detailed instructions.
 
 #### System Requirements
 
 - Ubuntu 22.04
-- NVIDIA driver 535.183.06 (Recommended minimum version). NVIDIA driver 570.86.15 (for H200). NVIDIA driver 570.133.20 (for B200)
-- CUDA 12.2+ (CUDA driver installed with NVIDIA driver)
+- NVIDIA driver 580.65.06 (Recommended minimum version)
+- CUDA 13.0+ (CUDA driver installed with NVIDIA driver)
 - Kubernetes v1.31.2
 - NVIDIA GPU Operator v23.9 (Recommended minimum version)
 - Helm v3.x
 
+>**NOTE**: Helm deployments are supported only for x86 platforms.
+
 ## Known CVEs
 
-VSS Engine 2.3.1 Container has the following known CVEs:
+VSS Engine 2.4.0 Container has the following known CVEs:
 
 |   CVE    | Description |
 |----------|-------------|
@@ -129,6 +143,4 @@ VSS Engine 2.3.1 Container has the following known CVEs:
 |[CVE-2025-3887](https://ubuntu.com/security/CVE-2025-3887)| This impacts GStreamer H.265 codec parser, Malicious malformed streams can cause  stack overflow in H.265 codec parser causing the application to crash. Users must take care that malicious H.265 streams are not added to VSS. This can be remedied by building and installing the GStreamer1.24.2 codec parser library after applying the patch mentioned in https://gstreamer.freedesktop.org/security/sa-2025-0001.html. |
 
 ## License
-The software and materials in this repository are governed by the [NVIDIA Software License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for [NVIDIA AI Products](https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/); except for models which are governed by the [NVIDIA Community Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-community-models-license/).
-
-ADDITIONAL INFORMATION: [Llama 3.1 Community License Agreement](https://www.llama.com/llama3_1/license/) for Llama-3.1-70b-instruct; [Llama 3.2 Community License Agreement](https://www.llama.com/llama3_2/license/) for NVIDIA Retrieval QA Llama 3.2 1B Embedding v2 and NVIDIA Retrieval QA Llama 3.2 1B Reranking v2, Apache, Version 2.0 for https://github.com/google-research/big_vision/blob/main/LICENSE and Apache License, Version 2.0 for https://github.com/01-ai/Yi/blob/main/LICENSE. Built with Llama.
+Refer to [LICENSE](LICENSE)

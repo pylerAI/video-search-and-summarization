@@ -21,6 +21,7 @@ from threading import Thread
 from typing import Callable
 
 import aiofiles
+
 from via_exception import ViaException
 from via_logger import TimeMeasure, logger
 
@@ -42,7 +43,8 @@ class Asset:
         username="",
         password="",
         description="",
-        files: dict[str, dict] | None = None,  # ✅ 추가
+        video_fps=None,
+        camera_id="",
     ) -> None:
         """Asset constructor.
 
@@ -57,6 +59,8 @@ class Asset:
             username (optional): Username to access the live stream. Defaults to "".
             password (optional): Password to access the live stream. Defaults to "".
             description (optional): Description of the asset (live-stream only). Defaults to "".
+            video_fps (optional): Cached video FPS. Defaults to None.
+            camera_id (optional): Camera ID to be used for the asset. Defaults to "".
         """
         self._asset_id = asset_id
         self._filename = fileName
@@ -68,56 +72,27 @@ class Asset:
         self._description = description
         self._username = username
         self._password = password
-        self.files = files or {}  # ✅ 추가: 전체 파일 목록 보존
+        self._video_fps = video_fps
+        self._camera_id = camera_id
 
     @classmethod
-    def fromdir(cls, asset_dir: str):
-        info_path = os.path.join(asset_dir, "info.json")
-        with open(info_path) as f:
+    def fromdir(cls, asset_dir):
+        with open(os.path.join(asset_dir, "info.json")) as f:
             info = json.load(f)
 
-        if "files" in info:
-            files = info["files"]
-            # 대표 파일 선택: video > image > 첫 번째
-            media_type = (
-                "video" if "video" in files
-                else "image" if "image" in files
-                else next(iter(files), None)
-            )
-            file_info = files[media_type] if media_type else {}
-
-            return cls(
+            return Asset(
                 asset_id=info["assetId"],
-                path=file_info.get("path", ""),
-                fileName=file_info.get("fileName", ""),
-                purpose=file_info.get("purpose", ""),
-                media_type=media_type,
-                username=info.get("username", ""),
-                password=info.get("password", ""),
-                description=info.get("description", ""),
+                path=info["path"],
+                fileName=info["fileName"],
+                purpose=info["purpose"],
+                media_type=info.get("media_type", "video"),
+                username=info["username"],
+                password=info["password"],
+                description=info["description"],
                 asset_dir=asset_dir,
-                files=files,  # ✅ 전체 files dict 포함
+                video_fps=info.get("video_fps", None),
+                camera_id=info.get("camera_id", ""),
             )
-
-        # 기존 단일 파일 구조 처리
-        return cls(
-            asset_id=info["assetId"],
-            path=info["path"],
-            fileName=info["fileName"],
-            purpose=info["purpose"],
-            media_type=info.get("media_type", "video"),
-            username=info["username"],
-            password=info["password"],
-            description=info["description"],
-            asset_dir=asset_dir,
-            files={
-                info.get("media_type", "video"): {
-                    "path": info["path"],
-                    "fileName": info["fileName"],
-                    "purpose": info["purpose"],
-                }
-            },  # ✅ 단일 파일도 files로 래핑
-        )
 
     @property
     def asset_id(self):
@@ -164,6 +139,11 @@ class Asset:
         """Storage directory for the asset"""
         return self._asset_dir
 
+    @property
+    def camera_id(self):
+        """Camera ID to be used for the asset"""
+        return self._camera_id
+
     def lock(self):
         """Lock the asset. Asset cannot be deleted if in use."""
         self._use_count += 1
@@ -181,6 +161,30 @@ class Asset:
     def is_live(self):
         """Boolean indicating if the asset is a live stream."""
         return self.path.startswith("rtsp://")
+
+    @property
+    def video_fps(self):
+        """Cached video FPS."""
+        return self._video_fps
+
+    def update_video_fps(self, fps: float):
+        """Update the cached video FPS and save to info.json.
+
+        Args:
+            fps: Video frames per second
+        """
+        self._video_fps = fps
+
+        # Update the info.json file
+        info_path = os.path.join(self._asset_dir, "info.json")
+        if os.path.exists(info_path):
+            with open(info_path, "r") as f:
+                info = json.load(f)
+
+            info["video_fps"] = fps
+
+            with open(info_path, "w") as f:
+                json.dump(info, f)
 
 
 class AssetManager:
@@ -218,194 +222,102 @@ class AssetManager:
             self._age_out_thread = Thread(target=self._age_out_thread_func, daemon=True)
             self._age_out_thread.start()
 
-    # async def save_file(self, file, file_name, purpose: str, media_type: str, video_id: str | None = None):
-    #     """Save the uploaded as a file.
+    async def save_file(self, file, file_name, purpose: str, media_type: str, camera_id: str):
+        """Save the uploaded as a file.
 
-    #     Args:
-    #         file: File object to save file.
-    #         file_name: Name of the file.
-    #         purpose: Purpose of the file.
-    #         media_type: Media type (video/image) of the file.
-
-    #     Returns:
-    #         A unique id for the asset.
-    #     """
-
-    #     # Generate a unique id for the asset.
-    #     if video_id:
-    #         asset_id = video_id
-    #     else:
-    #         asset_id = str(uuid.uuid4())
-    #         while asset_id in self._asset_map:
-    #             asset_id = str(uuid.uuid4())
-
-    #     asset_dir = os.path.join(self._asset_dir, asset_id)
-    #     if not os.path.exists(asset_dir):
-    #         try:
-    #             os.makedirs(asset_dir)
-    #         except Exception:
-    #             raise ViaException("Could not create directory for asset")
-
-    #     current_storage_size = await self._get_storage_usage()
-    #     current_file_size = 0
-
-    #     # Write the uploaded file to assets directory
-    #     async with aiofiles.open(os.path.join(asset_dir, file_name), "wb") as f:
-    #         while chunk := await file.read(1024 * 1024 * 10):
-    #             current_file_size += len(chunk)
-
-    #             # Check if writing the current chunk will cross threshold
-    #             if self._max_storage_usage_gb and (
-    #                 current_storage_size + current_file_size / (1024.0**3)
-    #                 > AGE_OUT_THRESHOLD * self._max_storage_usage_gb
-    #             ):
-    #                 # Try to clean assets
-    #                 await self._age_out_assets()
-    #                 current_storage_size = await self._get_storage_usage()
-    #                 current_file_size = 0
-
-    #             # Check if writing the current chunk will cross max size
-    #             if self._max_storage_usage_gb and (
-    #                 current_storage_size + current_file_size / (1024.0**3)
-    #                 > self._max_storage_usage_gb
-    #             ):
-    #                 #
-    #                 f.close()
-    #                 try:
-    #                     shutil.rmtree(asset_dir)
-    #                 except Exception:
-    #                     pass
-    #                 raise ViaException(
-    #                     "Asset storage full. Could not remove existing older assets"
-    #                     " because they are in use",
-    #                     "ServerBusy",
-    #                     503,
-    #                 )
-    #             await f.write(chunk)
-
-    #     # Save asset info as json
-    #     info_path = os.path.join(asset_dir, "info.json")
-    #     info_data = {}
-
-    #     # 기존 정보 병합
-    #     if os.path.exists(info_path):
-    #         with open(info_path) as f:
-    #             info_data = json.load(f)
-
-    #     # 새로운 정보 업데이트
-    #     info_data.update({
-    #         "assetId": asset_id,
-    #         "fileName": file_name,
-    #         "purpose": purpose,
-    #         "media_type": media_type,
-    #         "username": "",
-    #         "password": "",
-    #         "description": "",
-    #         "path": os.path.join(asset_dir, file_name),
-    #     })
-
-    #     with open(info_path, "w") as f:
-    #         json.dump(info_data, f, indent=2)
-
-    #     # add an entry in the asset map
-    #     self._asset_map[asset_id] = Asset.fromdir(asset_dir)
-
-    #     logger.info(f"[AssetManager] Saved file - asset-id: {asset_id} name: {file_name}")
-
-    #     await self._age_out_assets()
-
-    #     return asset_id
-
-    async def save_file(
-        self,
-        file,
-        file_name,
-        purpose: str,
-        media_type: str,
-        video_id: str | None = None
-    ):
-        if video_id:
-            asset_id = video_id
-        else:
+        Args:
+            file: File object to save file.
+            file_name: Name of the file.
+            purpose: Purpose of the file.
+            media_type: Media type (video/image) of the file.
+            camera_id: Camera ID to be used for the file.
+        Returns:
+            A unique id for the asset.
+        """
+        # Generate a unique id for the asset.
+        asset_id = str(uuid.uuid4())
+        while asset_id in self._asset_map:
             asset_id = str(uuid.uuid4())
-            while asset_id in self._asset_map:
-                asset_id = str(uuid.uuid4())
 
         asset_dir = os.path.join(self._asset_dir, asset_id)
-        os.makedirs(asset_dir, exist_ok=True)
+        try:
+            os.makedirs(asset_dir)
+        except Exception:
+            raise ViaException("Could not create directory for asset")
 
         current_storage_size = await self._get_storage_usage()
         current_file_size = 0
 
-        # 📦 저장 경로 지정
-        save_path = os.path.join(asset_dir, file_name)
-
-        # 📤 비동기 파일 쓰기
-        async with aiofiles.open(save_path, "wb") as f:
+        # Write the uploaded file to assets directory
+        async with aiofiles.open(os.path.join(asset_dir, file_name), "wb") as f:
             while chunk := await file.read(1024 * 1024 * 10):
                 current_file_size += len(chunk)
 
-                # 용량 제한 체크
+                # Check if writing the current chunk will cross threshold
                 if self._max_storage_usage_gb and (
                     current_storage_size + current_file_size / (1024.0**3)
                     > AGE_OUT_THRESHOLD * self._max_storage_usage_gb
                 ):
+                    # Try to clean assets
                     await self._age_out_assets()
                     current_storage_size = await self._get_storage_usage()
                     current_file_size = 0
 
+                # Check if writing the current chunk will cross max size
                 if self._max_storage_usage_gb and (
                     current_storage_size + current_file_size / (1024.0**3)
                     > self._max_storage_usage_gb
                 ):
+                    #
                     f.close()
                     try:
                         shutil.rmtree(asset_dir)
                     except Exception:
                         pass
                     raise ViaException(
-                        "Asset storage full. Could not remove existing older assets",
+                        "Asset storage full. Could not remove existing older assets"
+                        " because they are in use",
                         "ServerBusy",
                         503,
                     )
                 await f.write(chunk)
 
-        # 🧠 info.json 병합 관리
-        info_path = os.path.join(asset_dir, "info.json")
-        info_data = {}
+        # Save asset info as json
+        with open(os.path.join(asset_dir, "info.json"), "w") as f:
+            json.dump(
+                {
+                    "assetId": asset_id,
+                    "path": os.path.join(asset_dir, file_name),
+                    "fileName": file_name,
+                    "purpose": purpose,
+                    "media_type": media_type,
+                    "username": "",
+                    "password": "",
+                    "description": "",
+                    "video_fps": None,
+                    "camera_id": camera_id,
+                },
+                f,
+            )
 
-        if os.path.exists(info_path):
-            with open(info_path) as f:
-                info_data = json.load(f)
-
-        info_data["assetId"] = asset_id
-        info_data.setdefault("files", {})
-        info_data["files"][media_type] = {
-            "fileName": file_name,
-            "path": save_path,
-            "purpose": purpose,
-        }
-
-        with open(info_path, "w") as f:
-            json.dump(info_data, f, indent=2)
-
-        # 💾 메모리 asset map 업데이트
+        # add an entry in the asset map
         self._asset_map[asset_id] = Asset.fromdir(asset_dir)
 
-        logger.info(f"[AssetManager] Saved {media_type} file - asset-id: {asset_id} name: {file_name}")
+        logger.info(f"[AssetManager] Saved file - asset-id: {asset_id} name: {file_name}")
 
         await self._age_out_assets()
 
         return asset_id
 
-    def add_file(self, file_path, purpose, media_type, reuse_asset=False):
+    def add_file(self, file_path, purpose, media_type, camera_id="", reuse_asset=False):
         """Add a file already on the file system as a path.
 
         Args:
             file_path: Path of the file to add.
             purpose: Purpose of the file.
             media_type: Media type (video/image) of the file.
-
+            camera_id: Camera ID to be used for the file.
+            reuse_asset: Whether to reuse an existing asset.
         Returns:
             A unique id for the asset.
         """
@@ -441,6 +353,8 @@ class AssetManager:
                     "username": "",
                     "password": "",
                     "description": "",
+                    "video_fps": None,
+                    "camera_id": camera_id,
                 },
                 f,
             )
@@ -452,7 +366,7 @@ class AssetManager:
         )
         return asset_id
 
-    def add_live_stream(self, url: str, description="", username="", password=""):
+    def add_live_stream(self, url: str, description="", username="", password="", camera_id=""):
         """Add a live stream.
 
         Args:
@@ -460,7 +374,7 @@ class AssetManager:
             description (optional): Description of the live stream. Defaults to "".
             username (optional): Username to access the stream. Defaults to "".
             password (optional): Password to access the stream. Defaults to "".
-
+            camera_id (optional): Camera ID to be used for the live stream. Defaults to "".
         Returns:
             A unique id for the asset.
         """
@@ -487,6 +401,8 @@ class AssetManager:
                     "username": username,
                     "password": password,
                     "description": description,
+                    "video_fps": None,
+                    "camera_id": camera_id,
                 },
                 f,
             )

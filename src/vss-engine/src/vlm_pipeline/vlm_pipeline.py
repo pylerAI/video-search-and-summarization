@@ -39,9 +39,30 @@ from .embedding_helper import EmbeddingHelper
 from .ngc_model_downloader import download_model, download_model_git
 from .process_base import ViaProcessBase
 
+# Location to download and cache NGC models
+NGC_MODEL_CACHE = os.environ.get("NGC_MODEL_CACHE", "") or os.path.expanduser(
+    "~/.via/ngc_model_cache/"
+)
+
+FORCE_TRT = True
+
 
 class VlmModelType(Enum):
+    VILA_15 = "vila-1.5"
+    NVILA = "nvila"
     OPENAI_COMPATIBLE = "openai-compat"  # Any OpenAI API compatible on NIM/OpenAI/Azure-OpenAI
+    COSMOS_REASON1 = "cosmos-reason1"
+
+    def __str__(self):
+        return self.value
+
+
+class TrtLlmMode(Enum):
+    FP16 = "fp16"
+    FP8 = "fp8"
+    INT8 = "int8"
+    INT4 = "int4"
+    INT4_AWQ = "int4_awq"
 
     def __str__(self):
         return self.value
@@ -85,6 +106,7 @@ class DecoderProcess(ViaProcessBase):
         self._vlm_model_type = args.vlm_model_type
         self._num_decoders_per_gpu = args.num_decoders_per_gpu
         self._num_frames_per_chunk = args.num_frames_per_chunk
+        self._model_path = args.model_path
         self._module_loader = None
         self._max_live_streams = max(1, -(-args.max_live_streams // args.num_gpus))
         self._enable_audio = args.enable_audio
@@ -110,11 +132,129 @@ class DecoderProcess(ViaProcessBase):
         self._data_type_int8 = False
 
         # Populate model-specific frame pre-processing parameters
-        if not self._nfrms:
-            self._nfrms = 10
-        self._minframes = 1
-        # For OpenAI compatible models, JPEG images are used
-        self._enable_jpeg_tensors = True
+        if self._vlm_model_type is None:
+            # use custom module load if model type is not specified
+            module_loader = CustomModuleLoader(self._model_path)
+            manifest = module_loader.manifest()
+            input_spec = manifest.pop("input", None)
+            if input_spec:
+                if not self._nfrms:
+                    self._nfrms = input_spec.pop("number_of_frames", 1)
+                crop_size = input_spec.pop("crop_size", None)
+                if crop_size:
+                    self._crop_width = crop_size[0]
+                    self._crop_height = crop_size[1]
+                self._enable_jpeg_tensors = input_spec.pop("jpeg_encoded", False)
+                vlm_input_resolution = input_spec.pop("vlm_input_resolution", None)
+                if vlm_input_resolution:
+                    logger.info(
+                        f"VLM input resolution from manifest file: "
+                        f"width {vlm_input_resolution[0]}, height {vlm_input_resolution[1]}"
+                    )
+                    self._width = vlm_input_resolution[0]
+                    self._height = vlm_input_resolution[1]
+            self._minframes = 1
+        elif self._vlm_model_type in [VlmModelType.VILA_15]:
+            if not self._nfrms:
+                self._nfrms = 8
+            self._minframes = 1
+
+            sys.path.append(os.path.dirname(os.path.dirname(__file__)) + "/models/vila15/VILA")
+            import llava.model.language_model.llava_llama  # noqa: F401
+            from llava.model.multimodal_encoder.intern_encoder import (
+                InternVisionPreprocessor,
+            )
+            from transformers import AutoModel
+            from transformers.models.siglip.image_processing_siglip import (
+                SiglipImageProcessor,
+            )
+
+            # Load the model to pseudo memory (meta). This is required to get
+            # the image preprocessor without acutally loading the model
+            with TimeMeasure("VILA decoder Model load"):
+                device_map = {
+                    "model.vision_tower": "meta",
+                    "model.embed_tokens": "meta",
+                    "model.layers": "meta",
+                    "model.norm": "meta",
+                    "lm_head": "meta",
+                    "model.mm_projector": "meta",
+                }
+                model = AutoModel.from_pretrained(
+                    self._model_path,
+                    low_cpu_mem_usage=True,
+                    device_map=device_map,
+                )
+
+                # Load the image preprocessor
+                image_processor = model.get_vision_tower().image_processor
+
+                # Populate the image preprocessing parameters for VILA 1.5
+                if isinstance(image_processor, InternVisionPreprocessor):
+                    self._shortest_edge = [
+                        image_processor.size["height"],
+                        image_processor.size["width"],
+                    ]
+                    self._rescale_factor = 1 / 255.0
+                    self._image_mean = (0.485, 0.456, 0.406)
+                    self._image_std = (0.229, 0.224, 0.225)
+                    self._do_preprocess = True
+                    # self._run_image_processor = True
+                    # self._image_processor = image_processor
+                elif isinstance(image_processor, SiglipImageProcessor):
+                    self._image_mean = image_processor.image_mean
+                    self._rescale_factor = image_processor.rescale_factor
+                    self._image_std = image_processor.image_std
+                    if hasattr(image_processor, "crop_size"):
+                        self._crop_height = image_processor.crop_size["height"]
+                        self._crop_width = image_processor.crop_size["width"]
+                    if "shortest_edge" in image_processor.size:
+                        self._shortest_edge = image_processor.size["shortest_edge"]
+                    elif "width" in image_processor.size and "height" in image_processor.size:
+                        self._shortest_edge = [
+                            image_processor.size["height"],
+                            image_processor.size["width"],
+                        ]
+                    self._do_preprocess = True
+                    self._image_aspect_ratio = model.config.image_aspect_ratio
+
+                else:
+                    raise Exception("Unsupported image preprocessor")
+
+            del model
+            torch.cuda.empty_cache()
+        elif self._vlm_model_type in [VlmModelType.NVILA]:
+            with open(self._model_path + "/config.json") as f:
+                config = json.load(f)
+            if not self._nfrms:
+                self._nfrms = config.get("num_video_frames", 8)
+            self._minframes = 1
+            self._data_type_int8 = True
+
+        elif self._vlm_model_type in [VlmModelType.COSMOS_REASON1]:
+            with open(self._model_path + "/config.json") as f:
+                config = json.load(f)
+            if not self._nfrms:
+                self._nfrms = config.get("num_video_frames", 20)
+            self._minframes = 1
+            self._data_type_int8 = True
+            # 2K vision tokens
+            self._width = 532
+            self._height = 280
+
+        elif self._vlm_model_type in [VlmModelType.OPENAI_COMPATIBLE]:
+            if not self._nfrms:
+                self._nfrms = 10
+            self._minframes = 1
+            # For OpenAI compatible models, JPEG images are used
+            self._enable_jpeg_tensors = True
+
+        else:
+            self._width = 224
+            self._height = 224
+            if not self._nfrms:
+                self._nfrms = 8
+            self._minframes = 8
 
         if (
             "VLM_INPUT_WIDTH" in os.environ
@@ -161,18 +301,23 @@ class DecoderProcess(ViaProcessBase):
         chunk.end_pts = 5000000000
         if os.path.exists(chunk.file):
             for fgetter in self._fgetters:
-                frames, frame_times, audio_frames = fgetter.get_frames(chunk, True)
+                frames, frame_times, audio_frames, error = fgetter.get_frames(chunk, True)
 
         chunk.file = "/opt/nvidia/via/warmup_streams/its_265.mp4"
         if os.path.exists(chunk.file):
+            frames = []
+            frame_times = []
+            audio_frames = []
+            error = None
             for fgetter in self._fgetters:
-                frames, frame_times, audio_frames = fgetter.get_frames(chunk, True)
+                frames, frame_times, audio_frames, error = fgetter.get_frames(chunk, True)
 
         self._output_queue.put(
             {
                 "chunk": chunk,
                 "chunk_id": -1,
                 "frames": frames,
+                "error": error,
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "request_params": None,
@@ -202,7 +347,7 @@ class DecoderProcess(ViaProcessBase):
 
         enable_audio = kwargs["enable_audio"] if "enable_audio" in kwargs else False
 
-        frames, frame_times, audio_frames = fgetter.get_frames(
+        frames, frame_times, audio_frames, error = fgetter.get_frames(
             chunk,
             True,
             frame_selector,
@@ -217,17 +362,28 @@ class DecoderProcess(ViaProcessBase):
         self._fgetters.append(fgetter)
         logger.log(LOG_STATUS_LEVEL, "Chunk (%s) decoded, frames=%d", chunk, len(frames))
         decode_end_time = time.time()
+
+        error_msg = f"Decode error: {error}" if error else None
+
         if len(frames) >= self._minframes:
             return {
                 "chunk": chunk,
                 "frames": frames,
+                "error": error_msg,
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "decode_start_time": decode_start_time,
                 "decode_end_time": decode_end_time,
                 **kwargs,
             }
-        return {}
+        elif error_msg:
+            return {
+                "chunk": chunk,
+                "error": error_msg,
+                **kwargs,
+            }
+        else:
+            return {}
 
     def _handle_command(self, command, **kwargs):
         logger.debug(f"command is {command}")
@@ -292,7 +448,7 @@ class DecoderProcess(ViaProcessBase):
         self._live_stream_handle_info[live_stream_id] = {"frame_getter": fgetter, "num_chunks": 0}
 
         def on_chunk_decoded(
-            chunk: ChunkInfo, frames, frame_times, transcripts, live_stream_id, **kwargs
+            chunk: ChunkInfo, frames, frame_times, transcripts, error, live_stream_id, **kwargs
         ):
             frame_times = [float("%.2f" % frame_ele) for frame_ele in frame_times]
             chunk.streamId = live_stream_id
@@ -302,7 +458,15 @@ class DecoderProcess(ViaProcessBase):
                 asr_output += asr_transcript["transcript"] + " "
             transcript = asr_output if len(asr_output) != 0 else None
 
-            logger.log(LOG_STATUS_LEVEL, "Decoded new chunk (%s), frames=%d", chunk, len(frames))
+            if error is not None:
+                error_msg = "Decode error: " + error
+                logger.error(f"Error decoding chunk {chunk}: {error}")
+            else:
+                error_msg = None
+                logger.log(
+                    LOG_STATUS_LEVEL, "Decoded new chunk (%s), frames=%d", chunk, len(frames)
+                )
+
             if len(frames) >= self._minframes:
                 self._handle_result(
                     {
@@ -310,6 +474,7 @@ class DecoderProcess(ViaProcessBase):
                         "frames": frames,
                         "frame_times": frame_times,
                         "audio_transcript": transcript,
+                        "error": error_msg,
                         "is_live_stream": True,
                         **kwargs,
                     },
@@ -329,8 +494,8 @@ class DecoderProcess(ViaProcessBase):
             cv_pipeline_text_prompt=cv_pipeline_text_prompt,
             live_stream_id=live_stream_id,
             on_chunk_decoded=(
-                lambda chunk, frames, frame_times, transcripts, live_stream_id=live_stream_id, kwargs=kwargs: on_chunk_decoded(  # noqa: E501
-                    chunk, frames, frame_times, transcripts, live_stream_id, **kwargs
+                lambda chunk, frames, frame_times, transcripts, error=None, live_stream_id=live_stream_id, kwargs=kwargs: on_chunk_decoded(  # noqa: E501
+                    chunk, frames, frame_times, transcripts, error, live_stream_id, **kwargs
                 )
             ),
             enable_audio=enable_audio,
@@ -358,7 +523,12 @@ class DecoderProcess(ViaProcessBase):
 
     def _process(self, **kwargs):
         """Decode a chunk and return selected frames as raw frames / JPEG images"""
-        return self._thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
+        if self._vlm_model_type == VlmModelType.NVILA:
+            return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
+        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
+            return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
+        else:
+            return self._thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
 
 
 class EmbeddingProcess(ViaProcessBase):
@@ -375,6 +545,9 @@ class EmbeddingProcess(ViaProcessBase):
             qsize=3,
         )
         self._vlm_model_type = args.vlm_model_type
+        self._model_path = args.model_path
+        self._use_trt = args.use_trt
+        self._trt_engine_dir = args.trt_engine_dir
         self._asset_dir = asset_dir
 
     def _initialize(self):
@@ -382,10 +555,27 @@ class EmbeddingProcess(ViaProcessBase):
         self._emb_helper = EmbeddingHelper(self._asset_dir)
 
         # Model specific embedding generator
-        from models.common.frame_jpeg_tensor_generator import (
+        if self._vlm_model_type == VlmModelType.VILA_15:
+            from models.vila15.vila15_embedding_generator import (
+                Vila15EmbeddingGenerator,
+            )
+
+            self._emb_generator = Vila15EmbeddingGenerator(
+                self._model_path,
+                use_trt=self._use_trt,
+                trt_engine_dir=self._trt_engine_dir,
+                async_output=True,
+            )
+        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            from models.common.frame_jpeg_tensor_generator import (
                 FrameJPEGTensorGenerator,
-        )
-        self._emb_generator = FrameJPEGTensorGenerator()
+            )
+
+            self._emb_generator = FrameJPEGTensorGenerator()
+        elif self._vlm_model_type is None:
+            model = CustomModuleLoader(self._model_path).load_model()
+            self._emb_generator = model.get_embedding_generator()
+
         return True
 
     def _deinitialize(self):
@@ -411,6 +601,7 @@ class EmbeddingProcess(ViaProcessBase):
         audio_frames = kwargs.pop("audio_frames", audio_frames)
         audio_transcript = [[]]
         audio_transcript = kwargs.pop("audio_transcript", audio_transcript)
+        error_msg = kwargs.pop("error", None)
 
         if self._emb_generator is None:
             # Model does not support embeddings, send the frames to the VLM process
@@ -420,6 +611,7 @@ class EmbeddingProcess(ViaProcessBase):
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
+                "error": error_msg,
                 **kwargs,
             }
 
@@ -436,6 +628,7 @@ class EmbeddingProcess(ViaProcessBase):
             frame_times,
             audio_frames,
             audio_transcript,
+            error_msg,
             embed_start_time,
             nvtx_embedding_start,
         ):
@@ -448,6 +641,7 @@ class EmbeddingProcess(ViaProcessBase):
                 "embed_end_time": [time.time()] * len(chunk),
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
+                "error": error_msg,
                 **kwargs,
             }
 
@@ -459,6 +653,7 @@ class EmbeddingProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
+                error_msg,
                 embed_start_time,
                 nvtx_embedding_start,
             )
@@ -469,6 +664,7 @@ class EmbeddingProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
+                error_msg,
                 embed_start_time,
                 nvtx_embedding_start,
             )
@@ -481,7 +677,7 @@ class VlmProcess(ViaProcessBase):
         self,
         args,
         asset_dir,
-        gpu_id=0,
+        gpu_id: int | str = 0,
         disabled=False,
         input_queue=None,
         input_queue_lock=None,
@@ -494,6 +690,9 @@ class VlmProcess(ViaProcessBase):
             input_queue_lock=input_queue_lock,
         )
         self._vlm_model_type = args.vlm_model_type
+        self._model_path = args.model_path
+        self._use_trt = args.use_trt
+        self._trt_engine_dir = args.trt_engine_dir
         self._args = args
         self._asset_dir = asset_dir
         self._num_gpus = args.num_gpus
@@ -508,20 +707,56 @@ class VlmProcess(ViaProcessBase):
         # RuntimeError: No CUDA GPUs are available
         if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             use_gpu_mem_for_embedding_load = False
-            logger.info(
-                "Using CPU memory for loading embeddings for OpenAI compatible VLM model"
-            )
-        else:
-            raise NotImplementedError(
-                f"VLM model type {self._vlm_model_type} not supported. Only OPENAI_COMPATIBLE is supported."
-            )
         self._emb_helper = EmbeddingHelper(
             self._asset_dir, use_gpu_mem=use_gpu_mem_for_embedding_load
         )
 
-        from models.openai_compat.openai_compat_model import CompOpenAIModel
-        self._model = CompOpenAIModel(True)
-        self._batch_size = 1
+        # Model specific initialization
+        if self._vlm_model_type == VlmModelType.VILA_15:
+            from models.vila15.vila15_model import Vila15
+
+            self._model = Vila15(
+                self._model_path,
+                use_trt=self._use_trt,
+                trt_engine_dir=self._trt_engine_dir,
+                max_batch_size=self._batch_size,
+                async_output=True,
+            )
+            if self._model.TRTLLM_EXECUTOR_INFLIGHT_BATCHING:
+                self._batch_size = 1
+        elif self._vlm_model_type == VlmModelType.NVILA:
+            from models.nvila.nvila_model import NVila
+
+            self._model = NVila(
+                self._model_path,
+                use_trt=self._use_trt,
+                trt_engine_dir=self._trt_engine_dir,
+                max_batch_size=self._batch_size,
+                async_output=True,
+            )
+            self._batch_size = 1
+
+        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
+            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
+
+            self._model = CosmosReason1(
+                self._model_path,
+                use_trt=self._use_trt,
+                trt_engine_dir=self._trt_engine_dir,
+                max_batch_size=self._batch_size,
+                async_output=True,
+            )
+            self._batch_size = 1
+
+        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            from models.openai_compat.openai_compat_model import CompOpenAIModel
+
+            self._model = CompOpenAIModel(True)
+            self._batch_size = 1
+        elif self._vlm_model_type is None:
+            loader = CustomModuleLoader(self._model_path)
+            self._model = loader.load_model()
+            self._batch_size = 1
         return True
 
     def _deinitialize(self):
@@ -533,11 +768,19 @@ class VlmProcess(ViaProcessBase):
     def _can_batch(self, item1, item2):
         # For VLM, batching can be performed only if number of frames used
         # for embedding generation is equal.
-        return False  # Batching was only supported for VILA_15, which has been removed
+        return (
+            (self._vlm_model_type == VlmModelType.VILA_15)
+            and self._emb_helper.get_num_frames_embedding(item1["chunk"])
+            == self._emb_helper.get_num_frames_embedding(item2["chunk"])
+            and item1["request_params"] == item2["request_params"]
+        )
 
     def _is_busy(self):
-        # openai-compat models will handler their own request queuing
-        return False
+        return (
+            self._vlm_model_type == VlmModelType.VILA_15
+            or self._vlm_model_type == VlmModelType.NVILA
+            or self._vlm_model_type == VlmModelType.COSMOS_REASON1
+        ) and not self._model.can_enqueue_requests()
 
     def _warmup(self):
         if hasattr(self._model, "warmup"):
@@ -558,30 +801,60 @@ class VlmProcess(ViaProcessBase):
 
         for chunk_ in chunk:
             logger.log(LOG_STATUS_LEVEL, "Generating VLM response for (%s)", chunk_)
-        
-        from models.common.model_context_frame_input import ModelContextFrameInput
-        ctx = ModelContextFrameInput(self._model)
-        
+
+        # Model specific context handlers
+        if self._vlm_model_type == VlmModelType.VILA_15:
+            from models.vila15.vila15_context import Vila15Context
+
+            ctx = Vila15Context(self._model)
+        elif self._vlm_model_type == VlmModelType.NVILA:
+            from models.nvila.nvila_context import NVilaContext
+
+            ctx = NVilaContext(self._model)
+        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
+            from models.cosmos_reason1.cosmos_reason1_context import (
+                CosmosReason1Context,
+            )
+
+            ctx = CosmosReason1Context(self._model)
+        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            from models.common.model_context_frame_input import ModelContextFrameInput
+
+            ctx = ModelContextFrameInput(self._model)
+        elif self._vlm_model_type is None:
+            ctx = CustomModelContext(self._model)
+
         embeds = []
         frame_times = []
-        
-        # Model supports explicit embeddings, fetch the embedding for each chunk
-        # in the input batch
-        for chunk_ in chunk:
-            embed, ftime = self._emb_helper.get_embedding(chunk_)
-            embeds.append(embed)
-            frame_times.append(ftime)
+        if (
+            (self._vlm_model_type is not None or self._model.get_embedding_generator() is not None)
+            and self._vlm_model_type != VlmModelType.NVILA
+            and self._vlm_model_type != VlmModelType.COSMOS_REASON1
+        ):
+            # Model supports explicit embeddings, fetch the embedding for each chunk
+            # in the input batch
+            for chunk_ in chunk:
+                embed, ftime = self._emb_helper.get_embedding(chunk_)
+                embeds.append(embed)
+                frame_times.append(ftime)
 
         frames = kwargs.pop("frames", None)
         frame_times = kwargs.pop("frame_times", frame_times)
         # Set the video embeddings on the context class along with time information
         ctx.set_video_embeds(chunk, embeds, frames, frame_times)
 
-        vlm_response_stats = ctx.ask(
-            request_params[0].vlm_prompt,
-            generation_config=request_params[0].vlm_generation_config,
-            chunk=chunk,
-        )
+        decode_only = kwargs.pop("decode_only", [False])[0]
+        if decode_only:
+            vlm_response_stats = (
+                ["Skipping since dense captioning is enabled"],
+                [{"input_tokens": 0, "output_tokens": 0}],
+            )
+        else:
+            vlm_response_stats = ctx.ask(
+                request_params[0].vlm_prompt,
+                generation_config=request_params[0].vlm_generation_config,
+                chunk=chunk,
+            )
         if "is_live_stream" in kwargs and self._num_gpus > 1:
             time.sleep(0.1)
 
@@ -592,6 +865,7 @@ class VlmProcess(ViaProcessBase):
             frame_times,
             audio_frames,
             audio_transcript,
+            error_msg,
             vlm_start_time,
             nvtx_vlm_process_start,
         ):
@@ -612,6 +886,7 @@ class VlmProcess(ViaProcessBase):
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
+                "error": error_msg,
                 "vlm_start_time": [vlm_start_time] * len(chunk),
                 "vlm_end_time": [time.time()] * len(chunk),
                 **kwargs,
@@ -621,6 +896,7 @@ class VlmProcess(ViaProcessBase):
         audio_frames = kwargs.pop("audio_frames", audio_frames)
         audio_transcript = [[]]
         audio_transcript = kwargs.pop("audio_transcript", audio_transcript)
+        error_msg = kwargs.pop("error", None)
 
         if isinstance(vlm_response_stats, concurrent.futures.Future):
             return self._handle_future_result(
@@ -631,6 +907,7 @@ class VlmProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
+                error_msg,
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
@@ -642,6 +919,7 @@ class VlmProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
+                error_msg,
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
@@ -766,12 +1044,14 @@ class AsrProcess(ViaProcessBase):
 
         audio_frames = kwargs.pop("audio_frames", None)
         audio_transcript = kwargs.pop("audio_transcript", None)
+        error_msg = kwargs.pop("error", None)
 
         if audio_transcript is not None and len(audio_transcript) > 0:
             return {
                 "chunk": chunk,
                 "request_params": request_params,
                 "audio_transcript": audio_transcript,
+                "error": error_msg,
                 "asr_start_time": asr_start_time,
                 "asr_end_time": time.time(),
                 **kwargs,
@@ -796,6 +1076,7 @@ class AsrProcess(ViaProcessBase):
             chunk,
             request_params,
             asr_response,
+            error_msg,
             asr_start_time,
             nvtx_asr_process_start,
         ):
@@ -813,6 +1094,7 @@ class AsrProcess(ViaProcessBase):
                 "chunk": chunk,
                 "request_params": request_params,
                 "audio_transcript": transcript,
+                "error": error_msg,
                 "asr_start_time": asr_start_time,
                 "asr_end_time": time.time(),
                 **kwargs,
@@ -824,6 +1106,7 @@ class AsrProcess(ViaProcessBase):
                 chunk,
                 request_params,
                 asr_response,
+                error_msg,
                 asr_start_time,
                 nvtx_asr_process_start,
             )
@@ -832,6 +1115,7 @@ class AsrProcess(ViaProcessBase):
                 chunk,
                 request_params,
                 asr_response,
+                error_msg,
                 asr_start_time,
                 nvtx_asr_process_start,
             )
@@ -854,6 +1138,8 @@ class VlmChunkResponse:
     vlm_stats = {}
     add_doc_start_time = 0
     add_doc_end_time = 0
+    asr_start_time = 0
+    asr_end_time = 0
     frame_times: list[float] = []
 
     def __str__(self) -> str:
@@ -877,6 +1163,11 @@ class VlmChunkResponse:
             "add_doc": (
                 f"{self.add_doc_start_time:.3f}-{self.add_doc_end_time:.3f}"
                 if self.add_doc_start_time and self.add_doc_end_time
+                else "N/A"
+            ),
+            "asr": (
+                f"{self.asr_start_time:.3f}-{self.asr_end_time:.3f}"
+                if self.asr_start_time and self.asr_end_time
                 else "N/A"
             ),
         }
@@ -947,21 +1238,38 @@ class VlmPipeline:
             # give error:
             # RuntimeError: No CUDA GPUs are available
             use_gpu_mem_for_embedding_load = False
-        else:
-            raise NotImplementedError("VLM Pipeline Error: Only OPENAI_COMPATIBLE model is supported.")
         self._emb_helper = EmbeddingHelper(asset_dir, use_gpu_mem=use_gpu_mem_for_embedding_load)
         self._args = args
 
         mp_ctx = multiprocessing.get_context("spawn")
 
-        self._have_emb_gen = True
+        self._have_emb_gen = False
+        if args.vlm_model_type is None:
+            if self._args.model_path:
+                inference_class = CustomModuleLoader(self._args.model_path)._module.Inference
+                if hasattr(inference_class, "get_embeddings"):
+                    self._have_emb_gen = True
+        elif (
+            args.vlm_model_type != VlmModelType.NVILA
+            and args.vlm_model_type != VlmModelType.COSMOS_REASON1
+        ):
+            self._have_emb_gen = True
 
         self._dec_q = mp_ctx.Queue()
         self._dec_q_lock = mp_ctx.Lock()
         have_peer_access = check_peer_access()
         logger.info(f"Have peer access: {have_peer_access}")
-        self._vlm_q = mp_ctx.Queue(maxsize=0)
-        self._vlm_q_lock = mp_ctx.Lock()
+        if (
+            args.vlm_model_type == VlmModelType.NVILA
+            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
+        ) and not have_peer_access:
+            self._vlm_q = None
+            self._vlm_q_lock = None
+        else:
+            self._vlm_q = mp_ctx.Queue(
+                maxsize=(0 if self._have_emb_gen else 3 * self._args.num_gpus)
+            )
+            self._vlm_q_lock = mp_ctx.Lock()
 
         self._asr_q = mp_ctx.Queue()
         self._asr_q_lock = mp_ctx.Lock()
@@ -973,10 +1281,172 @@ class VlmPipeline:
 
         self._enqueue_lock = Lock()
 
-        from models.openai_compat.openai_compat_model import CompOpenAIModel
+        if args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            from models.openai_compat.openai_compat_model import CompOpenAIModel
 
-        CompOpenAIModel()
+            CompOpenAIModel()
 
+        # Model path is required for locally executed models like VILA
+        if args.vlm_model_type != VlmModelType.OPENAI_COMPATIBLE and not args.model_path:
+            raise Exception("model-path not provided")
+
+        if args.model_path and args.model_path.startswith("ngc:"):
+            # NGC model path provided, download the model if not found in cache
+
+            # Workaround for some asyncio issue
+            def download_thread_func(ngc_model_path, download_prefix, model_path_):
+                try:
+                    model_path = download_model(
+                        ngc_model_path, download_prefix, args.vlm_model_type.value
+                    )
+                except Exception as ex:
+                    model_path_[1] = ex
+                    return
+                model_path_[0] = model_path
+
+            model_path_ = ["", ""]
+            download_thread = Thread(
+                target=download_thread_func,
+                args=(args.model_path[4:], NGC_MODEL_CACHE, model_path_),
+            )
+            download_thread.start()
+            download_thread.join()
+            if model_path_[1]:
+                raise model_path_[1] from None
+            args.model_path = model_path_[0]
+        if args.model_path and args.model_path.startswith("git:"):
+            args.model_path = download_model_git(args.model_path[4:], NGC_MODEL_CACHE)
+
+        if FORCE_TRT and (args.vlm_model_type == VlmModelType.VILA_15):
+            # TRT inference forced for locally executed models
+
+            # Infer the TRT engine directory if not specified
+            trt_engine_dir = args.trt_engine_dir
+            if not trt_engine_dir:
+                trt_engine_dir = os.path.join(
+                    args.model_path, f"trt-engines/{args.trt_llm_mode}/0-gpu"
+                )
+            config_file = os.path.join(trt_engine_dir, "config.json")
+            rank0_file = os.path.join(trt_engine_dir, "rank0.engine")
+            visual_engines_dir = os.path.join(trt_engine_dir, "visual_engines")
+
+            # Check if engine already exists
+            build_engine = False
+            if os.environ.get("VILA_FORCE_ENGINE_BUILD", "false") == "true" or (
+                not os.path.isfile(config_file)
+                or not os.path.isfile(rank0_file)
+                or not os.path.isfile(os.path.join(visual_engines_dir, "visual_encoder.engine"))
+            ):
+                logger.info("TRT-LLM Engine not found. Generating engines ...")
+                build_engine = True
+
+            if build_engine:
+                vila_ngc_engine = os.environ.get("VILA_ENGINE_NGC_RESOURCE", "")
+                if vila_ngc_engine:
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        # Download the engine from NGC if user has provided NGC path
+                        def download_thread_func(ngc_model_path, download_prefix, model_path_):
+                            try:
+                                model_path = download_model(ngc_model_path, download_prefix)
+                            except Exception as ex:
+                                model_path_[1] = ex
+                                return
+                            model_path_[0] = model_path
+
+                        model_path_ = ["", ""]
+                        download_thread = Thread(
+                            target=download_thread_func,
+                            args=(vila_ngc_engine, temp_dir, model_path_),
+                        )
+                        download_thread.start()
+                        download_thread.join()
+                        if model_path_[1]:
+                            raise model_path_[1] from None
+
+                        # Move engine files from downloaded path to trt_engine_dir
+                        downloaded_path = model_path_[0]
+
+                        # Create trt_engine_dir if it doesn't exist
+                        os.makedirs(trt_engine_dir, exist_ok=True)
+
+                        # Move config.json
+                        src_config = os.path.join(downloaded_path, "config.json")
+                        if os.path.exists(src_config):
+                            shutil.move(src_config, config_file)
+                            logger.debug(f"Moved config.json from {src_config} to {config_file}")
+
+                        # Move rank0.engine
+                        src_rank0 = os.path.join(downloaded_path, "rank0.engine")
+                        if os.path.exists(src_rank0):
+                            shutil.move(src_rank0, rank0_file)
+                            logger.debug(f"Copied rank0.engine from {src_rank0} to {rank0_file}")
+
+                        # Move visual_engines directory
+                        src_visual = os.path.join(downloaded_path, "visual_engines")
+                        if os.path.exists(src_visual):
+                            if os.path.exists(visual_engines_dir):
+                                shutil.rmtree(visual_engines_dir)
+                            shutil.move(src_visual, visual_engines_dir)
+                            logger.debug(
+                                f"Copied visual_engines from {src_visual} to {visual_engines_dir}"
+                            )
+
+                        logger.info(f"Using prebuilt TRT-LLM engine from NGC: {vila_ngc_engine}")
+
+                        build_engine = False
+
+            if not build_engine:
+                # Check if the engine can support user configured batch size
+                with open(os.path.join(trt_engine_dir, "config.json")) as f:
+                    config = json.load(f)
+                    if config["build_config"]["max_batch_size"] < args.vlm_batch_size:
+                        logger.info(
+                            f"Existing TRT-LLM engine at {trt_engine_dir} has lower"
+                            f" max-batch-size({config['build_config']['max_batch_size']}) than"
+                            f" requested ({args.vlm_batch_size}). Re-generating engines ..."
+                        )
+                        build_engine = True
+                    if (
+                        os.environ.get("VILA_LORA_PATH", "")
+                        and not config["build_config"]["plugin_config"]["lora_plugin"]
+                    ):
+                        logger.info(
+                            f"Existing TRT-LLM engine at {trt_engine_dir} built"
+                            f" without lora support however lora has been configured."
+                            f" Re-generating engines ..."
+                        )
+                        build_engine = True
+
+            if build_engine:
+                # Still need to build engine. Run the build_engine script automatically
+                base_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+                model_dir = "vila15"
+                result = subprocess.run(
+                    [
+                        "bash",
+                        os.path.join(base_path, f"models/{model_dir}/trt_helper/build_engine.sh"),
+                        args.model_path,
+                        str(args.vlm_batch_size),
+                        args.trt_llm_mode.value,
+                        trt_engine_dir,
+                    ]
+                )
+                if result.returncode:
+                    raise Exception("Failed to generate TRT-LLM engine")
+
+                logger.info("Generated TRT-LLM engines")
+
+            args.use_trt = True
+            args.trt_engine_dir = trt_engine_dir
+
+        if args.use_trt and not args.trt_engine_dir:
+            raise Exception("TRT mode selected but TRT engine directory not set")
+
+        if FORCE_TRT and (
+            args.vlm_model_type == VlmModelType.NVILA
+            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
+        ):
+            args.use_trt = True
 
         self._processed_chunk_queue = mp_ctx.Queue()
         self._processed_chunk_queue_watcher_stop_event = Event()
@@ -1001,7 +1471,22 @@ class VlmPipeline:
                 asr_proc.set_final_output_queue(self._processed_chunk_queue)
                 asr_proc.start()
 
-        self._num_vlm_procs = args.num_vlm_procs
+        self._num_gpus_per_vlm_proc = max(
+            int(os.environ.get("VSS_NUM_GPUS_PER_VLM_PROC", "") or 1), 1
+        )
+
+        self._num_vlm_procs = args.num_gpus
+        if args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            self._num_vlm_procs = args.num_vlm_procs
+        elif not args.disable_vlm:
+            self._num_vlm_procs = args.num_gpus // self._num_gpus_per_vlm_proc
+            if self._num_vlm_procs == 0:
+                raise Exception(
+                    f"Not enough GPUs to run VLM pipeline. Available GPUs: {args.num_gpus}."
+                    f" GPUs per VLM instance: {self._num_gpus_per_vlm_proc}"
+                )
+            logger.info(f"GPUs per VLM instance: {self._num_gpus_per_vlm_proc}")
+
         logger.info(f"num_vlm_procs set to {self._num_vlm_procs}")
 
         # Create the VLM processes, one on each GPU
@@ -1009,7 +1494,14 @@ class VlmPipeline:
             VlmProcess(
                 args,
                 asset_dir,
-                i,
+                ",".join(
+                    map(
+                        str,
+                        range(
+                            i * self._num_gpus_per_vlm_proc, (i + 1) * self._num_gpus_per_vlm_proc
+                        ),
+                    )
+                ),
                 args.disable_vlm,
                 self._vlm_q,
                 self._vlm_q_lock,
@@ -1026,16 +1518,17 @@ class VlmPipeline:
 
         self._emb_gen_procs = []
         # Create the embedding generation processes, one on each GPU
-        self._emb_gen_procs = [
-            EmbeddingProcess(args, asset_dir, i, args.disable_embeddings)
-            for i in range(self._num_vlm_procs)
-        ]
-        for idx, emb_gen_proc in enumerate(self._emb_gen_procs):
-            emb_gen_proc.set_output_queue(
-                self._vlm_procs[idx % self._num_vlm_procs].input_queue
-            )
-            emb_gen_proc.set_final_output_queue(self._processed_chunk_queue)
-            emb_gen_proc.start()
+        if self._have_emb_gen:
+            self._emb_gen_procs = [
+                EmbeddingProcess(args, asset_dir, i, args.disable_embeddings)
+                for i in range(self._num_vlm_procs)
+            ]
+            for idx, emb_gen_proc in enumerate(self._emb_gen_procs):
+                emb_gen_proc.set_output_queue(
+                    self._vlm_procs[idx % self._num_vlm_procs].input_queue
+                )
+                emb_gen_proc.set_final_output_queue(self._processed_chunk_queue)
+                emb_gen_proc.start()
 
         # Create the chunk decoding processes, one on each GPU
         self._decoder_procs = [
@@ -1043,9 +1536,12 @@ class VlmPipeline:
             for i in range(args.num_gpus)
         ]
         for idx, dec_proc in enumerate(self._decoder_procs):
-            dec_proc.set_output_queue(
-                self._emb_gen_procs[idx % self._num_vlm_procs].input_queue
-            )
+            if self._have_emb_gen:
+                dec_proc.set_output_queue(
+                    self._emb_gen_procs[idx % self._num_vlm_procs].input_queue
+                )
+            else:
+                dec_proc.set_output_queue(self._vlm_procs[idx % self._num_vlm_procs].input_queue)
             dec_proc.set_final_output_queue(self._processed_chunk_queue)
             dec_proc.start()
 
@@ -1120,7 +1616,10 @@ class VlmPipeline:
                 response.vlm_start_time = item.get("vlm_start_time")
                 response.vlm_end_time = item.get("vlm_end_time")
                 response.vlm_stats = item.get("vlm_stats", {"input_tokens": 0, "output_tokens": 0})
+                response.asr_start_time = item.get("asr_start_time")
+                response.asr_end_time = item.get("asr_end_time")
                 response.frame_times = item.get("frame_times", [])
+                response.model_info = self.get_models_info()
 
             if item.get("is_live_stream", False):
                 if response.vlm_end_time and response.vlm_end_time - (
@@ -1197,9 +1696,26 @@ class VlmPipeline:
         api_type = ""
         id = ""
         owned_by = ""
-    
-        from models.openai_compat.openai_compat_model import CompOpenAIModel
-        id, api_type, owned_by = CompOpenAIModel.get_model_info()
+        if self._args.vlm_model_type == VlmModelType.VILA_15:
+            from models.vila15.vila15_model import Vila15
+
+            id, api_type, owned_by = Vila15.get_model_info()
+        elif self._args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            from models.openai_compat.openai_compat_model import CompOpenAIModel
+
+            id, api_type, owned_by = CompOpenAIModel.get_model_info()
+        elif self._args.vlm_model_type == VlmModelType.NVILA:
+            from models.nvila.nvila_model import NVila
+
+            id, api_type, owned_by = NVila.get_model_info()
+        elif self._args.vlm_model_type == VlmModelType.COSMOS_REASON1:
+            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
+
+            id, api_type, owned_by = CosmosReason1.get_model_info()
+        else:
+            id = os.path.basename(os.path.abspath(self._args.model_path))
+            api_type = "internal"
+            owned_by = "custom"
 
         info = VlmModelInfo()
         info.api_type = api_type
@@ -1219,6 +1735,7 @@ class VlmPipeline:
         enable_audio=False,
         request_id="",
         video_codec=None,
+        decode_only=False,
     ):
         with self._enqueue_lock:
             curr_chunk_counter = self._chunk_counter
@@ -1248,6 +1765,7 @@ class VlmPipeline:
                 enable_audio=enable_audio,
                 request_id=request_id,
                 video_codec=video_codec,
+                decode_only=decode_only,
             )
 
     def add_live_stream(
@@ -1343,11 +1861,19 @@ class VlmPipeline:
             type=int,
             help="Number of Decoder pipelines to run on each GPU in parallel",
         )
+
         parser.add_argument(
             "--vlm-model-type",
             type=VlmModelType,
             choices=list(VlmModelType),
             default=None,
+            help="Vision Language Model to use",
+        )
+        parser.add_argument(
+            "--trt-llm-mode",
+            type=TrtLlmMode,
+            choices=list(TrtLlmMode),
+            default=TrtLlmMode.INT4_AWQ,
             help="Vision Language Model to use",
         )
         parser.add_argument(
@@ -1374,6 +1900,27 @@ class VlmPipeline:
             action="store_true",
             default=False,
             help="Disable Video Embeddings Generation",
+        )
+        parser.add_argument(
+            "--model-path",
+            type=str,
+            required=False,
+            help="Location of the model",
+        )
+        parser.add_argument(
+            "--trt-build-int8",
+            action="store_true",
+            help="Build TRTLLM engine in int8 mode",
+        )
+        parser.add_argument(
+            "--use-trt",
+            action="store_true",
+            help="Use TensorRT",
+        )
+        parser.add_argument(
+            "--trt-engine-dir",
+            type=str,
+            help="Path to TRT engine directory",
         )
         parser.add_argument(
             "--num-frames-per-chunk",

@@ -67,27 +67,6 @@ def tensor_to_base64_jpeg(tensor, idx=0):
     return base64_string
 
 
-def sanitize_model_id(model_id):
-    """
-    Sanitize model ID for system compatibility.
-    - Keep alphanumeric, hyphens, underscores, and dots as-is
-    - Keep dots as-is
-    - Replace forward slashes with hyphens
-    - Remove any other special characters
-    """
-    sanitized = ""
-    for char in model_id:
-        if char.isalnum() or char == "-" or char == "_" or char == ".":
-            # Keep alphanumeric, hyphens, dots, and underscores as-is
-            sanitized += char
-        elif char == "/":
-            # Replace slashes with hyphens
-            sanitized += "-"
-        # Skip any other special characters
-    
-    return sanitized
-
-
 class CompOpenAIModel:
     def configure_azure_openai(
         self, key=None, azureEndpointConfigured=False, nvSecretConfigured=False
@@ -239,7 +218,6 @@ class CompOpenAIModel:
             and os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
         ):
             id = os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-            id = sanitize_model_id(id)
         else:
             id = "ModelNotLoaded"
             logger.error("VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME is not configured")
@@ -343,6 +321,11 @@ class CompOpenAIModel:
                     ],
                 }
             ]
+            if "system_prompt" in generation_config and generation_config["system_prompt"]:
+                messages.insert(
+                    0, {"role": "system", "content": generation_config["system_prompt"]}
+                )
+
             if self._nvSecretConfigured:
                 from models.openai_compat.internal.util import get_nv_oauth_token
 

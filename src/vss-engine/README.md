@@ -42,7 +42,7 @@ docker login nvcr.io -u '$oauthtoken' -p $NGC_API_KEY
 
 2. Set the base image and new version:
 ```bash
-export BASE_IMAGE="nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1"
+export BASE_IMAGE="nvcr.io/nvidia/blueprint/vss-engine-base:2.4.0"
 export NEW_VERSION="x.y.z"  # Replace with your version
 ```
 
@@ -73,7 +73,7 @@ kubectl create secret docker-registry private-reg-secret \
   --docker-password=<password>
 ```
 
-Please also create additional secrets necessary, following the [VSS Helm Quickstart Guide](https://docs.nvidia.com/vss/latest/content/run_via.html#deploy-using-helm).
+Please also create additional secrets necessary, following the [VSS Helm Quickstart Guide](https://docs.nvidia.com/vss/latest/content/vss_dep_helm.html#deploy-using-helm).
 
 2. Create a custom values override file (e.g., `my-values.yaml`):
 
@@ -97,16 +97,16 @@ vss:
 
 3. Install/Upgrade using the override values:
 ```bash
-helm install vss-blueprint nvidia-blueprint-vss-2.3.1.tgz \
+helm install vss-blueprint nvidia-blueprint-vss-2.4.0.tgz \
     --set global.ngcImagePullSecretName=ngc-docker-reg-secret \
     -f my_values.yaml
 ```
 
-Please set ``global.ngcImagePullSecretName`` to NGC secret following documentation [here](https://docs.nvidia.com/vss/latest/content/run_via.html#deploy-using-helm). 
+Please set ``global.ngcImagePullSecretName`` to NGC secret following documentation [here](https://docs.nvidia.com/vss/latest/content/vss_dep_helm.html#deploy-using-helm). 
 
-This is necessary to pull docker images from NGC for the various NVIDIA NIMs used by VSS in [the default helm chart deployment topology](https://docs.nvidia.com/vss/latest/content/run_via.html#default-deployment-topology-and-models-in-use).
+This is necessary to pull docker images from NGC for the various NVIDIA NIMs used by VSS in [the default helm chart deployment topology](https://docs.nvidia.com/vss/latest/content/vss_dep_helm.html#default-deployment-topology-and-models-in-use).
 
-For more detailed information about Helm deployment and configuration, please refer to the [VSS Helm Quickstart Guide](https://docs.nvidia.com/vss/latest/content/run_via.html#deploy-using-helm).
+For more detailed information about Helm deployment and configuration, please refer to the [VSS Helm Quickstart Guide](https://docs.nvidia.com/vss/latest/content/vss_dep_helm.html#deploy-using-helm).
 
 ## Deploying with Docker Compose
 Export the `VIA_IMAGE` environment variable before deploying VSS to use the new container image.
@@ -114,4 +114,4 @@ Export the `VIA_IMAGE` environment variable before deploying VSS to use the new 
 export VIA_IMAGE=<your-image>
 ```
 
-For more detailed information about Docker Compose deployment and configuration, please refer to the [VSS Docker Compose Quickstart Guide](https://docs.nvidia.com/vss/latest/content/quickstart_docker.html).
+For more detailed information about Docker Compose deployment and configuration, please refer to the [VSS Docker Compose Quickstart Guide for x86 here](https://docs.nvidia.com/vss/latest/content/vss_dep_docker_compose_x86.html), or [VSS Docker Compose Quickstart Guide for ARM here](https://docs.nvidia.com/vss/latest/content/vss_dep_docker_compose_arm.html).

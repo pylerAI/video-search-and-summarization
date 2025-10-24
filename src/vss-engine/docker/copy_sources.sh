@@ -32,7 +32,7 @@ while read -r file; do
     DEST_FILE="$OUT_DIR/via-engine/$file"
     DEST_DIR=$(dirname $DEST_FILE)
     mkdir -p "$DEST_DIR"
-    ln -s -v "$SRC_FILE" "$DEST_FILE"
+    cp -v "$SRC_FILE" "$DEST_FILE"
 done < $FILE_LIST
 
-ln -s -v "$VIA_SRC_DIR/via_client_cli.py" "$OUT_DIR"
+cp -v "$VIA_SRC_DIR/via_client_cli.py" "$OUT_DIR"

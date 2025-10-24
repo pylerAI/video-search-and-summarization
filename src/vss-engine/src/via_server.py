@@ -14,31 +14,30 @@
 Translates between requests/responses and ViaStreamHandler and AssetManager methods."""
 
 from via_stream_handler import (  # isort:skip
-    DEFAULT_CALLBACK_JSON_TEMPLATE,
     RequestInfo,
     ViaStreamHandler,
 )
 
 import argparse
 import asyncio
+import gc
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from enum import Enum
-from io import BytesIO
-from typing import Annotated, Dict, List, Literal, Optional, Union
+from datetime import datetime, timezone
+from typing import Annotated, List, Optional
+from uuid import UUID
 
 import aiofiles
 import aiofiles.os
 import gi
 import uvicorn
-from asset_manager import Asset, AssetManager
 from fastapi import FastAPI, File, Form, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -49,69 +48,89 @@ from prometheus_client import (
     REGISTRY,
     generate_latest,
 )
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    HttpUrl,
-    field_validator,
-)
+from pydantic import Field
 from sse_starlette.sse import EventSourceResponse
+
+from asset_manager import Asset, AssetManager
 from utils import (
     MediaFileInfo,
     StreamSettingsCache,
     get_available_gpus,
     get_avg_time_per_chunk,
+    validate_required_prompts,
 )
 from via_exception import ViaException
 from via_logger import LOG_PERF_LEVEL, TimeMeasure, logger
+from vss_api_models import (
+    CAMERA_ID_PATTERN,
+    FILE_NAME_PATTERN,
+    PATH_PATTERN,
+    UUID_LENGTH,
+    AddAlertInfo,
+    AddAlertResponse,
+    AddFileInfoResponse,
+    AddLiveStream,
+    AddLiveStreamResponse,
+    AlertInfo,
+    ChatCompletionQuery,
+    ChatCompletionToolType,
+    CompletionFinishReason,
+    CompletionResponse,
+    CompletionUsage,
+    DeleteFileResponse,
+    FileInfo,
+    ListFilesResponse,
+    ListModelsResponse,
+    LiveStreamInfo,
+    MediaInfoOffset,
+    MediaType,
+    Purpose,
+    RecentAlertInfo,
+    RecommendedConfig,
+    RecommendedConfigResponse,
+    ReviewAlertDebugInfo,
+    ReviewAlertRequest,
+    ReviewAlertResponse,
+    ReviewAlertResult,
+    ReviewAlertReviewStatus,
+    ReviewAlertStatus,
+    SummarizationQuery,
+    ViaError,
+    VlmCaptionResponse,
+    VlmCaptionsCompletionResponse,
+    VlmQuery,
+)
 
 gi.require_version("GstRtsp", "1.0")  # isort:skip
 
 from gi.repository import GstRtsp  # noqa: E402
 
-API_PREFIX = ""
+API_PREFIX = (
+    "/v1" if os.environ.get("VSS_API_ENABLE_VERSIONING", "").lower() in ["true", "1"] else ""
+)
+
+ALERT_REVIEW_MEDIA_BASE_DIR = os.environ.get("ALERT_REVIEW_MEDIA_BASE_DIR", "")
+
+
+def convert_seconds_to_string(seconds, need_hour=False, millisec=False):
+    """Convert seconds to a formatted string."""
+    if seconds is None:
+        return "N/A"
+
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+
+    if need_hour or hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes:02d}:{secs:02d}"
+
 
 # Remove some default metrics reported by prometheus client.
 REGISTRY.unregister(PROCESS_COLLECTOR)
 REGISTRY.unregister(PLATFORM_COLLECTOR)
 REGISTRY.unregister(GC_COLLECTOR)
-
-
-TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{3})Z$"
-FILE_NAME_PATTERN = r"^[A-Za-z0-9_.\- ]*$"
-PATH_PATTERN = r"^[A-Za-z0-9_.\-/ ]*$"
-DESCRIPTION_PATTERN = r'^[A-Za-z0-9_.\-"\' ,]*$'
-str_LENGTH = 36
-ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
-ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
-LIVE_STREAM_URL_PATTERN = r"^rtsp://"
-KEY_PATTERN = r"^[A-Za-z0-9]*$"
-ANY_CHAR_PATTERN = r"^(.|\n)*$"
-CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
-
-
-# Common models
-class ViaBaseModel(BaseModel):
-    """VIA pydantic base model that does not allow unsupported params in requests"""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class ViaError(ViaBaseModel):
-    """VIA Error Information."""
-
-    code: str = Field(
-        description="Error code", examples=["ErrorCode"], max_length=128, pattern=ERROR_CODE_PATTERN
-    )
-    message: str = Field(
-        description="Detailed error message",
-        examples=["Detailed error message"],
-        max_length=1024,
-        pattern=ERROR_MESSAGE_PATTERN,
-    )
-
 
 COMMON_ERROR_RESPONSES = {
     400: {
@@ -138,1210 +157,10 @@ def add_common_error_responses(errors=[]):
     )
 
 
-# Validate RFC3339 timestamp string
-def timestamp_validator(v: str, validation_info):
-    try:
-        # Attempt to parse the RFC3339 timestamp
-        datetime.strptime(v, "%Y-%m-%dT%H:%M:%S.%fZ")
-    except ValueError:
-        raise ViaException(
-            f"{validation_info.field_name} be a valid RFC3339 timestamp string",
-            "InvalidParameters",
-            422,
-        )
-    return v
-
-
-# ===================== Models required by /files API
-
-
-class MediaType(str, Enum):
-    """Media type of the uploaded file."""
-
-    VIDEO = "video"
-    IMAGE = "image"
-    METADATA = "metadata"
-    SEGMENT = "segment"
-
-
-class Purpose(str, Enum):
-    """Purpose for the file."""
-
-    VISION = "vision"
-
-
-class FileInfo(ViaBaseModel):
-    """Information about an uploaded file."""
-
-    id: str = Field(
-        description="The file identifier, which can be referenced in the API endpoints."
-    )
-    bytes: int = Field(
-        description="The size of the file, in bytes.",
-        json_schema_extra={"format": "int64"},
-        examples=[2000000],
-        ge=0,
-        le=100e9,
-    )
-    filename: str = Field(
-        description="Filename along with path to be used.",
-        max_length=256,
-        examples=["myfile.mp4"],
-        pattern=FILE_NAME_PATTERN,
-    )
-
-    purpose: Purpose = Field(
-        description=(
-            "The intended purpose of the uploaded file."
-            " For VIA use-case this must be set to vision"
-        ),
-        examples=["vision"],
-    )
-
-
-# class AddFileInfoResponse(FileInfo):
-#     """Response schema for the add file request."""
-
-#     media_type: MediaType = Field(description="Media type (image / video / metadata / chunk).")
-
-
-class FileDetail(ViaBaseModel):
-    filename: str
-    media_type: str
-    bytes: int
-
-
-class AddFileInfoResponse(BaseModel):
-    id: str = Field(..., description="The video ID to which the files are attached")
-    purpose: Literal["vision"] = Field(..., description="The intended purpose of the file")
-    files: Dict[str, FileDetail] = Field(..., description="Mapping of media type to uploaded file details")
-
-
-class AssetFilesResponse(ViaBaseModel):
-    id: str
-    purpose: str
-    files: Dict[str, FileDetail]
-
-
-class DeleteFileResponse(ViaBaseModel):
-    """Response schema for delete file request."""
-
-    id: str = Field(
-        description="The file identifier, which can be referenced in the API endpoints."
-    )
-    object: Literal["file"] = Field(description="Type of response object.")
-    deleted: bool = Field(description="Indicates if the file was deleted")
-
-
-# class ListFilesResponse(ViaBaseModel):
-#     """Response schema for the list files API."""
-
-#     data: list[AddFileInfoResponse] = Field(max_length=1000000)
-#     object: Literal["list"] = Field(description="Type of response object")
-
-class ListFilesResponse(ViaBaseModel):
-    data: list[AssetFilesResponse] = Field(max_length=1000000)
-    object: Literal["list"] = Field(description="Type of response object")
-
-
-# ===================== Models required by Files API
-
-
-# ===================== Models required by /live-stream API
-
-
-class AddLiveStream(ViaBaseModel):
-    """Parameters required to add a live stream."""
-
-    liveStreamUrl: str = Field(
-        description="Live RTSP Stream URL",
-        max_length=256,
-        pattern=LIVE_STREAM_URL_PATTERN,
-        examples=["rtsp://localhost:8554/media/video1"],
-    )
-    description: str = Field(
-        description="Live RTSP Stream description",
-        max_length=256,
-        examples=["Description of the live stream"],
-        pattern=DESCRIPTION_PATTERN,
-    )
-    username: str = Field(
-        default="",
-        description="Username to access live stream URL.",
-        max_length=256,
-        examples=["username"],
-        pattern=DESCRIPTION_PATTERN,
-    )
-    password: str = Field(
-        default="",
-        description="Password to access live stream URL.",
-        max_length=256,
-        examples=["password"],
-        pattern=DESCRIPTION_PATTERN,
-    )
-
-
-class AddLiveStreamResponse(ViaBaseModel):
-    """Response schema for the add live stream API."""
-
-    id: str = Field(
-        description="The stream identifier, which can be referenced in the API endpoints."
-    )
-
-
-class LiveStreamInfo(ViaBaseModel):
-    """Live Stream Information."""
-
-    id: str = Field(description="Unique identifier for the live stream")
-    liveStreamUrl: str = Field(
-        description="Live stream RTSP URL",
-        max_length=256,
-        examples=["rtsp://localhost:8554/media/video1"],
-        pattern=LIVE_STREAM_URL_PATTERN,
-    )
-    description: str = Field(
-        description="Description of live stream",
-        max_length=256,
-        examples=["Description of live stream"],
-        pattern=DESCRIPTION_PATTERN,
-    )
-    chunk_duration: int = Field(
-        description=(
-            "Chunk Duration Time in Seconds."
-            " Chunks would be created at the I-Frame boundry so duration might not be exact."
-        ),
-        json_schema_extra={"format": "int32"},
-        examples=[60],
-        ge=0,
-        le=600,
-    )
-    chunk_overlap_duration: int = Field(
-        description=(
-            "Chunk Overlap Duration Time in Seconds."
-            " Chunks would be created at the I-Frame boundry so duration might not be exact."
-        ),
-        json_schema_extra={"format": "int32"},
-        examples=[10],
-        ge=0,
-        le=600,
-    )
-    summary_duration: int = Field(
-        description="Summary Duration in Seconds.",
-        json_schema_extra={"format": "int32"},
-        examples=[300],
-        ge=-1,
-        le=3600,
-    )
-
-# ===================== Models required by /files API
-
-class Scene(BaseModel):
-    start_time: str
-    end_time: str
-    description: str
-
-class HierarchicalScene(BaseModel):
-    medium_scene: Scene
-    contained_high_scenes: List[Scene]
-
-class AlignmentMetadata(BaseModel):
-    aligned_at: str  # ISO 8601 timestamp
-    total_medium_scenes: int
-    total_high_scenes: int
-
-class SegmentSchema(BaseModel):
-    video_id: str
-    alignment_metadata: AlignmentMetadata
-    hierarchical_scenes: List[HierarchicalScene]
-
-
-# ===================== Models required by /live-stream API
-
-
-# ===================== Models required by /models API
-class ModelInfo(ViaBaseModel):
-    """Describes an OpenAI model offering that can be used with the API."""
-
-    id: str = Field(
-        description="The model identifier, which can be referenced in the API endpoints.",
-        pattern=FILE_NAME_PATTERN,
-        max_length=2560,
-    )
-    created: int = Field(
-        description="The Unix timestamp (in seconds) when the model was created.",
-        examples=[1686935002],
-        ge=0,
-        le=4000000000,
-        json_schema_extra={"format": "int64"},
-    )
-    object: Literal["model"] = Field(description="Type of object")
-    owned_by: str = Field(
-        description="The organization that owns the model.",
-        examples=["NVIDIA"],
-        max_length=10000,
-        pattern=DESCRIPTION_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-    )
-
-
-class ListModelsResponse(ViaBaseModel):
-    """Lists and describes the various models available."""
-
-    object: Literal["list"] = Field(description="Type of response object")
-    data: list[ModelInfo] = Field(max_length=5)
-
-
-# ===================== Models required by /models API
-
-
-# ===================== Models required by /summarize API
-class MediaInfoOffset(ViaBaseModel):
-    """Media information using offset for files."""
-
-    type: Literal["offset"] = Field(
-        description="Information about a segment of media with start and end offsets."
-    )
-    start_offset: int = Field(
-        default=None,
-        description="Segment start offset in seconds from the beginning of the media.",
-        ge=0,
-        le=4000000000,
-        examples=[0],
-        json_schema_extra={"format": "int64"},
-    )
-    end_offset: int = Field(
-        default=None,
-        description="Segment end offset in seconds from the beginning of the media.",
-        ge=0,
-        le=4000000000,
-        examples=[4000000000],
-        json_schema_extra={"format": "int64"},
-    )
-
-
-class MediaInfoTimeStamp(ViaBaseModel):
-    """Media information using offset for live-streams."""
-
-    type: Literal["timestamp"] = Field(
-        description="Information about a segment of live-stream with start and end timestamp."
-    )
-    start_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to start processing from",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-    end_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to stop processing at",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T02:14:51.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-
-
-class ResponseType(str, Enum):
-    """Query Response Type."""
-
-    JSON_OBJECT = "json_object"
-    TEXT = "text"
-
-
-class ResponseFormat(ViaBaseModel):
-    """Query Response Format Object."""
-
-    type: ResponseType = Field(description="Response format type")
-
-
-class StreamOptions(ViaBaseModel):
-    """Options for streaming response."""
-
-    include_usage: bool = Field(
-        default=False,
-        description=(
-            "If set, an additional chunk will be streamed before the `data: [DONE]` message."
-            " The `usage` field on this chunk shows the token usage statistics"
-            " for the entire request, and the `choices` field will always be an empty array."
-            " All other chunks will also include a `usage` field, but with a null value."
-        ),
-    )
-
-
-class ChatCompletionToolType(str, Enum):
-    """Types of tools supported by VIA."""
-
-    ALERT = "alert"
-
-
-class AlertTool(ViaBaseModel):
-    """Alert tool configuration."""
-
-    name: str = Field(
-        description="Name for the alert tool",
-        pattern=ANY_CHAR_PATTERN,
-        max_length=256,
-    )
-    events: list[Annotated[str, Field(max_length=1024, pattern=ANY_CHAR_PATTERN)]] = Field(
-        description="List of events to trigger the alert for", max_length=100
-    )
-
-
-class ChatCompletionTool(ViaBaseModel):
-    """Configuration of the tool to be used as part of the request."""
-
-    type: ChatCompletionToolType = Field(
-        description="The type of the tool. Currently, only `alert` is supported."
-    )
-    alert: AlertTool
-
-
-class SummarizationQuery(ViaBaseModel):
-    """Summarization Query Request Fields."""
-
-    id: Union[str, List[str]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize",
-    )
-
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
-        if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
-        return v
-
-    @property
-    def id_list(self) -> List[str]:
-        return [self.id] if isinstance(self.id, str) else self.id
-
-    @property
-    def get_query_json(self: ViaBaseModel) -> dict:
-        return self.model_dump(mode="json")
-    chunk_type: Literal["uniform", "segment"] = Field(
-        default="uniform",
-        description="Type of chunk",
-        examples=["uniform", "segment"],
-    )
-    prompt: str = Field(
-        default="",
-        max_length=5000,
-        description="Prompt for summary generation",
-        pattern=ANY_CHAR_PATTERN,
-        examples=["Write a concise and clear dense caption for the provided warehouse video"],
-    )
-    model: str = Field(
-        description="Model to use for this query.",
-        examples=["VILA1.5-40B", "Qwen-Qwen2.5-VL-32B-Instruct"],
-        max_length=256,
-        pattern=FILE_NAME_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["openai"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-        default="",
-    )
-    response_format: ResponseFormat = Field(
-        description="An object specifying the format that the model must output.",
-        default=ResponseFormat(type=ResponseType.TEXT),
-    )
-    stream: bool = Field(
-        default=False,
-        description=(
-            "If set, partial message deltas will be sent, like in ChatGPT."
-            " Tokens will be sent as data-only [server-sent events]"
-            "(https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#Event_stream_format)"  # noqa: E501
-            " as they become available, with the stream terminated by a `data: [DONE]` message."
-        ),
-    )
-    stream_options: StreamOptions | None = Field(
-        description="Options for streaming response.",
-        default=None,
-        json_schema_extra={"nullable": True},
-    )
-    max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=1024,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-    top_k: float = Field(
-        default=None,
-        examples=[100],
-        ge=1,
-        le=1000,
-        description=(
-            "The number of highest probability vocabulary tokens to" " keep for top-k-filtering"
-        ),
-    )
-    seed: int = Field(
-        default=None,
-        ge=1,
-        le=(2**32 - 1),
-        examples=[10],
-        description="Seed value",
-        json_schema_extra={"format": "int64"},
-    )
-
-    chunk_duration: int = Field(
-        default=0,
-        examples=[60],
-        description="Chunk videos into `chunkDuration` seconds. Set `0` for no chunking",
-        ge=0,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    chunk_overlap_duration: int = Field(
-        default=0,
-        examples=[10],
-        description="Chunk Overlap Duration Time in Seconds. Set `0` for no overlap",
-        ge=0,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
-        default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
-    )
-
-    user: str = Field(
-        default="",
-        examples=["user-123"],
-        max_length=256,
-        description="A unique identifier for the user",
-        pattern=r"^[a-zA-Z0-9-._]*$",
-    )
-    caption_summarization_prompt: str = Field(
-        default="",
-        max_length=5000,
-        description="Prompt for caption summarization",
-        examples=["Prompt for caption summarization"],
-        pattern=ANY_CHAR_PATTERN,
-    )
-
-    summary_aggregation_prompt: str = Field(
-        default="",
-        max_length=5000,
-        description="Prompt for summary aggregation",
-        examples=["Prompt for summary aggregation"],
-        pattern=ANY_CHAR_PATTERN,
-    )
-
-    graph_rag_prompt_yaml: str = Field(
-        default="",
-        max_length=50000,
-        description="GraphRAG prompt config (yaml format). Note: this field should contain"
-        " the contents of the file in yaml format as a string",
-        examples=[""],
-        pattern=ANY_CHAR_PATTERN,
-    )
-
-    tools: list[ChatCompletionTool] = Field(
-        default=[],
-        description="List of tools for the current summarization request",
-        max_length=100,
-    )
-
-    summarize: bool = Field(
-        default=None,
-        description="Enable summarization for the group of chunks",
-    )
-
-    enable_chat: bool = Field(
-        default=False,
-        description="Enable chat Question & Answers on the input media",
-    )
-
-    enable_chat_history: bool = Field(
-        default=True,
-        description="Enable chat history during QnA for the input media",
-    )
-
-    enable_cv_metadata: bool = Field(
-        default=False,
-        description="Enable CV metadata",
-    )
-
-    cv_pipeline_prompt: str = Field(
-        default="",
-        max_length=1024,
-        description="Prompt for CV pipeline",
-        examples=["person . car . bicycle;0.5"],
-        pattern=CV_PROMPT_PATTERN,
-    )
-
-    num_frames_per_chunk: int = Field(
-        default=0,
-        examples=[10],
-        description="Number of frames per chunk to use for the VLM",
-        ge=0,
-        le=256,
-        json_schema_extra={"format": "int32"},
-    )
-    vlm_input_width: int = Field(
-        default=0,
-        examples=[256],
-        description="VLM Input Width",
-        ge=0,
-        le=4096,
-        json_schema_extra={"format": "int32"},
-    )
-    vlm_input_height: int = Field(
-        default=0,
-        examples=[256],
-        description="VLM Input Height",
-        ge=0,
-        le=4096,
-        json_schema_extra={"format": "int32"},
-    )
-    enable_audio: bool = Field(
-        default=False,
-        description="Enable transcription of the audio stream in the media",
-    )
-
-    summarize_batch_size: int = Field(
-        default=None,
-        examples=[5],
-        description="Summarization batch size",
-        ge=1,
-        le=1024,
-        json_schema_extra={"format": "int32"},
-    )
-
-    rag_type: Literal["graph-rag", "vector-rag"] = Field(
-        default=None,
-        examples=["graph-rag", "vector-rag"],
-        description="Specify the type of RAG",
-    )
-
-    rag_top_k: int = Field(
-        default=None,
-        examples=[5],
-        description="RAG top k",
-        ge=1,
-        le=1024,
-        json_schema_extra={"format": "int32"},
-    )
-
-    rag_batch_size: int = Field(
-        default=None,
-        examples=[5],
-        description="RAG batch size",
-        ge=1,
-        le=1024,
-        json_schema_extra={"format": "int32"},
-    )
-
-    summarize_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given summarization call.",
-        json_schema_extra={"format": "int32"},
-    )
-    summarize_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for summary text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    summarize_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for summary text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-
-    chat_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given QnA call.",
-        json_schema_extra={"format": "int32"},
-    )
-    chat_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for QnA text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    chat_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for QnA text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-
-    notification_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    notification_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    notification_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-
-
-class CompletionFinishReason(str, Enum):
-    """The reason the model stopped generating tokens."""
-
-    STOP = "stop"
-    LENGTH = "length"
-    CONTENT_FILTER = "content_filter"
-    TOOL_CALLS = "tool_calls"
-
-
-class ChatCompletionMessageAlertTool(ViaBaseModel):
-    """Alert trigerred by VIA."""
-
-    name: str = Field(
-        description="Name for the alert that was triggered.",
-        pattern=DESCRIPTION_PATTERN,
-        max_length=256,
-    )
-    ntpTimestamp: str | None = Field(
-        description="NTP timestamp of when the event occurred (for live-streams).",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-        default=None,
-    )
-    offset: int = Field(
-        description="Offset in seconds in the video file when the event occurred (for files).",
-        ge=0,
-        le=4000000,
-        examples=[20],
-        json_schema_extra={"format": "int64"},
-        default=None,
-    )
-    detectedEvents: list[
-        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
-    ] = Field(max_length=100, description="List of events detected.")
-    details: str = Field(
-        max_length=10000, pattern=ANY_CHAR_PATTERN, description="Details of the alert."
-    )
-
-
-class ChatCompletionMessageToolCall(ViaBaseModel):
-    """Tool calls generated by VIA."""
-
-    type: ChatCompletionToolType
-    alert: ChatCompletionMessageAlertTool
-
-
-class ChatMessage(ViaBaseModel):
-    """A chatbot chat message object. This object uniquely identify
-    a query/response/other messages in a chatbot."""
-
-    content: str = Field(
-        description="The content of this message.",
-        max_length=256000,
-        pattern=ANY_CHAR_PATTERN,
-    )
-    role: Literal["system", "user", "assistant"] = Field(
-        description="The role of the author of this message."
-    )
-    name: str = Field(
-        description="An optional name for the participant. "
-        "Provides the model information to differentiate between participants of the same role",
-        max_length=256,
-        pattern=r"^[\x00-\x7F]*$",
-        default="",
-    )
-
-
-class ChatCompletionQuery(ViaBaseModel):
-    """A chat completion query."""
-
-    id: Union[str, List[str]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize"
-    )
-
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
-        if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
-        return v
-
-    @property
-    def id_list(self) -> List[str]:
-        return [self.id] if isinstance(self.id, str) else self.id
-
-    messages: List[ChatMessage] = Field(
-        description="The list of chat messages.", max_length=1000000
-    )
-    model: str = Field(
-        description="Model to use for this query.",
-        examples=["vila-1.5"],
-        max_length=256,
-        pattern=FILE_NAME_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-        default="",
-    )
-    response_format: ResponseFormat = Field(
-        description="An object specifying the format that the model must output.",
-        default=ResponseFormat(type=ResponseType.TEXT),
-    )
-    stream: bool = Field(
-        default=False,
-        description=(
-            "If set, partial message deltas will be sent, like in ChatGPT."
-            " Tokens will be sent as data-only [server-sent events]"
-            "(https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#Event_stream_format)"  # noqa: E501
-            " as they become available, with the stream terminated by a `data: [DONE]` message."
-        ),
-    )
-    stream_options: StreamOptions | None = Field(
-        description="Options for streaming response.",
-        default=None,
-        json_schema_extra={"nullable": True},
-    )
-    max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=1024,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-    top_k: float = Field(
-        default=None,
-        examples=[100],
-        ge=1,
-        le=1000,
-        description=(
-            "The number of highest probability vocabulary tokens to" " keep for top-k-filtering"
-        ),
-    )
-    seed: int = Field(
-        default=None,
-        ge=1,
-        le=(2**32 - 1),
-        examples=[10],
-        description="Seed value",
-        json_schema_extra={"format": "int64"},
-    )
-
-    chunk_duration: int = Field(
-        default=0,
-        examples=[60],
-        description="Chunk videos into `chunkDuration` seconds. Set `0` for no chunking",
-        ge=0,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    chunk_overlap_duration: int = Field(
-        default=0,
-        examples=[10],
-        description="Chunk Overlap Duration Time in Seconds. Set `0` for no overlap",
-        ge=0,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
-        default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
-    )
-    highlight: bool = Field(
-        default=False,
-        description="If true, generate a highlight for the video",
-    )
-
-    user: str = Field(
-        default="",
-        examples=["user-123"],
-        max_length=256,
-        description="A unique identifier for the user",
-        pattern=r"^[a-zA-Z0-9-._]*$",
-    )
-
-
-class ChatCompletionResponseMessage(ViaBaseModel):
-    """A chat completion message generated by the model."""
-
-    content: str = Field(
-        max_length=100000,
-        description="The contents of the message.",
-        examples=["Some summary of the video"],
-        pattern=ANY_CHAR_PATTERN,
-        json_schema_extra={"nullable": True},
-    )
-    tool_calls: list[ChatCompletionMessageToolCall] = Field(default=[], max_length=100)
-    role: Literal["assistant"] = Field(description="The role of the author of this message.")
-
-
-class CompletionResponseChoice(ViaBaseModel):
-    """Completion Response Choice."""
-
-    finish_reason: CompletionFinishReason = Field(
-        description=(
-            "The reason the model stopped generating tokens."
-            " This will be `stop` if the model hit a natural stop point or a provided"
-            " stop sequence,\n`length` if the maximum number of tokens specified in the"
-            " request was reached,\n`content_filter` if content was omitted due to a flag"
-            " from our content filters."
-        ),
-        examples=[CompletionFinishReason.STOP],
-    )
-    index: int = Field(
-        description="The index of the choice in the list of choices.",
-        ge=0,
-        le=4000000000,
-        examples=[1],
-        json_schema_extra={"format": "int64"},
-    )
-    message: ChatCompletionResponseMessage
-
-
-class CompletionObject(str, Enum):
-    """Completion object type."""
-
-    CHAT_COMPLETION = "chat.completion"
-    SUMMARIZATION_COMPLETION = "summarization.completion"
-    SUMMARIZATION_PROGRESSING = "summarization.progressing"
-
-
-class CompletionUsage(ViaBaseModel):
-    """An optional field that will only be present when you set
-    `stream_options: {\"include_usage\": true}` in your request.
-
-    When present, it contains a null value except for the last chunk which contains
-    the token usage statistics for the entire request.
-    """
-
-    query_processing_time: int = Field(
-        description="Summarization Query Processing Time in seconds.",
-        ge=0,
-        le=1000000,
-        examples=[78],
-        json_schema_extra={"format": "int32"},
-    )
-    total_chunks_processed: int = Field(
-        description="Total Number of chunks processed.",
-        ge=0,
-        le=1000000,
-        examples=[10],
-        json_schema_extra={"format": "int32"},
-    )
-
-
-class CompletionResponse(ViaBaseModel):
-    """Represents a summarization/chat completion response."""
-
-    id: str = Field(description="Unique ID for the query")
-    choices: list[CompletionResponseChoice] = Field(
-        description=(
-            "A list of chat completion choices. Can be more than one if `n` is greater than 1."
-        ),
-        max_length=10,
-    )
-    created: int = Field(
-        json_schema_extra={"format": "int64"},
-        ge=0,
-        le=4000000000,
-        examples=[1717405636],
-        description=(
-            "The Unix timestamp (in seconds) of when the chat completion/summary request"
-            " was created."
-        ),
-    )
-    model: str = Field(
-        description="The model used for the chat completion/summarization.",
-        examples=["vila-1.5"],
-        max_length=256,
-        pattern=FILE_NAME_PATTERN,
-    )
-    media_info: MediaInfoTimeStamp | MediaInfoOffset = Field(
-        description="Part of the file / live-stream for which this response is applicable."
-    )
-    object: CompletionObject = Field(
-        description=(
-            "The object type, which can be `chat.completion` or `summarization.completion`"
-            " or `summarization.progressing`."
-        ),
-        examples=[CompletionObject.SUMMARIZATION_COMPLETION],
-    )
-    usage: CompletionUsage | None = Field(default=None)
-    batch_summaries: list[dict] = Field(
-        default=[],
-        description="List of individual batch summaries with batch index and summary text",
-        examples=[[{"batch_index": 0, "summary": "Summary of batch 0..."}]]
-    )
-
-
-# ===================== Models required by /summarize API
-
-
-# ===================== Models required by /recommended_config API
-class RecommendedConfig(ViaBaseModel):
-    """Recommended VIA Config."""
-
-    video_length: int = Field(
-        default=None,
-        examples=[5, 10, 60, 300],
-        ge=1,
-        le=24 * 60 * 60 * 10000,
-        description="The video length in seconds.",
-        json_schema_extra={"format": "int32"},
-    )
-    target_response_time: int = Field(
-        default=None,
-        examples=[5, 10, 60, 300],
-        ge=1,
-        le=86400,
-        description="The target response time of VIA in seconds.",
-        json_schema_extra={"format": "int32"},
-    )
-    usecase_event_duration: int = Field(
-        default=None,
-        examples=[5, 10, 60, 300],
-        ge=1,
-        le=86400,
-        description=(
-            "The duration of the target event user wants to detect;"
-            " example: it will take a box-falling event 3 seconds to happen."
-        ),
-        json_schema_extra={"format": "int32"},
-    )
-
-
-class RecommendedConfigResponse(ViaBaseModel):
-    """Recommended VIA Config Response."""
-
-    chunk_size: int = Field(
-        default=None,
-        examples=[5, 10, 60, 300],
-        ge=0,
-        le=86400,
-        description="The recommended chunk size in seconds and no chunking is 0",
-        json_schema_extra={"format": "int32"},
-    )
-    text: str = Field(
-        description="Recommendation text",
-        max_length=5000,
-        examples=["Recommendation text"],
-        pattern=DESCRIPTION_PATTERN,
-    )
-
-
-# ===================== Models required by /recommended_config API
-
-
-# ===================== Models required by /alerts API
-
-
-class RecentAlertInfo(ViaBaseModel):
-    """Information about a recent alert."""
-
-    alert_name: str = Field(
-        description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN
-    )
-    alert_id: str = Field(description="ID of the alert")
-    live_stream_id: str = Field(description="ID of the live stream that generated the alert")
-    detected_events: list[
-        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
-    ] = Field(
-        description="List of events that were detected",
-        max_length=100,
-        examples=[["Fire", "More than 5 people"]],
-    )
-    alert_text: str = Field(
-        description="Detailed description of the alert", max_length=10000, pattern=ANY_CHAR_PATTERN
-    )
-    ntp_timestamp: str = Field(
-        description="NTP timestamp when the alert was generated",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-
-
-class AddAlertInfo(ViaBaseModel):
-    """Information required to add an alert."""
-
-    name: str = Field(
-        description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN, default=""
-    )
-    liveStreamId: str = Field(description="ID of the live stream to configure the alert for")
-    events: list[Annotated[str, Field(min_length=1, max_length=1024, pattern=ANY_CHAR_PATTERN)]] = (
-        Field(
-            description="List of events to generate alert for",
-            max_length=100,
-            examples=[["Fire", "More than 5 people"]],
-        )
-    )
-    callback: HttpUrl = Field(
-        description="URL to call when events are detected",
-        examples=["http://localhost:12000/via-callback-handler"],
-    )
-    callbackJsonTemplate: str = Field(
-        description=(
-            "JSON Template for the callback body. Supported placeholders:"
-            " {{streamId}}, {{alertId}}, {{ntpTimestamp}}, {{alertText}}, {{detectedEvents}}"
-        ),
-        max_length=1024,
-        default=DEFAULT_CALLBACK_JSON_TEMPLATE,
-        pattern=ANY_CHAR_PATTERN,
-    )
-    callbackToken: str = Field(
-        description="Bearer token to use when calling the callback URL",
-        default=None,
-        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
-        max_length=10000,
-        pattern=FILE_NAME_PATTERN,
-    )
-
-
-class AddAlertResponse(ViaBaseModel):
-    """Response of the add alert API."""
-
-    id: str = Field(description="ID of the newly added alert")
-
-
-class AlertInfo(ViaBaseModel):
-    """Information about an alert added to the server."""
-
-    liveStreamId: str = Field(description="ID of the live stream to configure the alert for")
-    events: list[
-        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
-    ] = Field(
-        description="List of events to generate alert for",
-        max_length=100,
-        examples=[["Fire", "More than 5 people"]],
-    )
-    alertId: str = Field(description="ID of the alert")
-    name: str = Field(description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN)
-
-
-# ===================== Models required by /alerts API
-
-
 class ViaServer:
     def __init__(self, args) -> None:
         self._args = args
-        print(f"args.asset_dir: {args.asset_dir}")
+
         self._asset_manager = AssetManager(
             args.asset_dir,
             max_storage_usage_gb=args.max_asset_storage_size,
@@ -1377,6 +196,10 @@ class ViaServer:
                     "name": "Recommended Config",
                     "description": "Operations related to querying recommended"
                     " VIA request parameters.",
+                },
+                {
+                    "name": "Review Alert",
+                    "description": "Operations related to reviewing external alerts.",
                 },
                 {
                     "name": "Summarization",
@@ -1418,6 +241,14 @@ class ViaServer:
         return True
 
     def run(self):
+        # Initialize OpenTelemetry if enabled (optional)
+        try:
+            from otel_helper import init_otel
+
+            init_otel(service_name="via-engine")
+        except Exception as e:
+            logger.debug(f"OTEL initialization failed: {e}")
+
         try:
             # Start the VIA stream handler
             self._stream_handler = ViaStreamHandler(self._args)
@@ -1481,8 +312,8 @@ class ViaServer:
         # ======================= Files API
         @self._app.post(
             f"{API_PREFIX}/files",
-            summary="API for uploading media files (up to 2)",
-            description="Allows uploading one or two media files for a given video ID.",
+            summary="API for uploading a media file",
+            description="Files are used to upload media files.",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
@@ -1499,146 +330,108 @@ class ViaServer:
                     )
                 ),
             ],
-            media_type1: Annotated[MediaType, Form(description="Media type (image / video / metadata / segment).")],
-            file1: Annotated[UploadFile, File(description="File object to be uploaded.")] = None,
-            media_type2: Annotated[Optional[MediaType], Form(description="Second file's media type (optional)")] = None,
-            file2: Annotated[Optional[UploadFile], File(description="Second file to upload (optional).")] = None,  # ✅ default=None 제거!
-            video_id: Annotated[Optional[str], Form(description="Video ID for the uploaded file(s). If not provided, a new one will be generated.")] = None,
-        ) -> dict:
+            media_type: Annotated[MediaType, Form(description="Media type (image / video).")],
+            file: Annotated[
+                UploadFile, File(description="File object (not file name) to be uploaded.")
+            ] = None,
+            filename: Annotated[
+                str,
+                Form(
+                    description="Filename along with path to be used.",
+                    max_length=256,
+                    examples=["/home/ubuntu/myfile.mp4"],
+                    pattern=PATH_PATTERN,
+                ),
+            ] = "",
+            camera_id: Annotated[
+                Optional[str],
+                Form(
+                    description="Camera ID to be used for the file.",
+                    max_length=256,
+                    pattern=CAMERA_ID_PATTERN,
+                ),
+            ] = "default",
+        ) -> AddFileInfoResponse:
 
-            from starlette.datastructures import UploadFile as StarletteUploadFile
-            def is_real_uploadfile(val):
-                return isinstance(val, StarletteUploadFile)
+            logger.info(
+                "Received add video file request - purpose %s,"
+                " media_type %s have file %r, filename - %s, camera_id - %s",
+                purpose,
+                media_type,
+                file,
+                filename,
+                camera_id,
+            )
 
-            if not is_real_uploadfile(file2):
-                file2 = None
+            if not file and not filename:
+                raise ViaException(
+                    "At least one of 'file' or 'filename' must be specified",
+                    "InvalidParameters",
+                    422,
+                )
+            if file and filename:
+                raise ViaException(
+                    "Only one of 'file' or 'filename' must be specified. Both are not allowed.",
+                    "InvalidParameters",
+                    422,
+                )
 
-            if not (file1):
-                raise ViaException("At least one file or filename must be specified", "InvalidParameters", 422)
-
-            for media_type in [media_type1, media_type2]:
-                if media_type and media_type not in ["video", "image", "metadata", "segment"]:
-                    raise ViaException(f"Unsupported media type: {media_type}", "InvalidParameters", 422)
-
-            async def validate_segment_schema(file, media_type):
-                if not file:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"File is required for segment type ({media_type})"
+            if media_type != "video" and media_type != "image":
+                raise ViaException(
+                    "Currently only 'video', 'image' media_type is supported.",
+                    "InvalidParameters",
+                    422,
+                )
+            if file:
+                if not re.compile(FILE_NAME_PATTERN).match(file.filename):
+                    raise ViaException(
+                        f"filename should match pattern '{FILE_NAME_PATTERN}'", "BadParameters", 400
                     )
-                try:
-                    raw = await file.read()
-                    data = json.loads(raw.decode("utf-8"))
-                    SegmentSchema(**data)  # JSON 스키마 검증
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Invalid segment schema for {media_type}: {str(e)}"
+                # File uploaded by user
+                video_id = await self._asset_manager.save_file(
+                    file, file.filename, purpose, media_type, camera_id
+                )
+            else:
+                # File added as path
+                video_id = self._asset_manager.add_file(
+                    filename, purpose, media_type, camera_id, reuse_asset=False
+                )
+
+            try:
+                if not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
+                    media_info = await MediaFileInfo.get_info_async(
+                        self._asset_manager.get_asset(video_id).path
                     )
+                    if not media_info.video_codec:
+                        raise Exception("Invalid file")
+                    if (media_type == "image") != media_info.is_image:
+                        raise Exception("Invalid file")
 
-            def convert_format(old_data: dict) -> dict:
-                new_data = {
-                    "video_id": str(uuid.uuid4()),
-                    "coarse_scenes": []
-                }
+                    # Cache video FPS in the asset
+                    if media_type == "video" and hasattr(media_info, "video_fps"):
+                        asset = self._asset_manager.get_asset(video_id)
+                        asset.update_video_fps(float(media_info.video_fps))
+            except Exception as e:
+                logger.error("".join(traceback.format_exception(e)))
+                self._asset_manager.cleanup_asset(video_id)
+                raise ViaException(
+                    f"File does not seem to be a valid {media_type} file",
+                    "InvalidFile",
+                    400,
+                )
 
-                for idx, scene in enumerate(old_data.get("hierarchical_scenes", [])):
-                    medium_scene = scene.get("medium_scene", {})
-                    high_scenes = scene.get("contained_high_scenes", [])
-
-                    coarse_scene = {
-                        "id": idx,  # 필요하면 주석 해제
-                        "start_time": medium_scene.get("start_time", ""),
-                        "end_time": medium_scene.get("end_time", ""),
-                        "num_finegrained_scenes": len(high_scenes),
-                        "fine_scenes": []
-                    }
-
-                    for jdx, hs in enumerate(high_scenes):
-                        fine_scene = {
-                            "id": jdx,  # 필요하면 주석 해제
-                            "start_time": hs.get("start_time", ""),
-                            "end_time": hs.get("end_time", "")
-                        }
-                        coarse_scene["fine_scenes"].append(fine_scene)
-
-                    new_data["coarse_scenes"].append(coarse_scene)
-                print(f"new_data: {new_data}")
-                return new_data
-
-            if file1 and media_type1 == "segment": 
-                await validate_segment_schema(file1, media_type1)
-            if file2 and media_type2 == "segment":
-                await validate_segment_schema(file2, media_type2)
-            
-            file_name_dict = {
-                "video": "video.mp4",
-                "image": "image.jpeg",
-                "metadata": "metadata.json",
-                "segment": "segment.json",
+            asset = self._asset_manager.get_asset(video_id)
+            try:
+                fsize = (await aiofiles.os.stat(asset.path)).st_size
+            except Exception:
+                fsize = 0
+            return {
+                "id": video_id,
+                "bytes": fsize,
+                "filename": asset.filename,
+                "media_type": media_type,
+                "purpose": "vision",
             }
-
-            # Handle file1
-            if file1:
-                if media_type1 == "segment":
-                    await file1.seek(0)
-                    content = await file1.read()
-                    
-                    try:
-                        old_data = json.loads(content.decode("utf-8"))
-                    except json.JSONDecodeError as e:
-                        raise ValueError(f"JSON 파싱 실패: {e}")
-
-                    # 변환 수행
-                    processed_bytes = json.dumps(convert_format(old_data)).encode("utf-8")
-
-                    file1 = UploadFile(
-                        filename=file1.filename,
-                        file=BytesIO(processed_bytes),
-                    )
-                
-                video_id = await self._asset_manager.save_file(file1, file_name_dict[media_type1], purpose, media_type1, video_id)
-                fname1 = file1.filename
-            else:
-                fname1 = None
-
-            # Handle file2 (if exists)
-            if file2:
-                if media_type2 == "segment":
-                    await file2.seek(0)
-                    content = await file2.read()
-                    
-                    try:
-                        old_data = json.loads(content.decode("utf-8"))
-                    except json.JSONDecodeError as e:
-                        raise ValueError(f"JSON 파싱 실패: {e}")
-
-                    # 변환 수행
-                    processed_bytes = json.dumps(convert_format(old_data)).encode("utf-8")
-
-                    file2 = UploadFile(
-                        filename=file2.filename,
-                        file=BytesIO(processed_bytes),
-                    )
-
-                video_id = await self._asset_manager.save_file(file2, file_name_dict[media_type2], purpose, media_type2, video_id)
-                fname2 = file2.filename
-            else:
-                fname2 = None
-
-            # Construct response for only uploaded files
-            files_info = {}
-            if fname1:
-                path1 = os.path.join(self._asset_manager._asset_dir, video_id, fname1)
-                size1 = (await aiofiles.os.stat(path1)).st_size if await aiofiles.os.path.isfile(path1) else 0
-                files_info[media_type1] = {"filename": fname1, "media_type": media_type1, "bytes": size1}
-
-            if fname2:
-                path2 = os.path.join(self._asset_manager._asset_dir, video_id, fname2)
-                size2 = (await aiofiles.os.stat(path2)).st_size if await aiofiles.os.path.isfile(path2) else 0
-                files_info[media_type2] = {"filename": fname2, "media_type": media_type2, "bytes": size2}
-
-            return {"id": video_id, "purpose": purpose, "files": files_info}
 
         @self._app.delete(
             f"{API_PREFIX}/files/{{file_id}}",
@@ -1652,7 +445,7 @@ class ViaServer:
             tags=["Files"],
         )
         async def delete_video_file(
-            file_id: Annotated[str, Path(description="File having 'file_id' to be deleted.")],
+            file_id: Annotated[UUID, Path(description="File having 'file_id' to be deleted.")],
         ) -> DeleteFileResponse:
             file_id = str(file_id)
             logger.info("Received delete video file request for %s", file_id)
@@ -1667,50 +460,12 @@ class ViaServer:
                 self._async_executor, self._asset_manager.cleanup_asset, file_id
             )
 
-            return {"id": file_id, "object": "file", "deleted": True}
+            # Force Garbage Collect for tests
+            if os.environ.get("VSS_FORCE_GC"):
+                print("Force Garbage Collect in VIA Server")
+                gc.collect()
 
-        # @self._app.get(
-        #     f"{API_PREFIX}/files",
-        #     description="Returns a list of files.",
-        #     summary="Returns list of files",
-        #     responses={
-        #         200: {"description": "Successful Response."},
-        #         **add_common_error_responses([500]),
-        #     },
-        #     tags=["Files"],
-        # )
-        # async def list_video_files(
-        #     purpose: Annotated[
-        #         str,
-        #         Query(
-        #             description="Only return files with the given purpose.",
-        #             max_length=36,
-        #             title="Only return files with the given purpose.",
-        #             pattern=r"^[a-zA-Z]*$",
-        #         ),
-        #     ],
-        # ) -> ListFilesResponse:
-        #     if purpose != "vision":
-        #         return {"data": [], "object": "list"}
-        #     video_file_list = [
-        #         {
-        #             "id": asset.asset_id,
-        #             "filename": asset.filename,
-        #             "purpose": "vision",
-        #             "bytes": (
-        #                 (await aiofiles.os.stat(asset.path)).st_size
-        #                 if (await aiofiles.os.path.isfile(asset.path))
-        #                 else 0
-        #             ),
-        #             "media_type": asset.media_type,
-        #         }
-        #         for asset in self._asset_manager.list_assets()
-        #         if not asset.is_live
-        #     ]
-        #     logger.info(
-        #         "Received list files request. Responding with %d files info", len(video_file_list)
-        #     )
-        #     return {"data": video_file_list, "object": "list"}
+            return {"id": file_id, "object": "file", "deleted": True}
 
         @self._app.get(
             f"{API_PREFIX}/files",
@@ -1735,59 +490,25 @@ class ViaServer:
         ) -> ListFilesResponse:
             if purpose != "vision":
                 return {"data": [], "object": "list"}
-
-            asset_list = []
-            for asset in self._asset_manager.list_assets():
-                if asset.is_live:
-                    continue
-
-                files: Dict[str, FileDetail] = {}
-
-                for media_type, file_info in asset.files.items():
-                    path = file_info.get("path")
-                    size = 0
-                    if await aiofiles.os.path.isfile(path):
-                        size = (await aiofiles.os.stat(path)).st_size
-
-                    files[media_type] = FileDetail(
-                        filename=file_info.get("fileName"),
-                        media_type=media_type,
-                        bytes=size
-                    )
-
-                asset_list.append(AssetFilesResponse(
-                    id=asset.asset_id,
-                    purpose=purpose,
-                    files=files
-                ))
-
-            logger.info("Responding with %d asset entries", len(asset_list))
-            return {"data": asset_list, "object": "list"}
-
-        # @self._app.get(
-        #     f"{API_PREFIX}/files/{{file_id}}",
-        #     summary="Returns information about a specific file",
-        #     description="Returns information about a specific file.",
-        #     responses={
-        #         200: {"description": "Successful Response."},
-        #         **add_common_error_responses(),
-        #     },
-        #     tags=["Files"],
-        # )
-        # async def get_file_info(
-        #     file_id: Annotated[
-        #         str, Path(description="The ID of the file to use for this request.")
-        #     ],
-        # ) -> FileInfo:
-        #     file_id = str(file_id)
-        #     asset = self._asset_manager.get_asset(file_id)
-        #     if asset.is_live:
-        #         raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
-        #     try:
-        #         fsize = (await aiofiles.os.stat(asset.path)).st_size
-        #     except Exception:
-        #         fsize = 0
-        #     return {"id": file_id, "bytes": fsize, "filename": asset.filename, "purpose": "vision"}
+            video_file_list = [
+                {
+                    "id": asset.asset_id,
+                    "filename": asset.filename,
+                    "purpose": "vision",
+                    "bytes": (
+                        (await aiofiles.os.stat(asset.path)).st_size
+                        if (await aiofiles.os.path.isfile(asset.path))
+                        else 0
+                    ),
+                    "media_type": asset.media_type,
+                }
+                for asset in self._asset_manager.list_assets()
+                if not asset.is_live
+            ]
+            logger.info(
+                "Received list files request. Responding with %d files info", len(video_file_list)
+            )
+            return {"data": video_file_list, "object": "list"}
 
         @self._app.get(
             f"{API_PREFIX}/files/{{file_id}}",
@@ -1800,85 +521,39 @@ class ViaServer:
             tags=["Files"],
         )
         async def get_file_info(
-            file_id: Annotated[str, Path(description="The ID of the file to use for this request.")],
-        ) -> AssetFilesResponse:  # ✅ 수정
+            file_id: Annotated[
+                UUID, Path(description="The ID of the file to use for this request.")
+            ],
+        ) -> FileInfo:
             file_id = str(file_id)
             asset = self._asset_manager.get_asset(file_id)
             if asset.is_live:
                 raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
-
-            files: Dict[str, FileDetail] = {}
-
-            for media_type, file_info in asset.files.items():
-                path = file_info.get("path")
-                size = 0
-                if await aiofiles.os.path.isfile(path):
-                    try:
-                        size = (await aiofiles.os.stat(path)).st_size
-                    except Exception:
-                        pass
-
-                files[media_type] = FileDetail(
-                    filename=file_info.get("fileName"),
-                    media_type=media_type,
-                    bytes=size
-                )
-
-            return AssetFilesResponse(
-                id=asset.asset_id,
-                purpose=asset.purpose,
-                files=files
-            )
-
-        # @self._app.get(
-        #     f"{API_PREFIX}/files/{{file_id}}/content",
-        #     summary="Returns the contents of the specified file",
-        #     description="Returns the contents of the specified file.",
-        #     responses={
-        #         200: {"description": "Successful Response."},
-        #         **add_common_error_responses(),
-        #     },
-        #     tags=["Files"],
-        # )
-        # async def get_file_content(
-        #     file_id: Annotated[
-        #         str, Path(description="The ID of the file to use for this request.")
-        #     ],
-        # ):
-        #     asset = self._asset_manager.get_asset(str(file_id))
-        #     if asset.is_live:
-        #         raise ViaException(f"No such resource {str(file_id)}", "BadParameter", 400)
-        #     return FileResponse(asset.path)
+            try:
+                fsize = (await aiofiles.os.stat(asset.path)).st_size
+            except Exception:
+                fsize = 0
+            return {"id": file_id, "bytes": fsize, "filename": asset.filename, "purpose": "vision"}
 
         @self._app.get(
-            f"{API_PREFIX}/files/{{file_id}}/content/{{media_type}}",
-            summary="Returns the contents of the specified media_type file",
-            description="Returns the contents of a specific media_type file from the given file_id asset.",
+            f"{API_PREFIX}/files/{{file_id}}/content",
+            summary="Returns the contents of the specified file",
+            description="Returns the contents of the specified file.",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
-                404: {"description": "Requested media_type file not found."}
             },
             tags=["Files"],
         )
-        async def get_file_content_by_type(
-            file_id: Annotated[str, Path(description="The ID of the asset.")],
-            media_type: Annotated[str, Path(description="The media type of the file to retrieve.")],
+        async def get_file_content(
+            file_id: Annotated[
+                UUID, Path(description="The ID of the file to use for this request.")
+            ],
         ):
-            asset = self._asset_manager.get_asset(file_id)
+            asset = self._asset_manager.get_asset(str(file_id))
             if asset.is_live:
-                raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
-
-            # 파일 존재 확인
-            file_info = asset.files.get(media_type)
-            if not file_info:
-                raise ViaException(f"No file of type '{media_type}' found for asset {file_id}", "NotFound", 404)
-
-            path = file_info.get("path")
-            if not path or not os.path.isfile(path):
-                raise ViaException(f"File not found on disk for '{media_type}'", "NotFound", 404)
-
-            return FileResponse(path, filename=file_info.get("fileName"))
+                raise ViaException(f"No such resource {str(file_id)}", "BadParameter", 400)
+            return FileResponse(asset.path)
 
         # ======================= Files API
 
@@ -1913,9 +588,10 @@ class ViaServer:
                         )
 
             logger.info(
-                "Received add live stream request: url - %s, description - %s",
+                "Received add live stream request: url - %s, description - %s, camera_id - %s",
                 query.liveStreamUrl,
                 query.description,
+                query.camera_id,
             )
             if bool(query.username) != bool(query.password):
                 raise ViaException(
@@ -1933,6 +609,11 @@ class ViaServer:
                     )
                     if not media_info.video_codec:
                         raise Exception("Invalid file")
+
+                    # Store media_info for later FPS caching
+                    cached_media_info = media_info
+                else:
+                    cached_media_info = None
             except Exception:
                 raise ViaException(
                     "Could not connect to the RTSP URL or"
@@ -1945,7 +626,14 @@ class ViaServer:
                 description=query.description,
                 username=query.username,
                 password=query.password,
+                camera_id=query.camera_id,
             )
+
+            # Cache video FPS in the asset if media info was retrieved
+            if cached_media_info and hasattr(cached_media_info, "video_fps"):
+                asset = self._asset_manager.get_asset(video_id)
+                asset.update_video_fps(float(cached_media_info.video_fps))
+
             return {"id": video_id}
 
         @self._app.get(
@@ -2005,7 +693,7 @@ class ViaServer:
         )
         async def delete_live_stream(
             stream_id: Annotated[
-                str, Path(description="Unique identifier for the live stream to be deleted.")
+                UUID, Path(description="Unique identifier for the live stream to be deleted.")
             ],
         ):
             stream_id = str(stream_id)
@@ -2016,6 +704,11 @@ class ViaServer:
 
             asset = self._asset_manager.get_asset(stream_id)
             loop = asyncio.get_event_loop()
+
+            # Live stream is being set up, wait for it to be ready
+            while asset.use_count > 1:
+                await asyncio.sleep(1)
+
             # Remove RTSP stream from the pipeline if it is being summarized
             await loop.run_in_executor(
                 self._async_executor, self._stream_handler.remove_rtsp_stream, asset
@@ -2086,9 +779,8 @@ class ViaServer:
         )
         async def summarize(query: SummarizationQuery, request: Request) -> CompletionResponse:
 
-            videoIdListstr = query.id_list
-            videoIdList = [str(str_obj) for str_obj in videoIdListstr]
-            print(f"videoIdList: {videoIdList}")
+            videoIdListUUID = query.id_list
+            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
             assetList = []
 
             if len(videoIdList) > 1:
@@ -2113,31 +805,11 @@ class ViaServer:
                             "BadParameters",
                             400,
                         )
-                
 
             videoId = videoIdList[
                 0
             ]  # Note: Other files processed only for multi-image summarize() below
             asset = self._asset_manager.get_asset(videoId)
-            segment = None
-            metadata = None
-            for file in asset.files.items():
-                if file[0] == "segment":
-                    segment = file[1]["path"]
-                if file[0] == "metadata":
-                    metadata = file[1]["path"]
-            llm_generation_config = {}
-            # Extract user specified llm output parameters
-            if query.max_tokens is not None:
-                llm_generation_config["max_new_tokens"] = query.max_tokens
-            if query.top_p is not None:
-                llm_generation_config["top_p"] = query.top_p
-            if query.top_k is not None:
-                llm_generation_config["top_k"] = query.top_k
-            if query.temperature is not None:
-                llm_generation_config["temperature"] = query.temperature
-            if query.seed is not None:
-                llm_generation_config["seed"] = query.seed
 
             media_info_start = None
             media_info_end = None
@@ -2165,7 +837,6 @@ class ViaServer:
                 "summarize_max_tokens = %s, "
                 "summarize_temperature = %s, "
                 "summarize_top_p = %s, "
-                "rag_type = %s, "
                 "rag_top_k = %s, "
                 "rag_batch_size = %s, "
                 "chat_max_tokens = %s, "
@@ -2174,9 +845,16 @@ class ViaServer:
                 "notification_max_tokens = %s, "
                 "notification_temperature = %s, "
                 "notification_top_p = %s, "
+                "summarization enabled = %s, "
+                "chat enabled = %s, "
                 "cv_pipeline_prompt = %s, "
                 "enable_cv_metadata = %d, "
-                "enable_chat_history = %d",
+                "enable_chat_history = %d, "
+                "collection_name = %s, "
+                "custom_metadata = %s, "
+                "delete_external_collection = %s, "
+                "camera_id = %s, "
+                "enable_audio = %d",
                 ", ".join(videoIdList),
                 asset.is_live,
                 query.chunk_duration,
@@ -2184,7 +862,14 @@ class ViaServer:
                 query.media_info and query.media_info.type,
                 media_info_start,
                 media_info_end,
-                json.dumps(llm_generation_config),
+                json.dumps(
+                    {
+                        "max_tokens": query.max_tokens,
+                        "temperature": query.temperature,
+                        "top_p": query.top_p,
+                        "top_k": query.top_k,
+                    }
+                ),
                 query.summary_duration,
                 query.stream,
                 query.num_frames_per_chunk,
@@ -2194,7 +879,6 @@ class ViaServer:
                 query.summarize_max_tokens,
                 query.summarize_temperature,
                 query.summarize_top_p,
-                query.rag_type,
                 query.rag_top_k,
                 query.rag_batch_size,
                 query.chat_max_tokens,
@@ -2203,13 +887,17 @@ class ViaServer:
                 query.notification_max_tokens,
                 query.notification_temperature,
                 query.notification_top_p,
+                query.summarize,
+                query.enable_chat,
                 query.cv_pipeline_prompt,
                 query.enable_cv_metadata,
                 query.enable_chat_history,
+                query.collection_name,
+                str(query.custom_metadata),
+                query.delete_external_collection,
+                query.camera_id,
+                query.enable_audio,
             )
-
-            caption_summarization_prompt = query.caption_summarization_prompt
-            summary_aggregation_prompt = query.summary_aggregation_prompt
 
             # Save stream settings to json file
             filtered_query_json = self._stream_settings_cache.transform_query(query.get_query_json)
@@ -2227,6 +915,17 @@ class ViaServer:
                     "BadParameters",
                     400,
                 )
+
+            # Validate required prompts based on CA-RAG configuration
+            validation_errors = validate_required_prompts(
+                query.prompt,
+                query.caption_summarization_prompt,
+                query.summary_aggregation_prompt,
+                self._args,
+            )
+            if validation_errors:
+                error_message = "; ".join(validation_errors)
+                raise ViaException(error_message, "BadParameters", 400)
 
             # Only streaming output is supported for live streams
             if asset.is_live and not query.stream:
@@ -2259,44 +958,19 @@ class ViaServer:
                     # Add live stream to the pipeline and start summarization
                     self._stream_handler.add_rtsp_stream(asset, query.chunk_duration)
                     try:
+                        asset.lock()
                         request_id = await loop.run_in_executor(
                             self._async_executor,
                             self._stream_handler.add_rtsp_stream_query,
                             asset,
-                            query.prompt,
-                            query.chunk_duration,
-                            llm_generation_config,
-                            query.summary_duration,
-                            caption_summarization_prompt,
-                            summary_aggregation_prompt,
-                            query.summarize,
-                            query.enable_chat,
-                            query.enable_chat_history,
-                            query.enable_cv_metadata,
-                            "",  # query.graph_rag_prompt_yaml,
-                            query.num_frames_per_chunk,
-                            query.vlm_input_width,
-                            query.vlm_input_height,
-                            query.summarize_batch_size,
-                            query.rag_type,
-                            query.rag_top_k,
-                            query.rag_batch_size,
-                            query.enable_audio,
-                            query.summarize_top_p,
-                            query.summarize_temperature,
-                            query.summarize_max_tokens,
-                            query.chat_top_p,
-                            query.chat_temperature,
-                            query.chat_max_tokens,
-                            query.notification_top_p,
-                            query.notification_temperature,
-                            query.notification_max_tokens,
-                            query.cv_pipeline_prompt,
+                            query,
                         )
                     except Exception as ex:
                         self._stream_handler._live_stream_info_map.pop(asset.asset_id, None)
                         asset.unlock()
                         raise ex from None
+                    finally:
+                        asset.unlock()
                     logger.info("Created live stream query %s for videoId %s", request_id, videoId)
 
                     for tool in query.tools:
@@ -2304,7 +978,18 @@ class ViaServer:
                             self._stream_handler.add_live_stream_alert(
                                 liveStreamId=asset.asset_id,
                                 events=tool.alert.events,
-                                isCallback=False,
+                                isCallback=True,
+                                callbackUrl=(
+                                    tool.alert.callbackUrl
+                                    if tool.alert.callbackUrl is None
+                                    else str(tool.alert.callbackUrl)
+                                ),
+                                callbackToken=(
+                                    tool.alert.callbackToken
+                                    if tool.alert.callbackToken is None
+                                    else str(tool.alert.callbackToken)
+                                ),
+                                callbackJsonTemplate=str(tool.alert.callbackJsonTemplate),
                                 alertName=tool.alert.name,
                             )
             else:
@@ -2315,40 +1000,7 @@ class ViaServer:
                     self._async_executor,
                     self._stream_handler.summarize,
                     assetList,
-                    query.chunk_type,
-                    segment,
-                    metadata,
-                    query.prompt,
-                    query.chunk_duration,
-                    query.chunk_overlap_duration,
-                    llm_generation_config,
-                    media_info_start,
-                    media_info_end,
-                    caption_summarization_prompt,
-                    summary_aggregation_prompt,
-                    query.summarize,
-                    query.enable_chat,
-                    query.enable_chat_history,
-                    query.enable_cv_metadata,
-                    "",  # query.graph_rag_prompt_yaml,
-                    query.num_frames_per_chunk,
-                    query.summarize_batch_size,
-                    query.rag_type,
-                    query.rag_top_k,
-                    query.rag_batch_size,
-                    query.vlm_input_width,
-                    query.vlm_input_height,
-                    query.enable_audio,
-                    query.summarize_top_p,
-                    query.summarize_temperature,
-                    query.summarize_max_tokens,
-                    query.chat_top_p,
-                    query.chat_temperature,
-                    query.chat_max_tokens,
-                    query.notification_top_p,
-                    query.notification_temperature,
-                    query.notification_max_tokens,
-                    query.cv_pipeline_prompt,
+                    query,
                 )
                 logger.info("Created video file query %s for videoId %s", request_id, videoId)
 
@@ -2472,7 +1124,9 @@ class ViaServer:
                                                 "finish_reason": CompletionFinishReason.STOP.value,
                                                 "index": 0,
                                                 "message": {
-                                                    "content": "Summarization failed",
+                                                    "content": "Summarization failed."
+                                                    + " "
+                                                    + req_info.error_message,
                                                     "role": "assistant",
                                                 },
                                             }
@@ -2492,6 +1146,14 @@ class ViaServer:
                                     "start_timestamp": resp_list[0].start_timestamp,
                                     "end_timestamp": resp_list[0].end_timestamp,
                                 }
+
+                                dt = datetime.strptime(
+                                    resp_list[0].end_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ"
+                                ).replace(tzinfo=timezone.utc)
+                                current_time = datetime.now(timezone.utc)
+                                self._stream_handler.update_live_stream_summary_latency(
+                                    (current_time - dt).total_seconds()
+                                )
                             else:
                                 media_info = {
                                     "type": "offset",
@@ -2499,11 +1161,6 @@ class ViaServer:
                                     "end_offset": int(resp_list[0].end_timestamp),
                                 }
 
-                            # Extract batch summaries if available
-                            batch_summaries = []
-                            if resp_list and resp_list[0].full_result:
-                                batch_summaries = resp_list[0].full_result.get("summarization", {}).get("batch_summaries", [])
-                                
                             # Create the response json
                             response = {
                                 "id": request_id,
@@ -2522,7 +1179,6 @@ class ViaServer:
                                     }
                                 ],
                                 "usage": None,
-                                "batch_summaries": batch_summaries,
                             }
                             # Yield to generate a server-sent event
                             yield json.dumps(response)
@@ -2562,17 +1218,19 @@ class ViaServer:
                 return EventSourceResponse(message_generator(), send_timeout=5, ping=1)
             else:
                 # Non-streaming output. Wait for request to be completed.
-                await self._stream_handler.wait_for_request_done(request_id)
+                await loop.run_in_executor(
+                    self._async_executor, self._stream_handler.wait_for_request_done, request_id
+                )
                 req_info, resp_list = self._stream_handler.get_response(request_id)
                 self._stream_handler.check_status_remove_req_id(request_id)
                 if req_info.status == RequestInfo.Status.FAILED:
-                    raise ViaException("Failed to generate summary", "InternalServerError", 500)
+                    raise ViaException(
+                        f"Failed to generate summary: {req_info.error_message}",
+                        "InternalServerError",
+                        500,
+                    )
 
                 # Create response json and return it
-                batch_summaries = []
-                if resp_list and resp_list[0].full_result:
-                    batch_summaries = resp_list[0].full_result.get("summarization", {}).get("batch_summaries", [])
-                
                 return {
                     "id": request_id,
                     "model": model_info.id,
@@ -2598,8 +1256,441 @@ class ViaServer:
                         "total_chunks_processed": req_info.chunk_count,
                         "query_processing_time": int(req_info.end_time - req_info.start_time),
                     },
-                    "batch_summaries": batch_summaries,
                 }
+
+        # ======================= Summarize API
+
+        # ======================= Summarize API
+
+        def _format_chunk_response(resp, req_info):
+            """Format a chunk response with timestamp for display.
+
+            Args:
+                resp: Response object with start_timestamp, end_timestamp, and response fields
+                req_info: Request info object with is_live field
+
+            Returns:
+                str: Formatted chunk response with timestamp
+            """
+            if req_info.is_live:
+                start_time = resp.start_timestamp
+                end_time = resp.end_timestamp
+            else:
+                start_time = str(resp.start_timestamp)
+                end_time = str(resp.end_timestamp)
+
+            return f"[{start_time} - {end_time}] {resp.response}"
+
+        @self._app.post(
+            f"{API_PREFIX}/generate_vlm_captions",
+            summary="Generate VLM captions for a video",
+            description="Run video VLM captions generation query.",
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+                503: {
+                    "model": ViaError,
+                    "description": (
+                        "Server is busy processing another file / live-stream."
+                        " Client may try again in some time."
+                    ),
+                },
+            },
+            tags=["Summarization"],
+        )
+        async def generate_vlm_captions(
+            query: VlmQuery, request: Request
+        ) -> VlmCaptionsCompletionResponse:
+
+            videoIdListUUID = query.id_list
+            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            assetList = []
+
+            if len(videoIdList) > 1:
+                for videoId in videoIdList:
+                    asset = self._asset_manager.get_asset(videoId)
+                    assetList.append(asset)
+                    if asset.media_type != "image":
+                        raise ViaException(
+                            "Multi-file summarize: Only image files supported."
+                            f" {asset._filename} is a not an image",
+                            "BadParameters",
+                            400,
+                        )
+
+            videoId = videoIdList[
+                0
+            ]  # Note: Other files processed only for multi-image summarize() below
+            asset = self._asset_manager.get_asset(videoId)
+
+            media_info_start = None
+            media_info_end = None
+
+            if query.media_info:
+                # Extract user specified start/end time filter.
+                # For files, it is in terms of "offset" - start/end time in seconds
+                # For live stream, it is in terms of "timetamp" - start/end NTP timestamp.
+                if query.media_info.type == "offset":
+                    media_info_start = query.media_info.start_offset
+                    media_info_end = query.media_info.end_offset
+                if query.media_info.type == "timetamp":
+                    media_info_start = query.media_info.start_timestamp
+                    media_info_end = query.media_info.end_timestamp
+
+            logger.info(
+                "Received generate_vlm_captions query, id - %s (live-stream=%d), "
+                "chunk_duration=%d, chunk_overlap_duration=%d, "
+                "media-offset-type=%s, media-start-time=%r, "
+                "media-end-time=%r, modelParams=%s, "
+                "stream=%r num_frames_per_chunk=%d "
+                "vlm_input_width = %d, "
+                "vlm_input_height = %d, "
+                "cv_pipeline_prompt = %s, "
+                "enable_cv_metadata = %d, "
+                "enable_reasoning = %d",
+                ", ".join(videoIdList),
+                asset.is_live,
+                query.chunk_duration,
+                query.chunk_overlap_duration,
+                query.media_info and query.media_info.type,
+                media_info_start,
+                media_info_end,
+                json.dumps(
+                    {
+                        "max_tokens": query.max_tokens,
+                        "temperature": query.temperature,
+                        "top_p": query.top_p,
+                        "top_k": query.top_k,
+                    }
+                ),
+                query.stream,
+                query.num_frames_per_chunk,
+                query.vlm_input_width,
+                query.vlm_input_height,
+                query.cv_pipeline_prompt,
+                query.enable_cv_metadata,
+                query.enable_reasoning,
+            )
+
+            # Save stream settings to json file
+            filtered_query_json = self._stream_settings_cache.transform_query(query.get_query_json)
+            logger.debug(f"Filtered Query JSON: {filtered_query_json}")
+            self._stream_settings_cache.update_stream_settings(videoId, filtered_query_json)
+
+            # Check if user has specified the model that is initialized
+            model_info = self._stream_handler.get_models_info()
+            if query.model != model_info.id:
+                raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
+
+            if query.api_type and query.api_type != model_info.api_type:
+                raise ViaException(
+                    f"api_type {query.api_type} not supported by model '{query.model}'",
+                    "BadParameters",
+                    400,
+                )
+
+            # Only streaming output is supported for live streams
+            if asset.is_live and not query.stream:
+                raise ViaException(
+                    "Only streaming output is supported for live-streams", "BadParameters", 400
+                )
+            loop = asyncio.get_event_loop()
+
+            # Convert VlmQuery to SummarizationQuery for internal processing
+            # Build the query dict with only non-None values
+            query_dict = {
+                "id": query.id,
+                "prompt": query.prompt,
+                "model": query.model,
+                "api_type": query.api_type,
+                "response_format": query.response_format,
+                "stream": query.stream,
+                "chunk_duration": query.chunk_duration,
+                "chunk_overlap_duration": query.chunk_overlap_duration,
+                "user": query.user,
+                "tools": query.tools,
+                "enable_cv_metadata": query.enable_cv_metadata,
+                "cv_pipeline_prompt": query.cv_pipeline_prompt,
+                "num_frames_per_chunk": query.num_frames_per_chunk,
+                "vlm_input_width": query.vlm_input_width,
+                "vlm_input_height": query.vlm_input_height,
+                "enable_reasoning": query.enable_reasoning,
+                # Set VLM captions specific defaults
+                "summarize": False,
+                "enable_chat": False,
+                "enable_chat_history": False,
+            }
+
+            if query.system_prompt:
+                query_dict["system_prompt"] = query.system_prompt
+
+            # Add optional fields only if they have values
+            if query.stream_options is not None:
+                query_dict["stream_options"] = query.stream_options
+            if query.max_tokens is not None:
+                query_dict["max_tokens"] = query.max_tokens
+            if query.temperature is not None:
+                query_dict["temperature"] = query.temperature
+            if query.top_p is not None:
+                query_dict["top_p"] = query.top_p
+            if query.top_k is not None:
+                query_dict["top_k"] = query.top_k
+            if query.seed is not None:
+                query_dict["seed"] = query.seed
+            if query.media_info is not None:
+                query_dict["media_info"] = query.media_info
+
+            summarization_query = SummarizationQuery(**query_dict)
+
+            if asset.is_live:
+                # Check if summarization is already running / already completed.
+                if videoId in self._stream_handler._live_stream_info_map:
+                    # Reconnect client to existing summarization stream
+                    request_id = (
+                        self._stream_handler._live_stream_info_map[videoId].req_info[0].request_id
+                    )
+                    logger.info(
+                        "Re-connecting to existing live stream query %s for videoId %s",
+                        request_id,
+                        videoId,
+                    )
+                else:
+                    # Add live stream to the pipeline and start summarization
+                    self._stream_handler.add_rtsp_stream(asset, summarization_query.chunk_duration)
+                    try:
+                        request_id = await loop.run_in_executor(
+                            self._async_executor,
+                            self._stream_handler.generate_vlm_captions,
+                            [asset],  # Pass as list for consistency
+                            summarization_query,
+                            True,  # is_rtsp=True for rtsp stream
+                        )
+                    except Exception as ex:
+                        self._stream_handler._live_stream_info_map.pop(asset.asset_id, None)
+                        asset.unlock()
+                        raise ex from None
+                    logger.info("Created live stream query %s for videoId %s", request_id, videoId)
+
+            else:
+                if len(videoIdList) == 1:
+                    assetList = [asset]
+                # Summarize on a file or multiple files
+                request_id = await loop.run_in_executor(
+                    self._async_executor,
+                    self._stream_handler.generate_vlm_captions,
+                    assetList,
+                    summarization_query,
+                    False,  # is_rtsp=False for file
+                )
+                logger.info("Created video file query %s for videoId %s", request_id, videoId)
+
+            logger.info("Waiting for results of query %s", request_id)
+
+            if query.stream:
+                # Allow only a single client for streaming output per live stream
+                if time.time() - self._sse_active_clients.get(videoId, 0) < 3:
+                    raise ViaException(
+                        "Another client is already connected to live stream", "Conflict", 409
+                    )
+
+                # Server side events generator
+                async def message_generator():
+                    last_status_report_time = 0
+                    last_status = None
+                    while True:
+                        self._sse_active_clients[videoId] = time.time()
+                        try:
+                            message = await asyncio.wait_for(request._receive(), timeout=0.01)
+                            if message.get("type") == "http.disconnect":
+                                self._sse_active_clients.pop(videoId, None)
+                                logger.info(
+                                    "Client %s disconnected for live-stream %s",
+                                    request.client.host,
+                                    videoId,
+                                )
+                                return
+                        except Exception:
+                            pass
+
+                        # Get current response status from the pipeline
+                        try:
+                            req_info, resp_list = self._stream_handler.get_response(request_id, 1)
+                        except ViaException:
+                            break
+                        if (
+                            time.time() - last_status_report_time >= 10
+                            or resp_list
+                            or last_status != req_info.status
+                        ):
+                            last_status_report_time = time.time()
+                            last_status = req_info.status
+                            logger.info(
+                                "Status for query %s is %s, percent complete is %.2f,"
+                                " size of response list is %d",
+                                req_info.request_id,
+                                req_info.status.value,
+                                req_info.progress,
+                                len(resp_list),
+                            )
+
+                        # Response list is empty. Stop generation if request is completed or failed.
+                        if not resp_list:
+                            if req_info.status in [
+                                RequestInfo.Status.SUCCESSFUL,
+                                RequestInfo.Status.FAILED,
+                            ]:
+                                if req_info.status == RequestInfo.Status.FAILED:
+                                    # Create the response json
+                                    response = {
+                                        "id": request_id,
+                                        "model": model_info.id,
+                                        "created": int(req_info.queue_time),
+                                        "usage": None,
+                                    }
+                                    yield json.dumps(response)
+                                break
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Set the start/end time info for current response.
+                        while resp_list:
+                            if req_info.is_live:
+                                media_info = {
+                                    "type": "timestamp",
+                                    "start_timestamp": resp_list[0].start_timestamp,
+                                    "end_timestamp": resp_list[0].end_timestamp,
+                                }
+                                dt = datetime.strptime(
+                                    resp_list[0].end_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ"
+                                ).replace(tzinfo=timezone.utc)
+                                current_time = datetime.now(timezone.utc)
+                                self._stream_handler.update_live_stream_captions_latency(
+                                    (current_time - dt).total_seconds()
+                                )
+                            else:
+                                media_info = {
+                                    "type": "offset",
+                                    "start_offset": int(resp_list[0].start_timestamp),
+                                    "end_offset": int(resp_list[0].end_timestamp),
+                                }
+
+                            # Build chunk responses for VLM captions
+                            chunk_responses = []
+                            for resp in resp_list:
+                                chunk_response = {
+                                    "start_time": (
+                                        resp.start_timestamp
+                                        if req_info.is_live
+                                        else str(resp.start_timestamp)
+                                    ),
+                                    "end_time": (
+                                        resp.end_timestamp
+                                        if req_info.is_live
+                                        else str(resp.end_timestamp)
+                                    ),
+                                    "content": resp.response,
+                                }
+                                # Add reasoning description if available
+                                if (
+                                    hasattr(resp, "reasoning_description")
+                                    and resp.reasoning_description
+                                ):
+                                    chunk_response["reasoning_description"] = (
+                                        resp.reasoning_description
+                                    )
+                                chunk_responses.append(chunk_response)
+
+                            # Create the response json
+                            response = {
+                                "id": request_id,
+                                "model": model_info.id,
+                                "created": int(req_info.queue_time),
+                                "media_info": media_info,
+                                "chunk_responses": chunk_responses,
+                                "usage": None,
+                            }
+                            # Yield to generate a server-sent event
+                            yield json.dumps(response)
+                            try:
+                                req_info, resp_list = self._stream_handler.get_response(
+                                    request_id, 1
+                                )
+                            except ViaException:
+                                break
+
+                    # Generate usage data and send as server-sent event if requested
+                    if query.stream_options and query.stream_options.include_usage:
+                        try:
+                            req_info, resp_list = self._stream_handler.get_response(request_id, 0)
+                            end_time = (
+                                req_info.end_time if req_info.end_time is not None else time.time()
+                            )
+                            response = {
+                                "id": request_id,
+                                "model": model_info.id,
+                                "created": int(req_info.queue_time),
+                                "media_info": None,
+                                "usage": {
+                                    "total_chunks_processed": req_info.chunk_count,
+                                    "query_processing_time": int(end_time - req_info.start_time),
+                                },
+                            }
+                            yield json.dumps(response)
+                        except ViaException:
+                            pass
+                    yield "[DONE]"
+                    self._sse_active_clients.pop(videoId, None)
+                    self._stream_handler.check_status_remove_req_id(request_id)
+
+                return EventSourceResponse(message_generator(), send_timeout=5, ping=1)
+            else:
+                # Non-streaming output. Wait for request to be completed.
+                await loop.run_in_executor(
+                    self._async_executor, self._stream_handler.wait_for_request_done, request_id
+                )
+                req_info, resp_list = self._stream_handler.get_response(request_id)
+                self._stream_handler.check_status_remove_req_id(request_id)
+                if req_info.status == RequestInfo.Status.FAILED:
+                    raise ViaException(
+                        "Failed to generate VLM captions", "InternalServerError", 500
+                    )
+
+                # Create response json and return it
+                return VlmCaptionsCompletionResponse(
+                    id=request_id,
+                    model=model_info.id,
+                    created=int(req_info.queue_time),
+                    media_info=MediaInfoOffset(
+                        type="offset",
+                        start_offset=int(req_info.start_timestamp),
+                        end_offset=int(req_info.end_timestamp),
+                    ),
+                    chunk_responses=(
+                        [
+                            VlmCaptionResponse(
+                                start_time=(
+                                    resp.start_timestamp
+                                    if req_info.is_live
+                                    else str(resp.start_timestamp)
+                                ),
+                                end_time=(
+                                    resp.end_timestamp
+                                    if req_info.is_live
+                                    else str(resp.end_timestamp)
+                                ),
+                                content=resp.response,
+                                reasoning_description=getattr(resp, "reasoning_description", ""),
+                            )
+                            for resp in resp_list
+                        ]
+                        if resp_list
+                        else []
+                    ),
+                    usage=CompletionUsage(
+                        total_chunks_processed=req_info.chunk_count,
+                        query_processing_time=int(req_info.end_time - req_info.start_time),
+                    ),
+                )
 
         # ======================= Summarize API
 
@@ -2649,9 +1740,9 @@ class ViaServer:
         )
         async def qa(query: ChatCompletionQuery, request: Request) -> CompletionResponse:
 
-            videoIdListstr = query.id_list
-            logger.debug(f"{videoIdListstr}")
-            videoIdList = [str(str_obj) for str_obj in videoIdListstr]
+            videoIdListUUID = query.id_list
+            logger.debug(f"{videoIdListUUID}")
+            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
             assetList = []
 
             def json_to_string(input):
@@ -2676,19 +1767,6 @@ class ViaServer:
             asset = self._asset_manager.get_asset(videoId)
 
             logger.debug(f"Q&A; messages={query.messages}")
-
-            llm_generation_config = {}
-            # Extract user specified llm output parameters
-            if query.max_tokens is not None:
-                llm_generation_config["max_new_tokens"] = query.max_tokens
-            if query.top_p is not None:
-                llm_generation_config["top_p"] = query.top_p
-            if query.top_k is not None:
-                llm_generation_config["top_k"] = query.top_k
-            if query.temperature is not None:
-                llm_generation_config["temperature"] = query.temperature
-            if query.seed is not None:
-                llm_generation_config["seed"] = query.seed
 
             media_info_start = 0
             media_info_end = 0
@@ -2716,7 +1794,14 @@ class ViaServer:
                 query.media_info and query.media_info.type,
                 media_info_start,
                 media_info_end,
-                json.dumps(llm_generation_config),
+                json.dumps(
+                    {
+                        "max_tokens": query.max_tokens,
+                        "temperature": query.temperature,
+                        "top_p": query.top_p,
+                        "top_k": query.top_k,
+                    }
+                ),
                 query.summary_duration,
                 query.stream,
             )
@@ -2747,18 +1832,30 @@ class ViaServer:
             if len(videoIdList) == 1:
                 assetList = [asset]
 
+            # Measure chat completions latency
+            chat_start_time = time.time()
+
             answer_resp = await loop.run_in_executor(
                 self._async_executor,
                 self._stream_handler.qa,
                 assetList,
                 str(query.messages[-1].content),
-                llm_generation_config,
+                {},
                 media_info_start,
                 media_info_end,
                 query.highlight,
             )
+
+            chat_end_time = time.time()
+            chat_latency = chat_end_time - chat_start_time
+
+            # Record the chat completions latency metrics
+            self._stream_handler._metrics.chat_completions_latency.observe(chat_latency)
+            self._stream_handler._metrics.chat_completions_latency_latest.set(chat_latency)
+
             logger.info("Created query %s for id %s", request_id, videoId)
             logger.info("Waiting for results of query %s", request_id)
+            logger.info("Chat completions latency: %.3f seconds", chat_latency)
 
             logger.debug(f"Q&A answer:{answer_resp}")
             if len(answer_resp) > 0 and answer_resp[0] == "{":
@@ -2960,7 +2057,7 @@ class ViaServer:
             tags=["Alerts"],
         )
         def delete_alert(
-            alert_id: Annotated[str, Path(description="Unique ID of the alert to be deleted.")],
+            alert_id: Annotated[UUID, Path(description="Unique ID of the alert to be deleted.")],
         ):
             logger.info("Received delete alert request for %s", str(alert_id))
             self._stream_handler.remove_live_stream_alert(str(alert_id))
@@ -2977,7 +2074,7 @@ class ViaServer:
         )
         def get_recent_alerts(
             live_stream_id: Annotated[
-                str | None,
+                UUID | None,
                 Query(
                     description="Optional live stream ID to filter alerts.",
                 ),
@@ -3008,6 +2105,141 @@ class ViaServer:
 
         # ======================= Alerts API
 
+        # ======================= Review Alert API
+
+        @self._app.post(
+            f"{API_PREFIX}/reviewAlert",
+            summary="Review an external alert",
+            description=(
+                "Review an external alert. The API supports generating a dense caption as well as "
+                " a boolean true/false. The prompt and system prompt must be configured by the user"
+                " accordingly.\n\n"
+                "Additionally, `do_verification` may be set to `true`. When this is set, VSS"
+                " will look for truthy words like `yes` or `true` in the VLM response and set"
+                " `verification_result` accordingly.\n\n"
+                "Reasoning can be requested by setting `enable_reasoning` to `true`. In this case,"
+                " system prompt can be optionally modified to request VLM to respond with"
+                " `<think></think>` <answer></answer>` tags. If not done explicitly by user, "
+                "VSS would modify the prompt internally.\n\n"
+                "Examples:\n\n"
+                "- **Caption Only**: \n\n"
+                "  `system_prompt: You are a helpful assistant. Answer the user's question.`\n\n"
+                "  `prompt: Describe the scene in the video in one line.`\n\n"
+                "  `do_verification: false`\n\n"
+                "- **Caption with Boolean Answer**: \n\n"
+                "  `system_prompt: You are a helpful assistant. Answer the user's question.`\n\n"
+                "  `prompt: Did a person enter the room? Describe the scene in the video in one line.`\n\n"
+                "  `do_verification: true`\n\n"
+                "- **Boolean Answer Only**: \n\n"
+                "  `system_prompt: You are a helpful assistant. Answer the user's question with a yes or no only.`\n\n"  # noqa: E501
+                "  `prompt: Did a person enter the room?`\n\n"
+                "  `do_verification: true`."
+            ),
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+            },
+            tags=["Review Alert"],
+            response_model_exclude_unset=True,
+        )
+        async def review_alert(query: ReviewAlertRequest) -> ReviewAlertResponse:
+            video_path = query.video_path
+            if not os.path.isabs(video_path) and os.path.isdir(ALERT_REVIEW_MEDIA_BASE_DIR):
+                video_path = os.path.join(ALERT_REVIEW_MEDIA_BASE_DIR, video_path)
+
+            cv_metadata_path = query.cv_metadata_path
+            if (
+                cv_metadata_path
+                and not os.path.isabs(cv_metadata_path)
+                and os.path.isdir(ALERT_REVIEW_MEDIA_BASE_DIR)
+            ):
+                query.cv_metadata_path = os.path.join(ALERT_REVIEW_MEDIA_BASE_DIR, cv_metadata_path)
+
+            loop = asyncio.get_event_loop()
+
+            error_string = ""
+            ex = None
+            result = False
+            response = ""
+            selected_frames_ts = []
+            reasoning_description = ""
+
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    (
+                        result,
+                        response,
+                        selected_frames_ts,
+                        reasoning_description,
+                    ) = await loop.run_in_executor(
+                        self._async_executor,
+                        self._stream_handler.review_alert,
+                        query,
+                        Asset(str(uuid.uuid4()), video_path, "vision", "video", td),
+                    )
+            except ViaException as e:
+                error_string = e.message
+                ex = e
+            except Exception as e:
+                error_string = str(e)
+                ex = e
+
+            query.alert.status = (
+                ReviewAlertStatus.REVIEW_FAILED if error_string else ReviewAlertStatus.REVIEWED
+            )
+
+            review_response = ReviewAlertResponse(
+                id=query.id,
+                version=query.version,
+                timestamp=query.timestamp,
+                sensor_id=query.sensor_id,
+                video_path=query.video_path,
+                cv_metadata_path=query.cv_metadata_path,
+                confidence=query.confidence,
+                start_time=query.start_time,
+                end_time=query.end_time,
+                alert=query.alert,
+                event=query.event,
+                result=ReviewAlertResult(
+                    status=(
+                        ReviewAlertReviewStatus.FAILURE
+                        if error_string
+                        else ReviewAlertReviewStatus.SUCCESS
+                    ),
+                    error_string=error_string,
+                    reasoning=(
+                        reasoning_description if reasoning_description else "No reasoning available"
+                    ),
+                    review_method="VSS",
+                    reviewed_by=self._stream_handler.get_models_info().id,
+                    reviewed_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                    notes="Alert auto-reviewed by VSS; confidence above threshold.",
+                    description=str(response),
+                    input_prompt=query.vss_params.vlm_params.prompt,
+                ),
+            )
+
+            if query.stream_name:
+                review_response.stream_name = query.stream_name
+
+            if query.vss_params.do_verification:
+                review_response.result.verification_result = result
+
+            if query.meta_labels:
+                review_response.meta_labels = query.meta_labels
+
+            if query.vss_params.debug:
+                review_response.result.debug = ReviewAlertDebugInfo(
+                    selected_frames_ts=selected_frames_ts
+                )
+
+            if ex:
+                raise ex from None
+
+            return review_response
+
+        # ======================= Review Alert API
+
     def _setup_exception_handlers(self):
         # Handle incorrect request schema (user error)
         @self._app.exception_handler(RequestValidationError)
@@ -3019,7 +2251,7 @@ class ViaServer:
             except Exception:
                 loc = ".".join(str(err["loc"]))
             msg = err["msg"].replace("UploadFile", "'bytes'").replace("<class 'str'>", "'string'")
-            if err["type"] in ["value_error", "str_parsing", "string_pattern_mismatch"]:
+            if err["type"] in ["value_error", "uuid_parsing", "string_pattern_mismatch"]:
                 msg += f" (input: {json.dumps(err['input'])})"
             return JSONResponse(
                 status_code=422, content={"code": "InvalidParameters", "message": f"{loc}: {msg}"}
@@ -3066,10 +2298,7 @@ class ViaServer:
                 "description"
             ] = "Request body schema for adding a file."
             openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
-                "file1"
-            ]["maxLength"] = 100e9
-            openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
-                "file2"
+                "file"
             ]["maxLength"] = 100e9
             openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["id"][
                 "anyOf"
@@ -3087,9 +2316,9 @@ class ViaServer:
                             for item in v:
                                 search_dict(item)
                         else:
-                            if k == "format" and v == "str":
-                                d["maxLength"] = str_LENGTH
-                                d["minLength"] = str_LENGTH
+                            if k == "format" and v == "uuid":
+                                d["maxLength"] = UUID_LENGTH
+                                d["minLength"] = UUID_LENGTH
                                 break
                     if "enum" in d and "const" in d:
                         d.pop("const")
