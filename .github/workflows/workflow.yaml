@@ -91,7 +91,7 @@ jobs:
           tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-engine:${{ inputs.image_tag || github.sha }}
           file: ./src/vss-engine/docker/Dockerfile
           build-args: |
-            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
+            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.4.0
           ssh: default=${{ env.SSH_AUTH_SOCK }}
 
       - name: Set up kubectl
@@ -112,7 +112,7 @@ jobs:
 
       - name: Wait for image pull job to complete (up to 20min)
         run: |
-          for i in {1..80}; do
+          for i in {1..40}; do
             STATUS=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
             FAILED=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
             if [ "$STATUS" == "True" ]; then
@@ -124,7 +124,7 @@ jobs:
               exit 1
             fi
             echo "Waiting for job to complete..."
-            sleep 15
+            sleep 60
           done
           echo "Timeout reached. Job did not complete in time."
           exit 1
@@ -137,5 +137,5 @@ jobs:
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           kubectl scale deployment vss-vss-deployment -n vss --replicas=0
           find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
-          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.3.1.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
+          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.0.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
           kubectl scale deployment vss-vss-deployment -n vss --replicas=1

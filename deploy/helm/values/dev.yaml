@@ -1,19 +1,22 @@
+
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+#
+# NVIDIA CORPORATION and its licensors retain all intellectual property
+# and proprietary rights in and to this software, related documentation
+# and any modifications thereto.  Any use, reproduction, disclosure or
+# distribution of this software and related documentation without an express
+# license agreement from NVIDIA CORPORATION is strictly prohibited.
+
 global:
   ngcImagePullSecretName: ngc-docker-reg-secret
 
 vss:
-  nodeSelector: 
+  nodeSelector:
     kubernetes.io/hostname: dgx-b200-08
   namespace: vss
   storageClassName: gpfs
-  # securityContext: {}
-  # podSecurityContext: {}
   applicationSpecs:
     vss-deployment:
-      securityContext:
-        # fsGroup: 0
-        runAsGroup: 0
-        runAsUser: 0     
       containers:
         vss:
           image:
@@ -26,60 +29,49 @@ vss:
               configMapKeyRef:
                 name: vss-vlm-config
                 key: VLM_MODEL_TO_USE
-          - name: OPENAI_API_KEY
+          - name: MODEL_PATH
             valueFrom:
               configMapKeyRef:
                 name: vss-vlm-config
-                key: OPENAI_API_KEY
-          - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-          - name: VIA_VLM_ENDPOINT
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: VIA_VLM_ENDPOINT
-          # - name: MODEL_PATH
-          #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+                key: MODEL_PATH
+          # - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+          #   valueFrom:
+          #     configMapKeyRef:
+          #       name: vss-vlm-config
+          #       key: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+          # - name: VIA_VLM_ENDPOINT
+          #   valueFrom:
+          #     configMapKeyRef:
+          #       name: vss-vlm-config
+          #       key: VIA_VLM_ENDPOINT
           - name: ENABLE_AUDIO
             value: 'true'
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
             value: 'true'
-          # CV Pipeline
-          # - name: INSTALL_PROPRIETARY_CODECS
-          #   value: "true"
-          # - name: DISABLE_CV_PIPELINE
-          #   value: "false"
-          # - name: GDINO_INFERENCE_INTERVAL
-          #   value: "1"
-          # - name: NUM_CV_CHUNKS_PER_GPU
-          #   value: "2"
-          # - name: VSS_LOG_LEVEL
-          #   value: "DEBUG"
+          # multi-language support
+          - name: RIVA_ASR_SERVER_URI
+            value: riva-multilang-service
           startupProbe:
             failureThreshold: 360
+
   configs:
     ca_rag_config.yaml:
-      chat:
-        embedding:
-          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
-        llm:
-          base_url: http://llm-nim-svc:8000/v1
-          model: meta/llama-3.1-70b-instruct
-        reranker:
-          base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
-      notification:
-        llm:
-          base_url: http://llm-nim-svc:8000/v1
-          model: meta/llama-3.1-70b-instruct
-      summarization:
-        embedding:
-          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
-        llm:
-          base_url: http://llm-nim-svc:8000/v1
-          model: meta/llama-3.1-70b-instruct
+      tools:
+        chat_llm:
+          params:
+            base_url: http://llm-nim-svc:8000/v1
+        notification_llm:
+          params:
+            base_url: http://llm-nim-svc:8000/v1
+        nvidia_embedding:
+          params:
+            base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+        nvidia_reranker:
+          params:
+            base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
+        summarization_llm:
+          params:
+            base_url: http://llm-nim-svc:8000/v1
     guardrails_config.yaml:
       models:
       - engine: nim
@@ -92,42 +84,65 @@ vss:
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  # USE EXTERNAL VLM - GPU 리소스 할당 비활성화
+  egress:
+    # multi-language support
+    riva-api:
+      address: riva-multilang-service
+      port: 9000
   resources:
-    requests:
-      nvidia.com/gpu: 1
     limits:
-      nvidia.com/gpu: 1
-  # 기존 GPU 할당 주석 처리
-  # resources:
-  #   limits:
-  #     nvidia.com/gpu: 2
-  #     nvidia.com/gpu: 3 # CV Pipeline
+      nvidia.com/gpu: 2
   workloadSpecs:
-    dummy: {}
     wl-env:
       wl_env:
-        - name: NGC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              key: NGC_API_KEY
-              name: infisical-managed-secrets
-        - name: NVIDIA_API_KEY
-          valueFrom:
-            secretKeyRef:
-              key: NGC_API_KEY
-              name: infisical-managed-secrets
-        - name: GRAPH_DB_USERNAME
-          valueFrom:
-            secretKeyRef:
-              key: GRAPHDB_USER
-              name: infisical-managed-secrets
-        - name: GRAPH_DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              key: GRAPHDB_PASSWORD
-              name: infisical-managed-secrets
-      wl_units: 1
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: OPENAI_API_KEY
+            name: infisical-managed-secrets
+            optional: true
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NVIDIA_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: GRAPH_DB_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: GRAPHDB_USER
+            name: infisical-managed-secrets
+      - name: GRAPH_DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: GRAPHDB_PASSWORD
+            name: infisical-managed-secrets
+      - name: MINIO_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: MINIO_USERNAME
+            name: infisical-managed-secrets
+      - name: MINIO_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: MINIO_PASSWORD
+            name: infisical-managed-secrets
+      - name: ARANGO_DB_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: ARANGO_DB_USERNAME
+            name: infisical-managed-secrets
+      - name: ARANGO_DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: ARANGO_DB_PASSWORD
+            name: infisical-managed-secrets
+
+
 
 etcd:
   nodeSelector: 
@@ -140,7 +155,43 @@ minio:
     pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
-
+  applicationSpecs:
+    minio-deployment:
+      containers:
+        minio-container:
+          env:
+          - name: MINIO_ROOT_USER
+            valueFrom:
+              secretKeyRef:
+                key: MINIO_USERNAME
+                name: infisical-managed-secrets
+          - name: MINIO_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: MINIO_PASSWORD
+                name: infisical-managed-secrets
+  extraPodVolumes:
+  - name: secret-access-key-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: MINIO_USERNAME
+        path: access-key
+  - name: secret-secret-key-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: MINIO_PASSWORD
+        path: secret-key
+  extraPodVolumeMounts:
+  - name: secret-access-key-volume
+    mountPath: /secrets/access-key
+    subPath: access-key
+    readOnly: true
+  - name: secret-secret-key-volume
+    mountPath: /secrets/secret-key
+    subPath: secret-key
+    readOnly: true
 
 milvus:
   nodeSelector: 
@@ -177,12 +228,7 @@ neo4j:
     subPath: db-password
     readOnly: true
 
-
 nim-llm:
-  # CV Pipeline
-  # env:
-  # - name: NIM_MAX_MODEL_LEN
-  #   value: "128000"
   nodeSelector: 
     pyler.io/group: dgx
   namespace: vss 
@@ -195,6 +241,7 @@ nim-llm:
   model:
     name: meta/llama-3.1-70b-instruct
     ngcAPISecret: infisical-managed-secrets
+    tag: 1.10.1
   resources:
     limits:
       nvidia.com/gpu: 4
@@ -205,6 +252,7 @@ nemo-embedding:
     pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
+
   workloadSpecs:
     wl-env:
       wl_env:
@@ -264,3 +312,46 @@ riva:
       - name: NIM_CACHE_PATH
         value: /mnt/nim-cache
       wl_units: 1
+
+arango-db:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss  
+  storageClassName: gpfs
+  applicationSpecs:
+    arango-db-deployment:
+      containers:
+        arango-db-container:
+          env:
+          - name: ARANGO_DB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                key: ARANGO_DB_USERNAME
+                name: infisical-managed-secrets
+          - name: ARANGO_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: ARANGO_DB_PASSWORD
+                name: infisical-managed-secrets
+  extraPodVolumes:
+  - name: secret-db-username-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: ARANGO_DB_USERNAME
+        path: db-username
+  - name: secret-db-password-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: ARANGO_DB_PASSWORD
+        path: db-password
+  extraPodVolumeMounts:
+  - name: secret-db-username-volume
+    mountPath: /secrets/db-username
+    subPath: db-username
+    readOnly: true
+  - name: secret-db-password-volume
+    mountPath: /secrets/db-password
+    subPath: db-password
+    readOnly: true

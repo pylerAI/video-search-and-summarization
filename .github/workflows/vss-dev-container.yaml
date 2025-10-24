@@ -50,7 +50,7 @@ jobs:
           tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-dev-container:${{ github.sha }}
           file: ./src/vss-engine/docker/Dockerfile
           build-args: |
-            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
+            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.4.0
           ssh: default=${{ env.SSH_AUTH_SOCK }}
           
       - name: Set up kubectl
