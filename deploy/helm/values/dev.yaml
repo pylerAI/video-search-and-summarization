@@ -95,6 +95,30 @@ vss:
   workloadSpecs:
     wl-env:
       wl_env:
+      - name: FRONTEND_PORT
+        value: '9000'
+      - name: BACKEND_PORT
+        value: '8000'
+      - name: GRAPH_DB_HOST
+        value: neo-4-j-service
+      - name: GRAPH_DB_PORT
+        value: '7687'
+      - name: MILVUS_DB_HOST
+        value: milvus-milvus-deployment-milvus-service
+      - name: MILVUS_DB_PORT
+        value: '19530'
+      - name: MINIO_HOST
+        value: minio-minio-deployment-minio-service
+      - name: MINIO_PORT
+        value: '9000'
+      - name: MINIO_WEBUI_PORT
+        value: '9001'
+      - name: ARANGO_DB_HOST
+        value: arango-db-arango-db-deployment-arango-db-service
+      - name: ARANGO_DB_PORT
+        value: '8529'
+      - name: APP_VECTORSTORE_URL
+        value: http://milvus-milvus-deployment-milvus-service:19530
       - name: OPENAI_API_KEY
         valueFrom:
           secretKeyRef:
@@ -141,7 +165,12 @@ vss:
           secretKeyRef:
             key: ARANGO_DB_PASSWORD
             name: infisical-managed-secrets
-
+      - name: ES_HOST
+        value: elasticsearch-elasticsearch-deployment-elasticsearch-service
+      - name: ES_PORT
+        value: '9200'
+      - name: ES_TRANSPORT_PORT
+        value: '9300'
 
 
 etcd:
@@ -229,6 +258,7 @@ neo4j:
     readOnly: true
 
 nim-llm:
+  profile: f17543bf1ee65e4a5c485385016927efe49cbc068a6021573d83eacb32537f76
   nodeSelector: 
     pyler.io/group: dgx
   namespace: vss 
@@ -245,6 +275,8 @@ nim-llm:
   resources:
     limits:
       nvidia.com/gpu: 4
+  startupProbe:
+    failureThreshold: 360
 
 
 nemo-embedding:
@@ -252,7 +284,12 @@ nemo-embedding:
     pyler.io/group: dgx
   namespace: vss  
   storageClassName: gpfs
-
+  applicationSpecs:
+    embedding-deployment:
+      containers:
+        embedding-container:
+          livenessProbe:
+            initialDelaySeconds: 300
   workloadSpecs:
     wl-env:
       wl_env:
