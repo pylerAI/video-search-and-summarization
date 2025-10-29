@@ -7,7 +7,7 @@ import uuid
 from typing import Union, List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 import argparse
 
@@ -89,25 +89,119 @@ from image_utils import load_image
 
 # OpenAI-compatible Pydantic models
 class ChatMessageContent(BaseModel):
-    type: str
-    text: Optional[str] = None
-    image_url: Optional[Dict[str, str]] = None
-    video_url: Optional[Dict[str, str]] = None
-    frames: Optional[int] = 8
+    type: str = Field(..., description="Content type: 'text', 'image_url', or 'video_url'")
+    text: Optional[str] = Field(None, description="Text content for type='text'")
+    image_url: Optional[Dict[str, str]] = Field(None, description="Image data with 'url' field containing data:image/jpeg;base64,... format")
+    video_url: Optional[Dict[str, str]] = Field(None, description="Video data with 'url' field containing data:video/mp4;base64,... format")
+    frames: Optional[int] = Field(8, description="Number of frames to extract from video (default: 8)")
+    
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "type": "text",
+                    "text": "What do you see in this image?"
+                },
+                {
+                    "type": "image_url", 
+                    "image_url": {
+                        "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD..."
+                    }
+                },
+                {
+                    "type": "video_url",
+                    "video_url": {
+                        "url": "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28y..."
+                    },
+                    "frames": 8
+                }
+            ]
+        }
+    }
 
 class ChatMessage(BaseModel):
-    role: str
-    content: Union[str, List[ChatMessageContent]]
+    role: str = Field(..., description="Message role: 'user', 'assistant', or 'system'")
+    content: Union[str, List[ChatMessageContent]] = Field(..., description="Message content: string for text-only, or array of content objects for multimodal")
+    
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "role": "user",
+                    "content": "Hello, how are you?"
+                },
+                {
+                    "role": "user", 
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this security camera footage for any suspicious activity."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD..."
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
 
 class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 1.0
-    stream: Optional[bool] = False
-    use_cache: Optional[bool] = True
-    num_beams: Optional[int] = 1
+    model: str = Field(..., description="Model to use: 'vila-1.5'")
+    messages: List[ChatMessage] = Field(..., description="Array of messages in the conversation")
+    max_tokens: Optional[int] = Field(None, description="Maximum number of tokens to generate")
+    temperature: Optional[float] = Field(0.7, description="Sampling temperature between 0 and 1")
+    top_p: Optional[float] = Field(1.0, description="Nucleus sampling parameter")
+    stream: Optional[bool] = Field(False, description="Whether to stream partial results")
+    use_cache: Optional[bool] = Field(True, description="Whether to use caching")
+    num_beams: Optional[int] = Field(1, description="Number of beams for beam search")
+    
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "model": "vila-1.5",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Analyze this image and describe what you see."
+                                },
+                                {
+                                    "type": "image_url", 
+                                    "image_url": {
+                                        "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD..."
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "max_tokens": 150,
+                    "temperature": 0.7,
+                    "stream": False
+                },
+                {
+                    "model": "vila-1.5",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Hello, how are you today?"
+                        }
+                    ],
+                    "max_tokens": 100,
+                    "temperature": 0.5
+                }
+            ]
+        }
+    }
 
 # Server components class to hold all initialized components
 class ServerComponents:
@@ -157,17 +251,51 @@ async def health_check():
 @app.get("/metrics")
 async def get_metrics():
     """Get server performance metrics"""
-    return {
-        "thread_pool": {
-            "active_threads": CPU_EXECUTOR._threads,
-            "max_workers": CPU_EXECUTOR._max_workers,
-            "queue_size": CPU_EXECUTOR._work_queue.qsize() if hasattr(CPU_EXECUTOR._work_queue, 'qsize') else 0
-        },
-        "model_status": {
-            "initialized": components.is_initialized(),
-            "model_type": components.model_type if components.is_initialized() else None
+    try:
+        # Safely get thread pool info without serializing thread objects
+        thread_count = len(CPU_EXECUTOR._threads) if hasattr(CPU_EXECUTOR, '_threads') and CPU_EXECUTOR._threads else 0
+        max_workers = getattr(CPU_EXECUTOR, '_max_workers', 0)
+        
+        # Safely get queue size
+        queue_size = 0
+        if hasattr(CPU_EXECUTOR, '_work_queue') and hasattr(CPU_EXECUTOR._work_queue, 'qsize'):
+            try:
+                queue_size = CPU_EXECUTOR._work_queue.qsize()
+            except:
+                queue_size = 0
+        
+        return {
+            "thread_pool": {
+                "active_thread_count": thread_count,
+                "max_workers": max_workers,
+                "queue_size": queue_size
+            },
+            "model_status": {
+                "initialized": components.is_initialized(),
+                "model_type": components.model_type if components.is_initialized() else None
+            },
+            "server_info": {
+                "status": "running",
+                "endpoint_version": "v1"
+            }
         }
-    }
+    except Exception as e:
+        logger.error(f"Error getting metrics: {e}")
+        return {
+            "thread_pool": {
+                "active_thread_count": 0,
+                "max_workers": 0,
+                "queue_size": 0
+            },
+            "model_status": {
+                "initialized": False,
+                "model_type": None
+            },
+            "server_info": {
+                "status": "error",
+                "error": str(e)
+            }
+        }
 
 @app.on_event("shutdown")
 async def shutdown_event():

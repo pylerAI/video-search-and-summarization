@@ -108,4 +108,4 @@ if [ -z "$NGC_API_KEY" ]; then
 fi
 
 echo "Setup complete! You can now run the server with:"
-echo "python serving/server.py --port \$VILA_PORT --model-path \"\$VILA_MODEL_PATH\" --conv-mode \$VILA_CONV_MODE --model-type \$VILA_MODEL_TYPE --trt-llm-mode \$VILA_TRT_LLM_MODE --vlm-batch-size \$VILA_BATCH_SIZE"
+echo "python3 serving/server.py --port \$VILA_PORT --model-path \"\$VILA_MODEL_PATH\" --conv-mode \$VILA_CONV_MODE --model-type \$VILA_MODEL_TYPE --trt-llm-mode \$VILA_TRT_LLM_MODE --vlm-batch-size \$VILA_BATCH_SIZE"

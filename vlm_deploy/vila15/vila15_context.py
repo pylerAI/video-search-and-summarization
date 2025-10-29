@@ -86,14 +86,9 @@ class Vila15Context:
             # Store original system message for comparison
             original_system = self._conv.system
             
-            # For hermes-2 format, we need to format the system message properly
-            if "hermes" in self._conv.version:
-                formatted_system = f"<|im_start|>system\n{system_message}"
-                self._conv.system = formatted_system
-                ctx_logger.info("Applied HERMES-2 formatting to system message")
-            else:
-                self._conv.system = system_message
-                ctx_logger.info("Applied direct system message (non-hermes format)")
+            # Just set the plain system message - let the conversation template handle formatting
+            self._conv.system = system_message
+            ctx_logger.info("Set plain system message - conversation template will handle formatting")
                 
             ctx_logger.info(f"System message updated from: '{original_system}' -> '{self._conv.system}'")
         else:

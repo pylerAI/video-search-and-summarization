@@ -340,22 +340,39 @@ class Vila15:
 
         vila_model_logger.info("🔤 TOKENIZING PROMPT")
         vila_model_logger.debug(f"Tokenizing prompt: '{prompt}'")
-        # Tokenize the prompt, create a batched input_ids of the same size as video_embeds
-        input_ids, extra_input_ids = self._get_input_ids_from_prompt(prompt, video_embeds[0])
+        
+        # Handle text-only requests (no video embeddings)
+        if video_embeds is None or len(video_embeds) == 0:
+            vila_model_logger.info("Text-only request detected - no video embeddings")
+            # Create dummy video embeds for text-only requests
+            video_embed = torch.zeros(size=(1, 0, 4096))  # Empty video embedding
+            input_ids, extra_input_ids = self._get_input_ids_from_prompt(prompt, video_embed)
+        else:
+            # Tokenize the prompt, create a batched input_ids of the same size as video_embeds
+            input_ids, extra_input_ids = self._get_input_ids_from_prompt(prompt, video_embeds[0])
+        
         vila_model_logger.debug(f"Input IDs shape: {input_ids.shape}")
         vila_model_logger.debug(f"Extra input IDs: {extra_input_ids}")
         vila_model_logger.info(f"Tokenization complete - input tokens: {input_ids.shape[-1]}")
 
         vila_model_logger.info("🖼️ PREPARING VIDEO EMBEDDINGS")
-        vila_model_logger.debug(f"Video embeds original shape: {video_embeds[0].shape}")
-        prompt_table = video_embeds[0].view(
-            (
-                video_embeds[0].shape[0] * video_embeds[0].shape[1],
-                video_embeds[0].shape[2],
+        
+        # Handle video embeddings based on whether we have them or not
+        if video_embeds is None or len(video_embeds) == 0:
+            vila_model_logger.info("Creating empty prompt table for text-only request")
+            # Create empty prompt table for text-only requests
+            prompt_table = torch.empty((0, 4096), dtype=torch.float16).cuda().unsqueeze(0)
+        else:
+            vila_model_logger.debug(f"Video embeds original shape: {video_embeds[0].shape}")
+            prompt_table = video_embeds[0].view(
+                (
+                    video_embeds[0].shape[0] * video_embeds[0].shape[1],
+                    video_embeds[0].shape[2],
+                )
             )
-        )
-        vila_model_logger.debug(f"Prompt table reshaped: {prompt_table.shape}")
-        prompt_table = prompt_table.cuda().to(dtype=torch.float16).unsqueeze(0)
+            vila_model_logger.debug(f"Prompt table reshaped: {prompt_table.shape}")
+            prompt_table = prompt_table.cuda().to(dtype=torch.float16).unsqueeze(0)
+        
         vila_model_logger.debug(f"Prompt table final shape: {prompt_table.shape}")
         vila_model_logger.info("Video embeddings prepared and moved to GPU")
 
