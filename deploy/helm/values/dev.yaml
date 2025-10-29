@@ -17,6 +17,9 @@ vss:
   storageClassName: gpfs
   applicationSpecs:
     vss-deployment:
+      securityContext:
+        runAsGroup: 0
+        runAsUser: 0 
       containers:
         vss:
           image:
