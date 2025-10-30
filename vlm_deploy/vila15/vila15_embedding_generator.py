@@ -13,10 +13,13 @@
 import concurrent.futures
 import os
 import sys
+import threading
+from typing import List
 
 import tensorrt as trt
 import torch
 from transformers import AutoConfig, AutoModel
+from tensorrt_llm.runtime import TensorInfo
 
 from loguru import logger
 
@@ -108,6 +111,9 @@ class Vila15EmbeddingGenerator:
         self._output_tpool = (
             concurrent.futures.ThreadPoolExecutor(max_workers=2) if async_output else None
         )
+        
+        # Add thread lock for TensorRT inference to prevent concurrent access
+        self._inference_lock = threading.Lock()
 
     def warmup(self):
         input_dims = self.visual_encoder_session._engine.get_tensor_profile_shape("input", 0)[-1]
@@ -115,59 +121,92 @@ class Vila15EmbeddingGenerator:
         frame_input = torch.zeros(size=input_dims, dtype=torch.float16, device="cuda")
         self.get_embeddings(frame_input.unsqueeze(0))
 
-    def get_embeddings(self, frames_tensor_batch: list):
-        """Get embeddings for a batch of chunks. For each chunk a list of frames is needed.
-
-        Args:
-            frames_list_batch (list): List of list of frames per chunk
-
-        Returns:
-            List of embeddings tensor for all input chunks
-        """
+    def get_embeddings(self, frames_tensor_list: List[torch.Tensor]) -> List[torch.Tensor]:
+        """Get visual embeddings from frames."""
         embed_logger.info("🖼️ STARTING VISUAL EMBEDDING GENERATION")
-        embed_logger.info(f"Processing {len(frames_tensor_batch)} frame tensor chunks")
+        embed_logger.info(f"Processing {len(frames_tensor_list)} frame tensor chunks")
         
-        visual_outputs_batch = []
-        for i, frames_tensor in enumerate(frames_tensor_batch):
-            embed_logger.info(f"📹 PROCESSING CHUNK {i+1}/{len(frames_tensor_batch)}")
-            embed_logger.debug(f"Frames tensor shape: {frames_tensor.shape}")
-            embed_logger.debug(f"Frames tensor dtype: {frames_tensor.dtype}")
-            embed_logger.debug(f"Frames tensor device: {frames_tensor.device}")
-            
-            # TRT mode
-            from tensorrt_llm.runtime import TensorInfo
+        # Use thread lock to prevent concurrent TensorRT access
+        with self._inference_lock:
+            try:
+                # Clear any previous CUDA errors
+                torch.cuda.synchronize()
+                
+                visual_outputs_batch = []
+                
+                for i, frames_tensor in enumerate(frames_tensor_list):
+                    embed_logger.info(f"📹 PROCESSING CHUNK {i+1}/{len(frames_tensor_list)}")
+                    embed_logger.debug(f"Input tensor shape: {frames_tensor.shape}")
+                    embed_logger.debug(f"Input tensor device: {frames_tensor.device}")
+                    embed_logger.debug(f"Input tensor dtype: {frames_tensor.dtype}")
+                    
+                    # Ensure tensor is contiguous and properly aligned
+                    if not frames_tensor.is_contiguous():
+                        frames_tensor = frames_tensor.contiguous()
+                        embed_logger.debug("Made tensor contiguous")
+                    
+                    embed_logger.debug("Inferring output shapes from TRT engine...")
+                    visual_output_info = self.visual_encoder_session.infer_shapes(
+                        [TensorInfo("input", trt.DataType.HALF, frames_tensor.shape)]
+                    )
+                    embed_logger.debug(f"Visual output info: {[(t.name, t.shape, t.dtype) for t in visual_output_info]}")
+                    
+                    embed_logger.debug("Preparing output tensors...")
+                    visual_outputs = {
+                        t.name: torch.empty(
+                            tuple(t.shape[:3]),
+                            dtype=trt_dtype_to_torch(t.dtype),
+                            device=frames_tensor.device,
+                        ).contiguous()
+                        for t in visual_output_info
+                    }
+                    embed_logger.debug(f"Output tensor shapes: {[(k, v.shape) for k, v in visual_outputs.items()]}")
+                    
+                    embed_logger.info("🚀 RUNNING TRT VISUAL ENCODER INFERENCE")
+                    
+                    # Synchronize before inference to ensure clean state
+                    self.stream.synchronize()
+                    
+                    ok = self.visual_encoder_session.run(
+                        {"input": frames_tensor}, visual_outputs, self.stream.cuda_stream
+                    )
+                    
+                    if not ok:
+                        embed_logger.error("TensorRT inference failed")
+                        raise RuntimeError("Runtime execution failed for vision encoder session")
+                    
+                    embed_logger.debug("TRT inference completed successfully")
+                    
+                    # Synchronize after each inference to catch errors immediately
+                    self.stream.synchronize()
+                    
+                    embed_logger.debug(f"Output embedding shape: {visual_outputs['output'].shape}")
+                    # Clone the output to avoid memory issues
+                    output_embedding = visual_outputs["output"].clone().detach()
+                    visual_outputs_batch.append(output_embedding)
+                    embed_logger.info(f"✅ Chunk {i+1} processed - embedding shape: {output_embedding.shape}")
+                
+                embed_logger.info("🎯 VISUAL EMBEDDING GENERATION COMPLETE")
+                embed_logger.info(f"Generated {len(visual_outputs_batch)} embeddings")
 
-            embed_logger.debug("Inferring output shapes from TRT engine...")
-            visual_output_info = self.visual_encoder_session.infer_shapes(
-                [TensorInfo("input", trt.DataType.HALF, frames_tensor.shape)]
-            )
-            embed_logger.debug(f"Visual output info: {[(t.name, t.shape, t.dtype) for t in visual_output_info]}")
-            
-            embed_logger.debug("Preparing output tensors...")
-            visual_outputs = {
-                t.name: torch.empty(
-                    tuple(t.shape[:3]),
-                    dtype=trt_dtype_to_torch(t.dtype),
-                    device=frames_tensor.device,
-                )
-                for t in visual_output_info
-            }
-            embed_logger.debug(f"Output tensor shapes: {[(k, v.shape) for k, v in visual_outputs.items()]}")
-            
-            embed_logger.info("🚀 RUNNING TRT VISUAL ENCODER INFERENCE")
-            ok = self.visual_encoder_session.run(
-                {"input": frames_tensor}, visual_outputs, self.stream.cuda_stream
-            )
-            assert ok, "Runtime execution failed for vision encoder session"
-            embed_logger.debug("TRT inference completed successfully")
-            
-            embed_logger.debug(f"Output embedding shape: {visual_outputs['output'].shape}")
-            visual_outputs_batch.append(visual_outputs["output"])
-            embed_logger.info(f"✅ Chunk {i+1} processed - embedding shape: {visual_outputs['output'].shape}")
-            
-        embed_logger.debug("Synchronizing CUDA stream...")
-        self.stream.synchronize()
-        embed_logger.info("🎯 VISUAL EMBEDDING GENERATION COMPLETE")
-        embed_logger.info(f"Generated {len(visual_outputs_batch)} embeddings")
-
-        return visual_outputs_batch
+                return visual_outputs_batch
+                
+            except torch.cuda.OutOfMemoryError as e:
+                embed_logger.error(f"CUDA out of memory: {e}")
+                # Clear GPU cache and retry once
+                torch.cuda.empty_cache()
+                embed_logger.warning("Cleared CUDA cache, operation failed due to memory constraints")
+                raise RuntimeError(f"CUDA out of memory during inference: {e}")
+            except RuntimeError as e:
+                if "CUDA error" in str(e):
+                    embed_logger.error(f"CUDA runtime error: {e}")
+                    # Try to reset CUDA context
+                    try:
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                    except Exception as reset_e:
+                        embed_logger.error(f"Failed to reset CUDA context: {reset_e}")
+                raise e
+            except Exception as e:
+                embed_logger.error(f"Unexpected error during inference: {e}")
+                raise e
