@@ -489,6 +489,12 @@ class ViaStreamHandler:
         self._live_stream_info_map: dict[str, LiveStreamInfo] = {}
         self._alert_info_map: dict[str, AlertInfo] = {}
         self._recent_alerts_list: list[RequestInfo.Alert] = []
+        # Add video-level response tracking for VLM evaluation
+        self._video_evaluation_data = defaultdict(lambda: {
+            "video_metadata": {},
+            "chunks": [],
+            "video_summary": {}
+        })
         self._args = args
         if os.environ.get("VSS_LOG_LEVEL"):
             self._args.log_level = os.environ.get("VSS_LOG_LEVEL").upper()
@@ -778,6 +784,12 @@ class ViaStreamHandler:
                 req_info.end_time = time.time()
                 req_info.progress = 100
                 req_info.status = RequestInfo.Status.SUCCESSFUL
+                # Finalize VLM evaluation data for completed videos
+                if req_info.assets and len(req_info.assets) > 0:
+                    try:
+                        self._finalize_video_evaluation_data(req_info.assets[0].asset_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to finalize VLM evaluation data: {e}")
                 self._metrics.active_live_streams.dec()
                 self.stop_via_gpu_monitor(req_info, chunk_responses)
         else:
@@ -791,6 +803,12 @@ class ViaStreamHandler:
                 req_info.end_time = time.time()
                 self.stop_via_gpu_monitor(req_info, chunk_responses)
                 req_info.status = RequestInfo.Status.SUCCESSFUL
+                # Finalize VLM evaluation data for completed videos
+                if req_info.assets and len(req_info.assets) > 0:
+                    try:
+                        self._finalize_video_evaluation_data(req_info.assets[0].asset_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to finalize VLM evaluation data: {e}")
                 cudart.cudaProfilerStop()
                 nvtx.end_range(req_info.nvtx_summarization_start)
                 logger.info(
@@ -897,6 +915,133 @@ class ViaStreamHandler:
         else:
             return None
 
+    def _log_vlm_response_for_evaluation(self, vlm_response: str, chunk: ChunkInfo, req_info: RequestInfo, response: VlmChunkResponse):
+        """Log VLM response in single file per video format for model comparison evaluation"""
+        
+        # Only log if evaluation logging is enabled
+        if not getattr(self._args, 'enable_vlm_evaluation_logging', False):
+            return
+            
+        video_id = chunk.streamId
+        
+        # Initialize video metadata if this is the first chunk
+        if not self._video_evaluation_data[video_id]["video_metadata"]:
+            # Try to get model name from multiple sources
+            model_name = 'unknown'
+            try:
+                # First try from health summary if available
+                if hasattr(req_info, '_health_summary') and hasattr(req_info._health_summary, 'vlm_model_name'):
+                    model_name = req_info._health_summary.vlm_model_name
+                else:
+                    # Fallback: get from VLM pipeline models info
+                    models_info = self.get_models_info()
+                    model_name = str(models_info.id) if models_info else 'unknown'
+            except Exception as e:
+                logger.warning(f"Failed to get model name for evaluation logging: {e}")
+                model_name = 'unknown'
+            
+            self._video_evaluation_data[video_id]["video_metadata"] = {
+                "file_path": chunk.file,
+                "video_id": video_id,
+                "processing_session": {
+                    "session_id": req_info.request_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "model_name": model_name,
+                    "chunk_size_seconds": getattr(req_info, 'chunk_size', None)
+                }
+            }
+        
+        # Add chunk data
+        chunk_data = {
+            "chunk_id": chunk.chunkIdx,
+            "temporal_info": {
+                "start_time_seconds": chunk.start_pts / 1e9,
+                "end_time_seconds": chunk.end_pts / 1e9,
+                "duration_seconds": (chunk.end_pts - chunk.start_pts) / 1e9,
+                "frame_times": getattr(response, 'frame_times', []),
+                "frame_count": len(getattr(response, 'frame_times', []))
+            },
+            "prompt_info": {
+                "prompt_text": getattr(req_info, 'prompt', 'Default VLM prompt'),
+                "prompt_type": "description",
+                "prompt_id": "prompt_001"
+            },
+            "vlm_response": {
+                "generated_text": vlm_response,
+                "generation_stats": getattr(response, 'vlm_stats', {})
+            },
+            "computer_vision_metadata": getattr(chunk, 'cached_frames_cv_meta', {}),
+            "evaluation_placeholder": {
+                "human_rating": None,
+                "gpt4o_rating": None,
+                "quality_scores": {
+                    "accuracy": None,
+                    "completeness": None,
+                    "coherence": None,
+                    "relevance": None
+                }
+            }
+        }
+        
+        self._video_evaluation_data[video_id]["chunks"].append(chunk_data)
+        
+        # Sort chunks by chunk_id to maintain order
+        self._video_evaluation_data[video_id]["chunks"].sort(key=lambda x: x["chunk_id"])
+
+    def _finalize_video_evaluation_data(self, video_id: str):
+        """Write complete video evaluation data to file when video processing is complete"""
+        
+        # Only finalize if evaluation logging is enabled
+        if not getattr(self._args, 'enable_vlm_evaluation_logging', False):
+            return
+            
+        if video_id not in self._video_evaluation_data:
+            return
+            
+        # Create evaluation data directory
+        eval_dir = os.path.join(self._args.asset_dir, "vlm_evaluation_data")
+        model_name = self._video_evaluation_data[video_id]["video_metadata"]["processing_session"]["model_name"]
+        model_dir = os.path.join(eval_dir, model_name.replace("/", "_"))
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Add video summary statistics
+        chunks = self._video_evaluation_data[video_id]["chunks"]
+        if chunks:
+            total_input_tokens = sum(chunk["vlm_response"]["generation_stats"].get("input_tokens", 0) for chunk in chunks)
+            total_output_tokens = sum(chunk["vlm_response"]["generation_stats"].get("output_tokens", 0) for chunk in chunks)
+            total_processing_time = sum(chunk["vlm_response"]["generation_stats"].get("generation_time_ms", 0) for chunk in chunks)
+            
+            self._video_evaluation_data[video_id]["video_summary"] = {
+                "total_chunks": len(chunks),
+                "total_processing_time_ms": total_processing_time,
+                "average_chunk_latency_ms": total_processing_time / len(chunks) if chunks else 0,
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "processing_status": "completed",
+                "error_chunks": []
+            }
+            
+            # Update video metadata
+            self._video_evaluation_data[video_id]["video_metadata"]["total_duration_seconds"] = chunks[-1]["temporal_info"]["end_time_seconds"]
+            self._video_evaluation_data[video_id]["video_metadata"]["total_chunks"] = len(chunks)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{video_id}_{timestamp}.json"
+        filepath = os.path.join(model_dir, filename)
+        
+        # Write complete video data to file
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self._video_evaluation_data[video_id], f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved VLM evaluation data for video {video_id} to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to save VLM evaluation data for video {video_id}: {e}")
+        
+        # Clean up memory
+        del self._video_evaluation_data[video_id]
+
     def _on_vlm_chunk_response(
         self, 
         response: VlmChunkResponse, 
@@ -970,6 +1115,13 @@ class ViaStreamHandler:
             logger.debug("%s\n %s", vlm_response, transcript)
 
             response.vlm_response = vlm_response
+            
+            # Log VLM response for evaluation/comparison purposes
+            try:
+                self._log_vlm_response_for_evaluation(vlm_response, chunk, req_info, response)
+            except Exception as e:
+                logger.warning(f"Failed to log VLM response for evaluation: {e}")
+            
             # Add the chunk VLM response to the milvus DB
             if req_info._ctx_mgr:
                 # Along with chunk, add cv metadata for the chunk
@@ -1436,6 +1588,12 @@ class ViaStreamHandler:
             req_info.progress = 100
             req_info.end_time = time.time()
             req_info.response = []
+            # Finalize VLM evaluation data for completed videos (even if no chunks)
+            if req_info.assets and len(req_info.assets) > 0:
+                try:
+                    self._finalize_video_evaluation_data(req_info.assets[0].asset_id)
+                except Exception as e:
+                    logger.warning(f"Failed to finalize VLM evaluation data: {e}")
         req_info.nvtx_vlm_start = nvtx.start_range(
             message="VLM Pipeline-" + str(req_info.request_id), color="green"
         )
@@ -2967,6 +3125,12 @@ class ViaStreamHandler:
             action="store_true",
             default=False,
             help="Enable/Disable CA-RAG",
+        )
+        parser.add_argument(
+            "--enable-vlm-evaluation-logging",
+            action="store_true",
+            default=False,
+            help="Enable VLM response evaluation logging for model comparison",
         )
         parser.add_argument(
             "--ca-rag-config",
