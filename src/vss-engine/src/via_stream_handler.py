@@ -29,49 +29,26 @@ from enum import Enum
 from threading import Event, RLock, Thread
 from urllib.parse import urlparse
 
-import aiohttp
 import cuda
 import cuda.bindings.runtime
 import gi
-import jinja2
 import nvtx
 import prometheus_client as prom
-import uvicorn
-from fastapi import FastAPI
-from minio import Minio
-from pyaml_env import parse_config
-
 from asset_manager import Asset
 from chunk_info import ChunkInfo
 from cv_pipeline import CVPipeline
+from minio import Minio
 from otel_helper import create_historical_span, get_tracer, is_tracing_enabled
+from pyaml_env import parse_config
 from utils import MediaFileInfo, process_highlight_request
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
 from vss_api_models import (
-    DEFAULT_CALLBACK_JSON_TEMPLATE,
-    ReviewAlertRequest,
     SummarizationQuery,
 )
 
-ALERT_CALLBACK_PORT = 60000
 MAX_MILVUS_STRING_LEN = 65535
-
-
-class AlertInfo:
-    """Store information for an alert"""
-
-    def __init__(self):
-        self.alert_id = str(uuid.uuid4())
-        self.events: list[str] = []
-        self.callbackUrl = None
-        self.callbackJsonTemplate = DEFAULT_CALLBACK_JSON_TEMPLATE
-        self.callbackToken = None
-        self.liveStreamId = ""
-        self.requestId = ""
-        self.alert_tool: AlertSseTool | AlertCallbackTool = None
-        self.name = ""
 
 
 class RequestInfo:
@@ -98,16 +75,6 @@ class RequestInfo:
             self.end_timestamp = end_timestamp
             self.response = response
             self.reasoning_description = reasoning_description
-
-    class Alert:
-        offset = 0
-        ntpTimestamp = ""
-        detectedEvents: list[str] = []
-        streamId = ""
-        name = ""
-        alertId = ""
-        details = ""
-        alert_time = 0
 
     def __init__(self) -> None:
         self.request_id = str(uuid.uuid4())
@@ -141,7 +108,6 @@ class RequestInfo:
         self._ca_rag_latency = 0
         self._ctx_mgr = None
         self._output_process_thread_pool: concurrent.futures.ThreadPoolExecutor = None
-        self.alerts: list[RequestInfo.Alert] = []
         self.nvtx_vlm_start = None
         self.nvtx_summarization_start = None
         self.summarize = None
@@ -254,113 +220,11 @@ class DCSerializer:
         return request_info
 
 
-class LiveStreamInfo:
-    """Store information for a live stream"""
-
-    def __init__(self) -> None:
-        self.chunk_size = 0
-        self.req_info: list[RequestInfo] = []
-        self.asset: Asset = None
-        self.stop = False
-        self.live_stream_ended = False
-        self.pending_futures = []
-
-
 def ntp_to_unix_timestamp(ntp_ts):
     """Convert an RFC3339 timestamp string to a UNIX timestamp(float)"""
     return (
         datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
     )
-
-
-class AlertCallbackTool:
-    def __init__(
-        self,
-        name,
-        alert_info: AlertInfo,
-        stream_handler,
-        req_info: RequestInfo = None,
-        sse_tool_name: str = "",
-    ):
-        self.name = name
-        self._alert_info = alert_info
-        self._stream_handler = stream_handler
-        self._req_info = req_info
-        self._sse_tool_name = sse_tool_name
-
-    async def notify(self, title: str, message: str, metadata: dict):
-        with self._stream_handler._lock:
-            alert = RequestInfo.Alert()
-            alert.details = metadata["doc"]
-            alert.detectedEvents = metadata["events_detected"]
-            alert.name = self._sse_tool_name
-            alert.alertId = self._alert_info.alert_id
-            alert.ntpTimestamp = metadata["start_ntp"]
-            alert.streamId = metadata["streamId"]
-            alert.alert_time = time.time()
-            self._stream_handler._recent_alerts_list.append(alert)
-            if self._req_info:
-                self._req_info.alerts.append(alert)
-        try:
-            doc = metadata["doc"]
-            events_detected = metadata["events_detected"]
-            callback_json = jinja2.Template(self._alert_info.callbackJsonTemplate).render(
-                streamId=self._alert_info.liveStreamId,
-                alertId=self._alert_info.alert_id,
-                ntpTimestamp=metadata["start_ntp"],
-                alertText=json.dumps(doc)[1:-1],
-                detectedEvents=json.dumps(events_detected),
-            )
-            headers = (
-                {"Authorization": f"Bearer {self._alert_info.callbackToken}"}
-                if self._alert_info.callbackToken
-                else {}
-            )
-            if self._alert_info.callbackUrl is not None:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url=self._alert_info.callbackUrl,
-                        json=json.loads(callback_json),
-                        headers=headers,
-                    ) as r:
-                        r.raise_for_status()
-        except Exception as ex:
-            logger.error(
-                "Alert callback failed for event(s) '%s' - %s", ", ".join(events_detected), str(ex)
-            )
-
-
-class AlertSseTool:
-    def __init__(
-        self,
-        name,
-        sse_tool_name,
-        req_info: RequestInfo,
-        stream_handler,
-        alert_info: AlertInfo,
-    ):
-        self.name = name
-        self._req_info = req_info
-        self._sse_tool_name = sse_tool_name
-        self._stream_handler = stream_handler
-        self._alert_info = alert_info
-
-    async def notify(self, title: str, message: str, metadata: dict):
-        alert = RequestInfo.Alert()
-        alert.details = metadata["doc"]
-        alert.detectedEvents = metadata["events_detected"]
-        alert.name = self._sse_tool_name
-        alert.alertId = self._alert_info.alert_id
-        if self._req_info.is_live:
-            alert.ntpTimestamp = metadata["start_ntp"]
-        else:
-            alert.offset = int(metadata["start_pts"] / 1e9)
-        alert.streamId = metadata["streamId"]
-        alert.alert_time = time.time()
-        self._req_info.alerts.append(alert)
-        if self._req_info.is_live:
-            with self._stream_handler._lock:
-                self._stream_handler._recent_alerts_list.append(alert)
 
 
 class ViaStreamHandler:
@@ -556,9 +420,6 @@ class ViaStreamHandler:
         uptime_thread = Thread(target=update_metrics, daemon=True, name="via-uptime-metrics-thread")
         uptime_thread.start()
 
-        self._live_stream_info_map: dict[str, LiveStreamInfo] = {}
-        self._alert_info_map: dict[str, AlertInfo] = {}
-        self._recent_alerts_list: list[RequestInfo.Alert] = []
         self._args = args
         if os.environ.get("VSS_LOG_LEVEL"):
             self._args.log_level = os.environ.get("VSS_LOG_LEVEL").upper()
@@ -566,7 +427,6 @@ class ViaStreamHandler:
 
         self._via_health_eval = False
         self.first_init = True
-        self._start_ca_rag_alert_handler()
 
         self.default_caption_prompt = self._args.summarization_query
         self._ctx_mgr_pool = []
@@ -743,30 +603,6 @@ class ViaStreamHandler:
                 if self.num_ctx_mgr >= self.MAX_STREAMS:
                     return
 
-    def _start_ca_rag_alert_handler(self):
-        app = FastAPI()
-
-        @app.post("/via-alert-callback")
-        async def handle_alert(data: dict):
-            print(json.dumps(data, indent=2))
-            title = data["title"]
-            message = data["message"]
-            doc_meta = data["metadata"]
-            with self._lock:
-                alert = self._alert_info_map.get(doc_meta["event_id"], None)
-            if alert:
-                await alert.alert_tool.notify(title, message, doc_meta)
-
-        config = uvicorn.Config(app, host="127.0.0.1", port=ALERT_CALLBACK_PORT)
-        self._ca_rag_alert_handler_server = uvicorn.Server(config)
-
-        self._ca_rag_alert_handler_thread = Thread(
-            target=self._ca_rag_alert_handler_server.run,
-            daemon=True,
-            name="via-ca-rag-alert-handler",
-        )
-        self._ca_rag_alert_handler_thread.start()
-
     def _process_output(
         self,
         req_info: RequestInfo,
@@ -795,74 +631,41 @@ class ViaStreamHandler:
                     ]
             req_info.response += new_response
 
-        if req_info.is_live:
-            live_stream_id = req_info.assets[0].asset_id
-            if new_response:
-                logger.info(
-                    "Generated new summary for live stream %s request %s,"
-                    " start-time %s end-time %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    new_response[0].start_timestamp,
-                    new_response[-1].end_timestamp,
-                )
-            elif chunk_responses:
-                logger.error(
-                    "Failed to generate summary for live stream %s request %s,"
-                    " start-time %s end-time %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    chunk_responses[0].chunk.start_ntp,
-                    chunk_responses[-1].chunk.end_ntp,
-                )
-
-            if is_live_stream_ended:
-                if live_stream_id in self._live_stream_info_map:
-                    lsinfo = self._live_stream_info_map[live_stream_id]
-                    lsinfo.live_stream_ended = True
-                    if not lsinfo.stop:
-                        concurrent.futures.wait(lsinfo.pending_futures)
-                req_info.end_time = time.time()
-                req_info.progress = 100
-                req_info.status = RequestInfo.Status.SUCCESSFUL
-                self._metrics.active_live_streams.dec()
-                self.stop_via_gpu_monitor(req_info, chunk_responses)
+        if req_info.status == RequestInfo.Status.FAILED:
+            logger.info(
+                "Summary generation failed for video file request %s", req_info.request_id
+            )
+            self.stop_via_gpu_monitor(req_info, chunk_responses)
         else:
-            if req_info.status == RequestInfo.Status.FAILED:
-                logger.info(
-                    "Summary generation failed for video file request %s", req_info.request_id
-                )
-                self.stop_via_gpu_monitor(req_info, chunk_responses)
-            else:
-                req_info.progress = 100
-                req_info.end_time = time.time()
-                self.stop_via_gpu_monitor(req_info, chunk_responses)
-                req_info.status = RequestInfo.Status.SUCCESSFUL
-                cuda.bindings.runtime.cudaProfilerStop()
-                nvtx.end_range(req_info.nvtx_summarization_start)
-                logger.info(
-                    "Summary generated for video file request %s,"
-                    " total processing time - %.2f seconds, summary %s",
-                    req_info.request_id,
-                    req_info.end_time - req_info.start_time,
-                    "",
-                )
+            req_info.progress = 100
+            req_info.end_time = time.time()
+            self.stop_via_gpu_monitor(req_info, chunk_responses)
+            req_info.status = RequestInfo.Status.SUCCESSFUL
+            cuda.bindings.runtime.cudaProfilerStop()
+            nvtx.end_range(req_info.nvtx_summarization_start)
+            logger.info(
+                "Summary generated for video file request %s,"
+                " total processing time - %.2f seconds, summary %s",
+                req_info.request_id,
+                req_info.end_time - req_info.start_time,
+                "",
+            )
 
-            # Unlock the asset and update metrics
-            for asset in req_info.assets:
-                asset.unlock()
-            # Remove cached embeddings.
-            for asset in req_info.assets:
-                try:
-                    if os.environ.get("VSS_CACHE_VIDEO_EMBEDS", "false").lower() not in [
-                        "true",
-                        "1",
-                    ]:
-                        shutil.rmtree(f"{self._args.asset_dir}/{asset.asset_id}/embeddings")
-                except Exception:
-                    pass
-            self._metrics.queries_processed.inc()
-            self._metrics.queries_pending.dec()
+        # Unlock the asset and update metrics
+        for asset in req_info.assets:
+            asset.unlock()
+        # Remove cached embeddings.
+        for asset in req_info.assets:
+            try:
+                if os.environ.get("VSS_CACHE_VIDEO_EMBEDS", "false").lower() not in [
+                    "true",
+                    "1",
+                ]:
+                    shutil.rmtree(f"{self._args.asset_dir}/{asset.asset_id}/embeddings")
+            except Exception:
+                pass
+        self._metrics.queries_processed.inc()
+        self._metrics.queries_pending.dec()
         req_info.status_event.set()
 
     def _get_cv_metadata_for_chunk(self, json_file, frame_times):
@@ -1175,146 +978,6 @@ class ViaStreamHandler:
                     ):
                         add_doc_latency = add_doc_end_time - add_doc_start_time
                         self._metrics.add_doc_latency.observe(add_doc_latency)
-
-        if req_info.is_live:
-            live_stream_id = req_info.assets[0].asset_id
-            lsinfo = self._live_stream_info_map[live_stream_id]
-
-            if not response.is_live_stream_ended:
-                logger.info(
-                    "Generated new response for live-stream %s, query %s, chunk %r, summary %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    chunk,
-                    vlm_response,
-                )
-                req_info.processed_chunk_list.append(response)
-                req_info.chunk_count += 1
-
-            req_info.processed_chunk_list.sort(key=lambda x: x.chunk.chunkIdx)
-
-            gathered_chunks = 0
-            gathered_chunks_total_duration = 0
-
-            if req_info.summary_duration > 0:
-                summ_batch_size = req_info.summary_duration // req_info.chunk_size
-
-            if req_info.processed_chunk_list:
-                curIdx = req_info.processed_chunk_list[0].chunk.chunkIdx
-                gathered_chunks = 1
-
-                for processed_chunk in req_info.processed_chunk_list[1:]:
-                    if processed_chunk.chunk.chunkIdx != curIdx + 1:
-                        break
-                    curIdx += 1
-                    gathered_chunks += 1
-                    if (req_info.summary_duration > 0) and (gathered_chunks == summ_batch_size):
-                        break
-
-            # Calculate the total duration of gathered chunks
-            gathered_chunks_total_duration = (
-                ntp_to_unix_timestamp(
-                    req_info.processed_chunk_list[gathered_chunks - 1].chunk.end_ntp
-                )
-                - ntp_to_unix_timestamp(req_info.processed_chunk_list[0].chunk.start_ntp)
-                if req_info.processed_chunk_list
-                else 0
-            )
-
-            logger.info(
-                "Gathered %d chunks, total chunk duration \
-                    is %.2f sec for query %s, summary duration %d sec",
-                gathered_chunks,
-                gathered_chunks_total_duration,
-                req_info.request_id,
-                req_info.summary_duration,
-            )
-
-            if (
-                (
-                    req_info.summary_duration == 0
-                    or req_info._ctx_mgr is None
-                    or (
-                        (req_info.summary_duration > 0)
-                        and (gathered_chunks == req_info.summary_duration // req_info.chunk_size)
-                    )
-                    or response.is_live_stream_ended
-                )
-                and gathered_chunks > 0
-                and not lsinfo.stop
-            ):
-                if response.is_live_stream_ended and req_info.last_chunk is not None:
-                    last_chunk = req_info.last_chunk.model_copy(deep=True)
-                    last_chunk.start_ntp = last_chunk.end_ntp
-                    last_chunk.start_ntp_float = last_chunk.end_ntp_float
-                    last_chunk.start_pts = last_chunk.end_pts
-                    last_chunk.chunkIdx = last_chunk.chunkIdx + 1
-                    last_chunk.is_last = True
-                    last_meta = vars(last_chunk)
-                    last_meta["cv_meta"] = ""
-                    last_meta["request_id"] = req_info.request_id
-                    last_meta["asset_dir"] = self._args.asset_dir
-                    last_meta["camera_id"] = req_info.camera_id
-                    last_meta["uuid"] = req_info.stream_id
-                    req_info._ctx_mgr.add_doc(
-                        ".",
-                        doc_i=(
-                            last_chunk.chunkIdx * 2
-                            if req_info.enable_audio
-                            else last_chunk.chunkIdx
-                        ),
-                        doc_meta=last_meta,
-                    )
-                # Summary Duration not specified or total duration is greater than summary duration.
-                logger.info(
-                    "Generating summary for live stream %s request %s with asset id %s",
-                    live_stream_id,
-                    req_info.request_id,
-                    req_info.stream_id,
-                )
-
-                if len(lsinfo.pending_futures) > 1:
-                    logger.warning(
-                        "Possible high load on the system detected. This may result in higher"
-                        " response times. Try reducing number of streams or increasing the chunk"
-                        " size or tuning the CA-RAG config for reduced latency."
-                    )
-
-                fut = req_info._output_process_thread_pool.submit(
-                    self._process_output,
-                    req_info,
-                    False,
-                    req_info.processed_chunk_list[:gathered_chunks],
-                )
-                lsinfo.pending_futures.append(fut)
-
-                def handle_future_done(fut: concurrent.futures.Future):
-                    if fut.cancelled():
-                        return
-                    if fut.exception():
-                        logger.error("".join(traceback.format_exception(fut.exception())))
-
-                fut.add_done_callback(handle_future_done)
-                fut.add_done_callback(lsinfo.pending_futures.remove)
-                req_info.processed_chunk_list = req_info.processed_chunk_list[gathered_chunks:]
-
-            if response.is_live_stream_ended:
-                if lsinfo.stop:
-                    req_info.status = RequestInfo.Status.STOPPING
-                    for fut in lsinfo.pending_futures:
-                        fut.cancel()
-
-                # Queue that the request be marked completed
-                # once all pending aggregation requests are completed.
-                fut = req_info._output_process_thread_pool.submit(
-                    self._process_output, req_info, True, []
-                )
-                fut.add_done_callback(
-                    lambda fut, tpool=req_info._output_process_thread_pool: tpool.shutdown(
-                        wait=False
-                    )
-                )
-            return
 
         # Cache the processed chunk of a file
         req_info.processed_chunk_list.append(response)
@@ -1931,7 +1594,7 @@ class ViaStreamHandler:
 
         return req_info.request_id
 
-    def generate_vlm_captions(self, assets: list[Asset], query: SummarizationQuery, is_rtsp=False):
+    def generate_vlm_captions(self, assets: list[Asset], query: SummarizationQuery):
         """Run VLM captions generation on a file or RTSP stream.
         This reuses the query function since they have identical logic.
         """
@@ -1947,148 +1610,15 @@ class ViaStreamHandler:
         if query.enable_reasoning:
             logger.debug("Reasoning is enabled in generate_vlm_captions API")
 
-        if is_rtsp:
-            # Handle RTSP stream VLM captions by reusing add_rtsp_stream_query
-            if len(assets) != 1:
-                raise ViaException(
-                    "RTSP VLM captions require exactly one asset", "BadParameter", 400
-                )
-
-            asset = assets[0]
-
-            # Validate input dimensions
-            if (query.vlm_input_width > 0 and query.vlm_input_width < 16) or (
-                query.vlm_input_height > 0 and query.vlm_input_height < 16
-            ):
-                raise ViaException(
-                    "vlm_input_width and vlm_input_height must be greater than or equal to 16",
-                    "BadParameter",
-                    400,
-                )
-
-            live_stream_info = self._live_stream_info_map[asset.asset_id]
-            if len(live_stream_info.req_info) > 0:
-                raise ViaException(
-                    "Live stream already has query "
-                    f"'{live_stream_info.req_info[0].request_id}' running."
-                    " Update or stop the same query.",
-                    "BadParameters",
-                    400,
-                )
-
-            # Run guardrails on the user supplied prompt
-            self._check_rails(query.prompt)
-
-            # Create VLM captions request directly without using add_rtsp_stream_query
-            # to avoid summary_duration validation issues
-            req_id = self._create_rtsp_vlm_captions_request(asset, query)
-            return req_id
-        else:
-            # Handle file-based VLM captions
-            req_id = self.query(
-                assets=assets,
-                query=query,
-                is_summarization=False,
-                skip_ca_rag=True,
-            )
-
-            return req_id
-
-    def _create_rtsp_vlm_captions_request(self, asset: Asset, query: SummarizationQuery):
-        """Create a VLM captions request for RTSP streams without requiring summary_duration."""
-
-        # Create a RequestInfo object and populate it for VLM captions
-        req_info = RequestInfo()
-        req_info.file = asset.path
-        req_info.stream_id = asset.asset_id
-        req_info.chunk_size = query.chunk_duration
-        req_info.is_summarization = False  # VLM captions are not summarization
-        req_info.vlm_request_params.vlm_prompt = query.prompt
-        req_info.is_live = True
-        req_info.status = RequestInfo.Status.PROCESSING
-        req_info.summary_duration = 0  # VLM captions don't use summary_duration
-        req_info.start_time = time.time()
-        req_info.queue_time = time.time()
-        req_info.assets = [asset]
-        req_info.summary_aggregation_prompt = query.summary_aggregation_prompt
-        req_info.caption_summarization_prompt = query.caption_summarization_prompt
-        req_info._output_process_thread_pool = self._create_named_thread_pool(
-            max_workers=1, prefix=f"vss-processor-{req_info.request_id[:8]}"
+        # Handle file-based VLM captions
+        req_id = self.query(
+            assets=assets,
+            query=query,
+            is_summarization=False,
+            skip_ca_rag=True,
         )
 
-        # VLM captions specific settings
-        req_info.summarize = False  # Always False for VLM captions
-        req_info.enable_chat = query.enable_chat
-        req_info.enable_chat_history = query.enable_chat_history
-        req_info.num_frames_per_chunk = query.num_frames_per_chunk
-        req_info.vlm_input_width = query.vlm_input_width
-        req_info.vlm_input_height = query.vlm_input_height
-
-        # VLM generation config
-        vlm_generation_config = {}
-        if query.max_tokens is not None:
-            vlm_generation_config["max_new_tokens"] = query.max_tokens
-        if query.top_p is not None:
-            vlm_generation_config["top_p"] = query.top_p
-        if query.top_k is not None:
-            vlm_generation_config["top_k"] = query.top_k
-        if query.temperature is not None:
-            vlm_generation_config["temperature"] = query.temperature
-        if query.seed is not None:
-            vlm_generation_config["seed"] = query.seed
-        if query.enable_reasoning:
-            vlm_generation_config["enable_reasoning"] = query.enable_reasoning
-        if query.system_prompt:
-            vlm_generation_config["system_prompt"] = query.system_prompt
-        req_info.vlm_request_params.vlm_generation_config = vlm_generation_config
-
-        # Add the request to the request info map
-        with self._lock:
-            self._request_info_map[req_info.request_id] = req_info
-
-        # Add to live stream info
-        live_stream_info = self._live_stream_info_map[asset.asset_id]
-        live_stream_info.req_info.append(req_info)
-        self._metrics.active_live_streams.inc()
-
-        # Trigger collecting VIA GPU health metrics
-        self.start_via_gpu_monitor(req_info)
-
-        req_info.enable_cv_pipeline = query.enable_cv_metadata
-
-        # Add to VLM pipeline for processing
-        self._vlm_pipeline.add_live_stream(
-            asset.asset_id,
-            asset.path,
-            live_stream_info.chunk_size,
-            lambda response, req_info=req_info: self._on_vlm_chunk_response(response, req_info),
-            req_info.vlm_request_params,
-            username=asset.username,
-            password=asset.password,
-            num_frames_per_chunk=query.num_frames_per_chunk,
-            vlm_input_width=query.vlm_input_width,
-            vlm_input_height=query.vlm_input_height,
-            enable_cv_pipeline=(self._cv_pipeline and req_info.enable_cv_pipeline),
-            cv_pipeline_text_prompt=query.cv_pipeline_prompt,
-        )
-
-        return req_info.request_id
-
-    def get_recent_alert(self, live_stream_id: str):
-        with self._lock:
-            # Remove alerts older than 1 hour
-            current_time = time.time()
-            one_hour_ago = current_time - 3600
-            self._recent_alerts_list = [
-                alert for alert in self._recent_alerts_list if alert.alert_time > one_hour_ago
-            ]
-
-            # Filter alerts by live_stream_id if specified
-            if live_stream_id:
-                return [
-                    alert for alert in self._recent_alerts_list if alert.streamId == live_stream_id
-                ]
-            return self._recent_alerts_list
+        return req_id
 
     def start_via_gpu_monitor(self, req_info):
         # Start collecting VIA GPU health metrics if enabled
@@ -2255,237 +1785,6 @@ class ViaStreamHandler:
             logger.info(f"VIA Health Summary written to {health_summary_file_name}")
             req_info._monitor = None
 
-    def add_rtsp_stream(self, asset: Asset, chunk_size=None):
-        """Add an RTSP stream to the server and start streaming
-
-        Args:
-            asset: Live stream asset to add
-            chunk_size: Chunk size to use, in seconds
-        """
-
-        # A live stream can be added only once
-        with self._lock:
-            if asset.asset_id in self._live_stream_info_map:
-                raise ViaException(
-                    "Live stream already has query "
-                    f"'{self._live_stream_info_map[asset.asset_id].req_info[0].request_id}' running."  # noqa: E501
-                    " Update or stop the same query.",
-                    "BadParameters",
-                    400,
-                )
-
-            if len(self._live_stream_info_map) >= self._args.max_live_streams:
-                raise ViaException(
-                    "Server is already processing maximum number of live streams"
-                    f" ({self._args.max_live_streams})",
-                    503,
-                )
-
-            if chunk_size is None or chunk_size == 0:
-                raise ViaException(
-                    "Non-zero chunk duration required for live-stream", "InvalidParameter", 400
-                )
-
-            # Create a live stream info object and populate it
-            live_stream_info = LiveStreamInfo()
-            live_stream_info.chunk_size = chunk_size
-            live_stream_info.asset = asset
-
-            # Lock the asset so that it cannot be deleted while it is being used.
-            asset.lock()
-
-            self._live_stream_info_map[asset.asset_id] = live_stream_info
-
-    def add_rtsp_stream_query(self, asset: Asset, query: SummarizationQuery):
-        """Add a query on the RTSP stream
-
-        Args:
-            asset: Asset to add the query on
-            query: Summarization query
-
-        Returns:
-            A unique ID for the request
-        """
-        if (query.vlm_input_width > 0 and query.vlm_input_width < 16) or (
-            query.vlm_input_height > 0 and query.vlm_input_height < 16
-        ):
-            raise ViaException(
-                "vlm_input_width and vlm_input_height must be greater than or equal to 16",
-                "BadParameter",
-                400,
-            )
-
-        live_stream_info = self._live_stream_info_map[asset.asset_id]
-        if len(live_stream_info.req_info) > 0:
-            raise ViaException(
-                "Live stream already has query "
-                f"'{live_stream_info.req_info[0].request_id}' running."
-                " Update or stop the same query.",
-                "BadParameters",
-                400,
-            )
-
-        # For VLM captions (when summarize=False), summary_duration is not used
-        # For regular summarization, summary_duration can be 0 (no periodic summarization)
-        if query.summarize is False:
-            # VLM captions don't use summary_duration, so skip validation
-            pass
-        else:
-            # For regular summarization, allow summary_duration to be 0
-            if query.summary_duration > 0 and (query.summary_duration % query.chunk_duration != 0):
-                raise ViaException(
-                    "summary_duration must be an exact multiple of chunk_duration",
-                    "BadParameters",
-                    400,
-                )
-
-        if self._args.enable_audio is False and (query.enable_audio is True):
-            raise ViaException(
-                "Audio ASR is not supported by this server instance", "BadParameter", 400
-            )
-
-        # Highest preference is to the user specified VLM prompt in the API call,
-        # next to the VLM prompt (caption) in the CA RAG config. Lastly to the
-        # prompt specified as argument to the app
-        if not query.prompt:
-            query.prompt = self.default_caption_prompt
-
-        # Run guardrails on the user supplied prompt
-        self._check_rails(query.prompt)
-
-        vlm_generation_config = {}
-        # Extract user specified llm output parameters
-        if query.max_tokens is not None:
-            vlm_generation_config["max_new_tokens"] = query.max_tokens
-        if query.top_p is not None:
-            vlm_generation_config["top_p"] = query.top_p
-        if query.top_k is not None:
-            vlm_generation_config["top_k"] = query.top_k
-        if query.temperature is not None:
-            vlm_generation_config["temperature"] = query.temperature
-        if query.seed is not None:
-            vlm_generation_config["seed"] = query.seed
-
-        # Create a RequestInfo object and populate it
-        req_info = RequestInfo()
-        req_info.file = asset.path
-        req_info.stream_id = asset.asset_id
-        req_info.camera_id = asset.camera_id
-        req_info.chunk_size = query.chunk_duration
-        req_info.is_summarization = True
-        req_info.vlm_request_params.vlm_prompt = query.prompt
-        req_info.vlm_request_params.vlm_generation_config = vlm_generation_config
-        req_info.is_live = True
-        req_info.status = RequestInfo.Status.PROCESSING
-        req_info.summary_duration = query.summary_duration
-        req_info.start_time = time.time()  # capture start of pipeline
-        req_info.queue_time = time.time()
-        req_info.assets = [asset]
-        req_info.summary_aggregation_prompt = query.summary_aggregation_prompt
-        req_info.caption_summarization_prompt = query.caption_summarization_prompt
-        req_info._output_process_thread_pool = self._create_named_thread_pool(
-            max_workers=1, prefix=f"vss-processor-{req_info.request_id[:8]}"
-        )
-        if self._ctx_mgr:
-            summarize_enable = self._ca_rag_config.get("summarization", {})
-            summarize_enable = summarize_enable.get("enable", True)
-            if query.summarize is None:
-                query.summarize = summarize_enable
-        req_info.summarize = query.summarize
-        req_info.enable_chat = query.enable_chat
-        req_info.enable_chat_history = query.enable_chat_history
-        req_info.num_frames_per_chunk = query.num_frames_per_chunk
-        req_info.rag_top_k = query.rag_top_k
-        req_info.rag_batch_size = query.rag_batch_size
-        req_info.enable_audio = query.enable_audio
-
-        # Try to use cached video FPS from asset first
-        if asset.video_fps is not None:
-            req_info.video_fps = float(asset.video_fps)
-            logger.debug(f"Using cached video_fps {req_info.video_fps} for asset {asset.asset_id}")
-        else:
-            logger.warning(
-                f"Could not get video_fps for live stream {asset.asset_id}, using default 30.0"
-            )
-            req_info.video_fps = 30.0
-
-        if not self._args.disable_ca_rag:
-            with self._lock:
-                self._create_ctx_mgr_pool(self._ca_rag_config)
-                req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets)
-            try:
-                config = deepcopy(self._ca_rag_config)
-                config["context_manager"]["uuid"] = req_info.stream_id
-                req_info._ctx_mgr.configure(config=config)
-            except Exception as ex:
-                logger.error(traceback.format_exc())
-                logger.error("Query failed for %s - %s", req_info.request_id, str(ex))
-                return req_info.request_id
-            # Reset the context manager for the first time
-            if (
-                self.first_init
-                and req_info.enable_chat
-                and os.environ.get("VSS_DISABLE_DB_RESET_ON_INIT", "false").lower()
-                not in ["true", "1"]
-            ):
-                self.first_init = False
-                req_info._ctx_mgr.reset(
-                    {
-                        "summarization": {"erase_db": True},
-                        "retriever_function": {},
-                        "ingestion_function": {"erase_db": True},
-                    }
-                )
-            req_info.graph_db = query.graph_db
-            req_info.enable_cot = query.enable_cot
-            req_info.enable_image = query.enable_image
-            req_info.summarize_top_p = query.summarize_top_p
-            req_info.summarize_temperature = query.summarize_temperature
-            req_info.summarize_max_tokens = query.summarize_max_tokens
-            req_info.chat_top_p = query.chat_top_p
-            req_info.chat_temperature = query.chat_temperature
-            req_info.chat_max_tokens = query.chat_max_tokens
-            req_info.notification_top_p = query.notification_top_p
-            req_info.notification_temperature = query.notification_temperature
-            req_info.notification_max_tokens = query.notification_max_tokens
-            req_info.user_specified_collection_name = query.collection_name
-            req_info.custom_metadata = query.custom_metadata
-            req_info.delete_external_collection = query.delete_external_collection
-            ca_rag_config = self.update_ca_rag_config(req_info)
-            req_info._ctx_mgr.configure(ca_rag_config)
-
-        # Add the request to the request info map
-        with self._lock:
-            self._request_info_map[req_info.request_id] = req_info
-
-        live_stream_info.req_info.append(req_info)
-        self._metrics.active_live_streams.inc()
-
-        self._start_stream_fps_tracking(req_info)
-
-        # Trigger collecting VIA GPU health metrics
-        self.start_via_gpu_monitor(req_info)
-
-        req_info.enable_cv_pipeline = query.enable_cv_metadata
-
-        self._vlm_pipeline.add_live_stream(
-            asset.asset_id,
-            asset.path,
-            live_stream_info.chunk_size,
-            lambda response, req_info=req_info: self._on_vlm_chunk_response(response, req_info),
-            req_info.vlm_request_params,
-            username=asset.username,
-            password=asset.password,
-            num_frames_per_chunk=query.num_frames_per_chunk,
-            vlm_input_width=query.vlm_input_width,
-            vlm_input_height=query.vlm_input_height,
-            enable_audio=req_info.enable_audio,
-            enable_cv_pipeline=(self._cv_pipeline and req_info.enable_cv_pipeline),
-            cv_pipeline_text_prompt=query.cv_pipeline_prompt,
-        )
-
-        return req_info.request_id
-
     def remove_video_file(self, asset: Asset):
         logger.info("Removing video %s from pipeline", asset.asset_id)
         ctx_mgrs_to_be_removed = []
@@ -2575,269 +1874,6 @@ class ViaStreamHandler:
                 client.remove_bucket(root_bucket)
                 logger.info(f"Removed bucket: {root_bucket}")
 
-    def remove_rtsp_stream(self, asset: Asset):
-        """Remove an RTSP stream from the server"""
-        with self._lock:
-            if asset.asset_id not in self._live_stream_info_map:
-                logger.debug(f"RTSP stream for video {asset.asset_id} not active")
-                return
-            logger.info("Removing live stream %s from pipeline", asset.asset_id)
-            live_stream_info = self._live_stream_info_map[asset.asset_id]
-        live_stream_info.stop = True
-
-        self._vlm_pipeline.remove_live_stream(asset.asset_id)
-
-        # Unlock the asset so that it may be deleted and remove the stream
-        # from live stream info map
-        live_stream_info.asset.unlock()
-
-        with self._lock:
-            for alert_id in list(self._alert_info_map.keys()):
-                if self._alert_info_map[alert_id].liveStreamId == asset.asset_id:
-                    self.remove_live_stream_alert(alert_id)
-
-            self._live_stream_info_map.pop(asset.asset_id)
-
-        logger.info("Removed live stream %s from pipeline", asset.asset_id)
-
-        ctx_mgrs_to_be_removed = []
-        with self._lock:
-            for req_info in self._request_info_map.values():
-                if asset in req_info.assets and req_info._ctx_mgr:
-                    ctx_mgrs_to_be_removed.append((req_info._ctx_mgr, req_info))
-                    req_info._ctx_mgr = None
-            self._request_info_map = {
-                req_id: req_info
-                for req_id, req_info in self._request_info_map.items()
-                if asset not in req_info.assets
-            }
-        for ctx_mgr, req_info in ctx_mgrs_to_be_removed:
-            if req_info.enable_chat:
-                ctx_mgr.reset(
-                    {
-                        "summarization": {"uuid": req_info.stream_id},
-                        "retriever_function": {"uuid": req_info.stream_id},
-                        "ingestion_function": {
-                            "uuid": req_info.stream_id,
-                            "delete_external_collection": req_info.delete_external_collection,
-                        },
-                    }
-                )
-            elif req_info.summarize:
-                ctx_mgr.reset(
-                    {
-                        "summarization": {"uuid": req_info.stream_id},
-                        "delete_external_collection": req_info.delete_external_collection,
-                    }
-                )
-            with self._lock:
-                logger.info(
-                    f"Adding Context Manager no.: {ctx_mgr._process_index} back to process pool."
-                )
-                self._ctx_mgr_pool.append(ctx_mgr)
-        try:
-            shutil.rmtree(f"/tmp/via/cached_frames/{asset.asset_id}")
-        except FileNotFoundError:
-            pass
-
-    def get_event_list(self, liveStreamId: str):
-        events_list = []
-        with self._lock:
-            for alert_id, ainfo in self._alert_info_map.items():
-                if ainfo.liveStreamId == liveStreamId:
-                    events_list.append({"event_id": alert_id, "event_list": ainfo.events})
-        return events_list
-
-    def add_live_stream_alert(
-        self,
-        liveStreamId: str,
-        events: list[str],
-        isCallback=False,
-        callbackUrl=None,
-        callbackJsonTemplate: str = "",
-        callbackToken=None,
-        alertName="",
-    ):
-        if not self._ctx_mgr:
-            raise ViaException("Alerts functionality is disabled", "MethodNotAllowed", 405)
-
-        with self._lock:
-            if liveStreamId not in self._live_stream_info_map:
-                raise ViaException(
-                    f"No such live-stream {liveStreamId} or live-stream not active",
-                    "BadParameters",
-                    400,
-                )
-            req_info = self._live_stream_info_map[liveStreamId].req_info[0]
-
-        ainfo = AlertInfo()
-        ainfo.name = alertName
-        ainfo.liveStreamId = liveStreamId
-        ainfo.events = events
-        ainfo.callbackUrl = callbackUrl
-        if callbackJsonTemplate:
-            ainfo.callbackJsonTemplate = callbackJsonTemplate
-        ainfo.callbackToken = callbackToken
-
-        try:
-            test_json = jinja2.Template(ainfo.callbackJsonTemplate).render(
-                streamId=ainfo.liveStreamId,
-                alertId=ainfo.alert_id,
-                ntpTimestamp="1970-01-01T00:00:00.000Z",
-                alertText="Some text",
-                detectedEvents=json.dumps(["some event1", "some event2"]),
-            )
-
-            json.loads(test_json)
-        except json.decoder.JSONDecodeError:
-            raise ViaException(
-                f"Json template results into invalid json '{test_json}'",
-                "BadParameters",
-                400,
-            )
-
-        ainfo.alert_tool = (
-            AlertCallbackTool(
-                name="alert-" + ainfo.alert_id,
-                alert_info=ainfo,
-                stream_handler=self,
-                sse_tool_name=alertName,
-                req_info=req_info,
-            )
-            if isCallback
-            else AlertSseTool(
-                name="alert-" + ainfo.alert_id,
-                alert_info=ainfo,
-                req_info=req_info,
-                sse_tool_name=alertName,
-                stream_handler=self,
-            )
-        )
-        with self._lock:
-            self._alert_info_map[ainfo.alert_id] = ainfo
-
-        if req_info._ctx_mgr:
-            ca_rag_config = self.update_ca_rag_config(req_info)
-            req_info._ctx_mgr.configure(ca_rag_config)
-
-        return ainfo
-
-    def remove_live_stream_alert(self, alert_id: str):
-        with self._lock:
-            if alert_id not in self._alert_info_map:
-                raise ViaException(f"No such alert {alert_id}", "BadParameters", 400)
-            ainfo = self._alert_info_map.pop(alert_id)
-
-            liveStreamId = ainfo.liveStreamId
-            if liveStreamId not in self._live_stream_info_map:
-                return
-
-            lsinfo = self._live_stream_info_map[liveStreamId]
-
-        if lsinfo.req_info:
-            if lsinfo.req_info[0]._ctx_mgr:
-                req_info = lsinfo.req_info[0]
-                ca_rag_config = self.update_ca_rag_config(req_info)
-                req_info._ctx_mgr.configure(ca_rag_config)
-        logger.info("Removed alert %s for live stream %s", alert_id, lsinfo.asset.asset_id)
-
-    def live_stream_alerts(self):
-        with self._lock:
-            return list(self._alert_info_map.values())
-
-    def add_alert(
-        self,
-        requestId: str,
-        assetId: str,
-        events: list[str],
-        isCallback=False,
-        callbackUrl: str = "",
-        callbackJsonTemplate: str = "",
-        callbackToken=None,
-        alertName="",
-    ):
-        if not self._ctx_mgr:
-            raise ViaException("Alerts functionality is disabled", "MethodNotAllowed", 405)
-
-        with self._lock:
-            if requestId not in self._request_info_map:
-                raise ViaException(
-                    f"No such request {requestId} or request not active",
-                    "BadParameters",
-                    400,
-                )
-            req_info = self._request_info_map[requestId]
-
-        ainfo = AlertInfo()
-        ainfo.name = alertName
-        ainfo.requestId = requestId
-        ainfo.liveStreamId = assetId
-        ainfo.events = events
-        ainfo.callbackUrl = callbackUrl
-        if callbackJsonTemplate:
-            ainfo.callbackJsonTemplate = callbackJsonTemplate
-        ainfo.callbackToken = callbackToken
-
-        try:
-            test_json = jinja2.Template(ainfo.callbackJsonTemplate).render(
-                streamId=ainfo.liveStreamId,
-                alertId=ainfo.alert_id,
-                ntpTimestamp="1970-01-01T00:00:00.000Z",
-                alertText="Some text",
-                detectedEvents=json.dumps(["some event1", "some event2"]),
-            )
-
-            json.loads(test_json)
-        except json.decoder.JSONDecodeError:
-            raise ViaException(
-                f"Json template results into invalid json '{test_json}'",
-                "BadParameters",
-                400,
-            )
-
-        ainfo.alert_tool = (
-            AlertCallbackTool(
-                name="alert-" + ainfo.alert_id,
-                alert_info=ainfo,
-                stream_handler=self,
-                req_info=req_info,
-            )
-            if isCallback
-            else AlertSseTool(
-                name="alert-" + ainfo.alert_id,
-                req_info=req_info,
-                sse_tool_name=alertName,
-                alert_info=ainfo,
-                stream_handler=self,
-            )
-        )
-
-        with self._lock:
-            self._alert_info_map[ainfo.alert_id] = ainfo
-
-        if req_info._ctx_mgr:
-            ca_rag_config = self.update_ca_rag_config(req_info)
-            req_info._ctx_mgr.configure(ca_rag_config)
-
-        return ainfo
-
-    def remove_alert(self, alert_id: str):
-        with self._lock:
-            if alert_id not in self._alert_info_map:
-                raise ViaException(f"No such alert {alert_id}", "BadParameters", 400)
-            ainfo = self._alert_info_map.pop(alert_id)
-
-            requestId = ainfo.requestId
-            if requestId not in self._request_info_map:
-                return
-
-            req_info = self._request_info_map[requestId]
-
-        if req_info._ctx_mgr:
-            ca_rag_config = self.update_ca_rag_config(req_info)
-            req_info._ctx_mgr.configure(ca_rag_config)
-        logger.info("Removed alert %s for live stream %s", alert_id, req_info.assets[0].asset_id)
-
     def stop(self, force=False):
         """Stop the VIA Stream Handler"""
         logger.info("Stopping VIA Stream Handler")
@@ -2887,8 +1923,6 @@ class ViaStreamHandler:
                 # If request for file summarization has completed
                 if (not req_info.is_live and req_info.progress == 100) or (
                     req_info.is_live
-                    and self._live_stream_info_map[req_info.assets[0].asset_id].live_stream_ended
-                    and len(req_info.alerts) == 0
                     and len(req_info.response) == 0
                 ):
                     # If live stream ended
@@ -3141,110 +2175,6 @@ class ViaStreamHandler:
             )
         return responses
 
-    def review_alert(self, review_alert_request: ReviewAlertRequest, asset: Asset):
-
-        vlm_system_prompt = review_alert_request.vss_params.vlm_params.system_prompt
-
-        query = SummarizationQuery(
-            id=review_alert_request.id,
-            model=self.get_models_info().id,
-            chunk_duration=review_alert_request.vss_params.chunk_duration,
-            chunk_overlap_duration=review_alert_request.vss_params.chunk_overlap_duration,
-            prompt=review_alert_request.vss_params.vlm_params.prompt,
-            summarize=False,
-            enable_reasoning=review_alert_request.vss_params.enable_reasoning,
-            system_prompt=vlm_system_prompt,
-        )
-        if review_alert_request.vss_params.vlm_params.max_tokens is not None:
-            query.max_tokens = review_alert_request.vss_params.vlm_params.max_tokens
-        if review_alert_request.vss_params.vlm_params.top_p is not None:
-            query.top_p = review_alert_request.vss_params.vlm_params.top_p
-        if review_alert_request.vss_params.vlm_params.top_k is not None:
-            query.top_k = review_alert_request.vss_params.vlm_params.top_k
-        if review_alert_request.vss_params.vlm_params.temperature is not None:
-            query.temperature = review_alert_request.vss_params.vlm_params.temperature
-        if review_alert_request.vss_params.vlm_params.seed is not None:
-            query.seed = review_alert_request.vss_params.vlm_params.seed
-
-        if (
-            review_alert_request.cv_metadata_path
-            and review_alert_request.vss_params.cv_metadata_overlay
-            and not os.path.exists(review_alert_request.cv_metadata_path)
-        ):
-            raise ViaException(
-                f"CV metadata file {review_alert_request.cv_metadata_path} does not exist",
-                "InvalidParameterValue",
-                400,
-            )
-
-        req_id = self.query(
-            assets=[asset],
-            query=query,
-            is_summarization=False,
-            pregenerated_cv_metadata_json_file=(
-                review_alert_request.cv_metadata_path
-                if review_alert_request.vss_params.cv_metadata_overlay
-                else ""
-            ),
-            skip_guardrails=os.environ.get("ALERT_REVIEW_SKIP_GUARDRAILS", "true") == "true",
-            skip_ca_rag=True,
-        )
-
-        self.wait_for_request_done(req_id)
-        req_info = self._request_info_map[req_id]
-        result = False
-        parsed_chunk_responses = []
-        selected_frames_ts = []
-
-        reasoning_description = (
-            "" if len(req_info.processed_chunk_list) == 1 else "Detailed reasoning per chunk:"
-        )
-
-        req_info.processed_chunk_list.sort(key=lambda x: x.chunk.chunkIdx)
-
-        for chunk in req_info.processed_chunk_list:
-            parsed_chunk_responses.append((chunk.chunk, chunk.vlm_response))
-            # get words from chunk.vlm_response and check if any of them are "yes" or "true"
-            import string
-
-            words = [word.strip(string.punctuation) for word in chunk.vlm_response.split()]
-            if any(word.lower() in ["yes", "true"] for word in words):
-                result = True
-
-        for chunk in req_info.processed_chunk_list:
-            # Extract reasoning description from VLM stats if available
-            if hasattr(chunk, "vlm_stats") and chunk.vlm_stats:
-                chunk_reasoning = chunk.vlm_stats.get("reasoning_description", "")
-                if chunk_reasoning:
-                    if len(req_info.processed_chunk_list) > 1:
-                        reasoning_description += (
-                            "\n---------------------------\n"
-                            + f"{int(chunk.chunk.start_pts/1e9)}-{int(chunk.chunk.end_pts/1e9)} sec: \n{chunk_reasoning}"  # noqa: E501
-                        )
-                    else:
-                        reasoning_description = chunk_reasoning
-
-        for chunk in req_info.processed_chunk_list:
-            selected_frames_ts.extend(chunk.frame_times)
-
-        selected_frames_ts.sort()
-
-        with self._lock:
-            self._request_info_map.pop(req_info.request_id, None)
-
-        response = ""
-        if len(parsed_chunk_responses) == 1:
-            response = parsed_chunk_responses[0][1]
-        elif len(parsed_chunk_responses) > 1:
-            response = "Detailed description per chunk:\n" + "\n".join(
-                [
-                    f"{int(chunk.start_pts/1e9)}-{int(chunk.end_pts/1e9)} sec: {details}"
-                    for chunk, details in parsed_chunk_responses
-                ]
-            )
-
-        return result, response, selected_frames_ts, reasoning_description
-
     @staticmethod
     def populate_argument_parser(parser: ArgumentParser):
         """Add VIA Stream Handler arguments to the argument parser"""
@@ -3413,16 +2343,6 @@ class ViaStreamHandler:
                 "summary_aggregation"
             ] = req_info.summary_aggregation_prompt
 
-        # Set batch size for live streams based on summary duration
-        if req_info.is_live:
-            if req_info.summary_duration > 0:
-                summ_batch_size = int(req_info.summary_duration / req_info.chunk_size)
-                if req_info.enable_audio:
-                    summ_batch_size *= 2
-                ca_rag_config["functions"]["summarization"]["params"][
-                    "batch_size"
-                ] = summ_batch_size
-
         # Set explicit summarization batch size
         if req_info.summarize_batch_size:
             summ_batch_size = req_info.summarize_batch_size
@@ -3529,9 +2449,6 @@ class ViaStreamHandler:
             req_info.delete_external_collection,
         )
 
-        event_list = self.get_event_list(req_info.stream_id)
-        if event_list:
-            ca_rag_config["functions"]["notification"]["params"]["events"] = event_list
         return ca_rag_config
 
     def _get_request_fps(self, req_info: RequestInfo) -> float:
@@ -3543,27 +2460,3 @@ class ViaStreamHandler:
         if elapsed_time > 0 and req_info._fps_frame_count > 0:
             return req_info._fps_frame_count / elapsed_time
         return 0.0
-
-    def get_active_streams_info(self) -> dict:
-        """Get information about all active streams and their FPS.
-
-        Returns:
-            dict: Dictionary with stream_id -> fps mapping for active streams
-        """
-        with self._lock:
-            active_streams_info = {}
-            for req_info in self._request_info_map.values():
-                if req_info._fps_is_active and req_info.assets and len(req_info.assets) > 0:
-                    stream_id = req_info.assets[0].asset_id
-                    active_streams_info[stream_id] = self._get_request_fps(req_info)
-            return active_streams_info
-
-    def update_live_stream_summary_latency(self, latency: float):
-        """Update live stream summary latency metric"""
-        if hasattr(self._metrics, "live_stream_summary_latency"):
-            self._metrics.live_stream_summary_latency.observe(latency)
-
-    def update_live_stream_captions_latency(self, latency: float):
-        """Update live stream captions latency metric"""
-        if hasattr(self._metrics, "live_stream_captions_latency"):
-            self._metrics.live_stream_captions_latency.observe(latency)
