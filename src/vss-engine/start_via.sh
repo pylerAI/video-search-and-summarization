@@ -335,11 +335,18 @@ start_via_server() {
 
 start_processes() {
 
-    sed -i 's/llm-nim-svc/llm-openai-svc/g' /opt/nvidia/via/guardrails_config/config.yml
-    sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /opt/nvidia/via/guardrails_config/config.yml
+    # sed -i 's/llm-nim-svc/llm-openai-svc/g' /opt/nvidia/via/guardrails_config/config.yml
+    # sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /opt/nvidia/via/guardrails_config/config.yml
 
-    sed -i 's/llm-nim-svc/llm-openai-svc/g' /tmp/via/default_config.yaml
-    sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /tmp/via/default_config.yaml
+    # sed -i 's/llm-nim-svc/llm-openai-svc/g' /tmp/via/default_config.yaml
+    # sed -i 's|meta/llama-3\.1-70b-instruct|openai/gpt-oss-120b|g' /tmp/via/default_config.yaml
+
+    # Configure for OpenAI API
+    sed -i 's|base_url: http://llm-nim-svc:8000/v1|base_url: https://api.openai.com/v1|g' /opt/nvidia/via/guardrails_config/config.yml
+    sed -i 's|meta/llama-3\.1-70b-instruct|gpt-5|g' /opt/nvidia/via/guardrails_config/config.yml
+
+    sed -i 's|base_url: http://llm-nim-svc:8000/v1|base_url: https://api.openai.com/v1|g' /tmp/via/default_config.yaml
+    sed -i 's|meta/llama-3\.1-70b-instruct|gpt-4o|g' /tmp/via/default_config.yaml
 
     if [ -z "${FRONTEND_PORT}" ]; then
         echo "Please set FRONTEND_PORT env variable"
