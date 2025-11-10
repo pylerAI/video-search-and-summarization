@@ -172,9 +172,9 @@ class FileSplitter:
                     info.pts_offset_ns = 0
                     info.start_pts = cur_pts
                     # Handle edge case of end_pts going over the file duration.
-                    info.end_pts = cur_pts + min(
+                    info.end_pts = int(cur_pts + min(
                         self._chunk_duration_sec * 1000000000, end_pts - cur_pts
-                    )
+                    ))
                     info.start_ntp = get_timestamp_str(self._base_ntp_time + info.start_pts / 1e9)
                     info.end_ntp = get_timestamp_str(self._base_ntp_time + info.end_pts / 1e9)
                     info.start_ntp_float = ntp_to_unix_timestamp(info.start_ntp)

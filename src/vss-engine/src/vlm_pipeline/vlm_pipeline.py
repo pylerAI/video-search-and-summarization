@@ -51,7 +51,6 @@ class VlmModelType(Enum):
     VILA_15 = "vila-1.5"
     NVILA = "nvila"
     OPENAI_COMPATIBLE = "openai-compat"  # Any OpenAI API compatible on NIM/OpenAI/Azure-OpenAI
-    COSMOS_REASON1 = "cosmos-reason1"
 
     def __str__(self):
         return self.value
@@ -145,14 +144,6 @@ class DecoderProcess(ViaProcessBase):
                     self._crop_width = crop_size[0]
                     self._crop_height = crop_size[1]
                 self._enable_jpeg_tensors = input_spec.pop("jpeg_encoded", False)
-                vlm_input_resolution = input_spec.pop("vlm_input_resolution", None)
-                if vlm_input_resolution:
-                    logger.info(
-                        f"VLM input resolution from manifest file: "
-                        f"width {vlm_input_resolution[0]}, height {vlm_input_resolution[1]}"
-                    )
-                    self._width = vlm_input_resolution[0]
-                    self._height = vlm_input_resolution[1]
             self._minframes = 1
         elif self._vlm_model_type in [VlmModelType.VILA_15]:
             if not self._nfrms:
@@ -231,17 +222,6 @@ class DecoderProcess(ViaProcessBase):
             self._minframes = 1
             self._data_type_int8 = True
 
-        elif self._vlm_model_type in [VlmModelType.COSMOS_REASON1]:
-            with open(self._model_path + "/config.json") as f:
-                config = json.load(f)
-            if not self._nfrms:
-                self._nfrms = config.get("num_video_frames", 20)
-            self._minframes = 1
-            self._data_type_int8 = True
-            # 2K vision tokens
-            self._width = 532
-            self._height = 280
-
         elif self._vlm_model_type in [VlmModelType.OPENAI_COMPATIBLE]:
             if not self._nfrms:
                 self._nfrms = 10
@@ -301,23 +281,18 @@ class DecoderProcess(ViaProcessBase):
         chunk.end_pts = 5000000000
         if os.path.exists(chunk.file):
             for fgetter in self._fgetters:
-                frames, frame_times, audio_frames, error = fgetter.get_frames(chunk, True)
+                frames, frame_times, audio_frames = fgetter.get_frames(chunk, True)
 
         chunk.file = "/opt/nvidia/via/warmup_streams/its_265.mp4"
         if os.path.exists(chunk.file):
-            frames = []
-            frame_times = []
-            audio_frames = []
-            error = None
             for fgetter in self._fgetters:
-                frames, frame_times, audio_frames, error = fgetter.get_frames(chunk, True)
+                frames, frame_times, audio_frames = fgetter.get_frames(chunk, True)
 
         self._output_queue.put(
             {
                 "chunk": chunk,
                 "chunk_id": -1,
                 "frames": frames,
-                "error": error,
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "request_params": None,
@@ -347,7 +322,7 @@ class DecoderProcess(ViaProcessBase):
 
         enable_audio = kwargs["enable_audio"] if "enable_audio" in kwargs else False
 
-        frames, frame_times, audio_frames, error = fgetter.get_frames(
+        frames, frame_times, audio_frames = fgetter.get_frames(
             chunk,
             True,
             frame_selector,
@@ -362,28 +337,17 @@ class DecoderProcess(ViaProcessBase):
         self._fgetters.append(fgetter)
         logger.log(LOG_STATUS_LEVEL, "Chunk (%s) decoded, frames=%d", chunk, len(frames))
         decode_end_time = time.time()
-
-        error_msg = f"Decode error: {error}" if error else None
-
         if len(frames) >= self._minframes:
             return {
                 "chunk": chunk,
                 "frames": frames,
-                "error": error_msg,
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "decode_start_time": decode_start_time,
                 "decode_end_time": decode_end_time,
                 **kwargs,
             }
-        elif error_msg:
-            return {
-                "chunk": chunk,
-                "error": error_msg,
-                **kwargs,
-            }
-        else:
-            return {}
+        return {}
 
     def _handle_command(self, command, **kwargs):
         logger.debug(f"command is {command}")
@@ -448,7 +412,7 @@ class DecoderProcess(ViaProcessBase):
         self._live_stream_handle_info[live_stream_id] = {"frame_getter": fgetter, "num_chunks": 0}
 
         def on_chunk_decoded(
-            chunk: ChunkInfo, frames, frame_times, transcripts, error, live_stream_id, **kwargs
+            chunk: ChunkInfo, frames, frame_times, transcripts, live_stream_id, **kwargs
         ):
             frame_times = [float("%.2f" % frame_ele) for frame_ele in frame_times]
             chunk.streamId = live_stream_id
@@ -458,15 +422,7 @@ class DecoderProcess(ViaProcessBase):
                 asr_output += asr_transcript["transcript"] + " "
             transcript = asr_output if len(asr_output) != 0 else None
 
-            if error is not None:
-                error_msg = "Decode error: " + error
-                logger.error(f"Error decoding chunk {chunk}: {error}")
-            else:
-                error_msg = None
-                logger.log(
-                    LOG_STATUS_LEVEL, "Decoded new chunk (%s), frames=%d", chunk, len(frames)
-                )
-
+            logger.log(LOG_STATUS_LEVEL, "Decoded new chunk (%s), frames=%d", chunk, len(frames))
             if len(frames) >= self._minframes:
                 self._handle_result(
                     {
@@ -474,7 +430,6 @@ class DecoderProcess(ViaProcessBase):
                         "frames": frames,
                         "frame_times": frame_times,
                         "audio_transcript": transcript,
-                        "error": error_msg,
                         "is_live_stream": True,
                         **kwargs,
                     },
@@ -494,8 +449,8 @@ class DecoderProcess(ViaProcessBase):
             cv_pipeline_text_prompt=cv_pipeline_text_prompt,
             live_stream_id=live_stream_id,
             on_chunk_decoded=(
-                lambda chunk, frames, frame_times, transcripts, error=None, live_stream_id=live_stream_id, kwargs=kwargs: on_chunk_decoded(  # noqa: E501
-                    chunk, frames, frame_times, transcripts, error, live_stream_id, **kwargs
+                lambda chunk, frames, frame_times, transcripts, live_stream_id=live_stream_id, kwargs=kwargs: on_chunk_decoded(  # noqa: E501
+                    chunk, frames, frame_times, transcripts, live_stream_id, **kwargs
                 )
             ),
             enable_audio=enable_audio,
@@ -524,8 +479,6 @@ class DecoderProcess(ViaProcessBase):
     def _process(self, **kwargs):
         """Decode a chunk and return selected frames as raw frames / JPEG images"""
         if self._vlm_model_type == VlmModelType.NVILA:
-            return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
             return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
         else:
             return self._thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
@@ -601,7 +554,6 @@ class EmbeddingProcess(ViaProcessBase):
         audio_frames = kwargs.pop("audio_frames", audio_frames)
         audio_transcript = [[]]
         audio_transcript = kwargs.pop("audio_transcript", audio_transcript)
-        error_msg = kwargs.pop("error", None)
 
         if self._emb_generator is None:
             # Model does not support embeddings, send the frames to the VLM process
@@ -611,7 +563,6 @@ class EmbeddingProcess(ViaProcessBase):
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
-                "error": error_msg,
                 **kwargs,
             }
 
@@ -628,7 +579,6 @@ class EmbeddingProcess(ViaProcessBase):
             frame_times,
             audio_frames,
             audio_transcript,
-            error_msg,
             embed_start_time,
             nvtx_embedding_start,
         ):
@@ -641,7 +591,6 @@ class EmbeddingProcess(ViaProcessBase):
                 "embed_end_time": [time.time()] * len(chunk),
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
-                "error": error_msg,
                 **kwargs,
             }
 
@@ -653,7 +602,6 @@ class EmbeddingProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
-                error_msg,
                 embed_start_time,
                 nvtx_embedding_start,
             )
@@ -664,7 +612,6 @@ class EmbeddingProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
-                error_msg,
                 embed_start_time,
                 nvtx_embedding_start,
             )
@@ -677,7 +624,7 @@ class VlmProcess(ViaProcessBase):
         self,
         args,
         asset_dir,
-        gpu_id: int | str = 0,
+        gpu_id=0,
         disabled=False,
         input_queue=None,
         input_queue_lock=None,
@@ -736,18 +683,6 @@ class VlmProcess(ViaProcessBase):
             )
             self._batch_size = 1
 
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
-
-            self._model = CosmosReason1(
-                self._model_path,
-                use_trt=self._use_trt,
-                trt_engine_dir=self._trt_engine_dir,
-                max_batch_size=self._batch_size,
-                async_output=True,
-            )
-            self._batch_size = 1
-
         elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.openai_compat.openai_compat_model import CompOpenAIModel
 
@@ -779,7 +714,6 @@ class VlmProcess(ViaProcessBase):
         return (
             self._vlm_model_type == VlmModelType.VILA_15
             or self._vlm_model_type == VlmModelType.NVILA
-            or self._vlm_model_type == VlmModelType.COSMOS_REASON1
         ) and not self._model.can_enqueue_requests()
 
     def _warmup(self):
@@ -811,12 +745,6 @@ class VlmProcess(ViaProcessBase):
             from models.nvila.nvila_context import NVilaContext
 
             ctx = NVilaContext(self._model)
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_context import (
-                CosmosReason1Context,
-            )
-
-            ctx = CosmosReason1Context(self._model)
         elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.common.model_context_frame_input import ModelContextFrameInput
 
@@ -827,10 +755,8 @@ class VlmProcess(ViaProcessBase):
         embeds = []
         frame_times = []
         if (
-            (self._vlm_model_type is not None or self._model.get_embedding_generator() is not None)
-            and self._vlm_model_type != VlmModelType.NVILA
-            and self._vlm_model_type != VlmModelType.COSMOS_REASON1
-        ):
+            self._vlm_model_type is not None or self._model.get_embedding_generator() is not None
+        ) and self._vlm_model_type != VlmModelType.NVILA:
             # Model supports explicit embeddings, fetch the embedding for each chunk
             # in the input batch
             for chunk_ in chunk:
@@ -843,18 +769,11 @@ class VlmProcess(ViaProcessBase):
         # Set the video embeddings on the context class along with time information
         ctx.set_video_embeds(chunk, embeds, frames, frame_times)
 
-        decode_only = kwargs.pop("decode_only", [False])[0]
-        if decode_only:
-            vlm_response_stats = (
-                ["Skipping since dense captioning is enabled"],
-                [{"input_tokens": 0, "output_tokens": 0}],
-            )
-        else:
-            vlm_response_stats = ctx.ask(
-                request_params[0].vlm_prompt,
-                generation_config=request_params[0].vlm_generation_config,
-                chunk=chunk,
-            )
+        vlm_response_stats = ctx.ask(
+            request_params[0].vlm_prompt,
+            generation_config=request_params[0].vlm_generation_config,
+            chunk=chunk,
+        )
         if "is_live_stream" in kwargs and self._num_gpus > 1:
             time.sleep(0.1)
 
@@ -865,7 +784,6 @@ class VlmProcess(ViaProcessBase):
             frame_times,
             audio_frames,
             audio_transcript,
-            error_msg,
             vlm_start_time,
             nvtx_vlm_process_start,
         ):
@@ -886,7 +804,6 @@ class VlmProcess(ViaProcessBase):
                 "frame_times": frame_times,
                 "audio_frames": audio_frames,
                 "audio_transcript": audio_transcript,
-                "error": error_msg,
                 "vlm_start_time": [vlm_start_time] * len(chunk),
                 "vlm_end_time": [time.time()] * len(chunk),
                 **kwargs,
@@ -896,7 +813,6 @@ class VlmProcess(ViaProcessBase):
         audio_frames = kwargs.pop("audio_frames", audio_frames)
         audio_transcript = [[]]
         audio_transcript = kwargs.pop("audio_transcript", audio_transcript)
-        error_msg = kwargs.pop("error", None)
 
         if isinstance(vlm_response_stats, concurrent.futures.Future):
             return self._handle_future_result(
@@ -907,7 +823,6 @@ class VlmProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
-                error_msg,
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
@@ -919,7 +834,6 @@ class VlmProcess(ViaProcessBase):
                 frame_times,
                 audio_frames,
                 audio_transcript,
-                error_msg,
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
@@ -1044,14 +958,12 @@ class AsrProcess(ViaProcessBase):
 
         audio_frames = kwargs.pop("audio_frames", None)
         audio_transcript = kwargs.pop("audio_transcript", None)
-        error_msg = kwargs.pop("error", None)
 
         if audio_transcript is not None and len(audio_transcript) > 0:
             return {
                 "chunk": chunk,
                 "request_params": request_params,
                 "audio_transcript": audio_transcript,
-                "error": error_msg,
                 "asr_start_time": asr_start_time,
                 "asr_end_time": time.time(),
                 **kwargs,
@@ -1076,7 +988,6 @@ class AsrProcess(ViaProcessBase):
             chunk,
             request_params,
             asr_response,
-            error_msg,
             asr_start_time,
             nvtx_asr_process_start,
         ):
@@ -1094,7 +1005,6 @@ class AsrProcess(ViaProcessBase):
                 "chunk": chunk,
                 "request_params": request_params,
                 "audio_transcript": transcript,
-                "error": error_msg,
                 "asr_start_time": asr_start_time,
                 "asr_end_time": time.time(),
                 **kwargs,
@@ -1106,7 +1016,6 @@ class AsrProcess(ViaProcessBase):
                 chunk,
                 request_params,
                 asr_response,
-                error_msg,
                 asr_start_time,
                 nvtx_asr_process_start,
             )
@@ -1115,7 +1024,6 @@ class AsrProcess(ViaProcessBase):
                 chunk,
                 request_params,
                 asr_response,
-                error_msg,
                 asr_start_time,
                 nvtx_asr_process_start,
             )
@@ -1138,8 +1046,6 @@ class VlmChunkResponse:
     vlm_stats = {}
     add_doc_start_time = 0
     add_doc_end_time = 0
-    asr_start_time = 0
-    asr_end_time = 0
     frame_times: list[float] = []
 
     def __str__(self) -> str:
@@ -1163,11 +1069,6 @@ class VlmChunkResponse:
             "add_doc": (
                 f"{self.add_doc_start_time:.3f}-{self.add_doc_end_time:.3f}"
                 if self.add_doc_start_time and self.add_doc_end_time
-                else "N/A"
-            ),
-            "asr": (
-                f"{self.asr_start_time:.3f}-{self.asr_end_time:.3f}"
-                if self.asr_start_time and self.asr_end_time
                 else "N/A"
             ),
         }
@@ -1244,25 +1145,14 @@ class VlmPipeline:
         mp_ctx = multiprocessing.get_context("spawn")
 
         self._have_emb_gen = False
-        if args.vlm_model_type is None:
-            if self._args.model_path:
-                inference_class = CustomModuleLoader(self._args.model_path)._module.Inference
-                if hasattr(inference_class, "get_embeddings"):
-                    self._have_emb_gen = True
-        elif (
-            args.vlm_model_type != VlmModelType.NVILA
-            and args.vlm_model_type != VlmModelType.COSMOS_REASON1
-        ):
+        if args.vlm_model_type != VlmModelType.NVILA:
             self._have_emb_gen = True
 
         self._dec_q = mp_ctx.Queue()
         self._dec_q_lock = mp_ctx.Lock()
         have_peer_access = check_peer_access()
         logger.info(f"Have peer access: {have_peer_access}")
-        if (
-            args.vlm_model_type == VlmModelType.NVILA
-            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
-        ) and not have_peer_access:
+        if args.vlm_model_type == VlmModelType.NVILA and not have_peer_access:
             self._vlm_q = None
             self._vlm_q_lock = None
         else:
@@ -1442,10 +1332,7 @@ class VlmPipeline:
         if args.use_trt and not args.trt_engine_dir:
             raise Exception("TRT mode selected but TRT engine directory not set")
 
-        if FORCE_TRT and (
-            args.vlm_model_type == VlmModelType.NVILA
-            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
-        ):
+        if FORCE_TRT and (args.vlm_model_type == VlmModelType.NVILA):
             args.use_trt = True
 
         self._processed_chunk_queue = mp_ctx.Queue()
@@ -1471,22 +1358,9 @@ class VlmPipeline:
                 asr_proc.set_final_output_queue(self._processed_chunk_queue)
                 asr_proc.start()
 
-        self._num_gpus_per_vlm_proc = max(
-            int(os.environ.get("VSS_NUM_GPUS_PER_VLM_PROC", "") or 1), 1
-        )
-
         self._num_vlm_procs = args.num_gpus
         if args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             self._num_vlm_procs = args.num_vlm_procs
-        elif not args.disable_vlm:
-            self._num_vlm_procs = args.num_gpus // self._num_gpus_per_vlm_proc
-            if self._num_vlm_procs == 0:
-                raise Exception(
-                    f"Not enough GPUs to run VLM pipeline. Available GPUs: {args.num_gpus}."
-                    f" GPUs per VLM instance: {self._num_gpus_per_vlm_proc}"
-                )
-            logger.info(f"GPUs per VLM instance: {self._num_gpus_per_vlm_proc}")
-
         logger.info(f"num_vlm_procs set to {self._num_vlm_procs}")
 
         # Create the VLM processes, one on each GPU
@@ -1494,14 +1368,7 @@ class VlmPipeline:
             VlmProcess(
                 args,
                 asset_dir,
-                ",".join(
-                    map(
-                        str,
-                        range(
-                            i * self._num_gpus_per_vlm_proc, (i + 1) * self._num_gpus_per_vlm_proc
-                        ),
-                    )
-                ),
+                i,
                 args.disable_vlm,
                 self._vlm_q,
                 self._vlm_q_lock,
@@ -1616,10 +1483,7 @@ class VlmPipeline:
                 response.vlm_start_time = item.get("vlm_start_time")
                 response.vlm_end_time = item.get("vlm_end_time")
                 response.vlm_stats = item.get("vlm_stats", {"input_tokens": 0, "output_tokens": 0})
-                response.asr_start_time = item.get("asr_start_time")
-                response.asr_end_time = item.get("asr_end_time")
                 response.frame_times = item.get("frame_times", [])
-                response.model_info = self.get_models_info()
 
             if item.get("is_live_stream", False):
                 if response.vlm_end_time and response.vlm_end_time - (
@@ -1708,10 +1572,6 @@ class VlmPipeline:
             from models.nvila.nvila_model import NVila
 
             id, api_type, owned_by = NVila.get_model_info()
-        elif self._args.vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
-
-            id, api_type, owned_by = CosmosReason1.get_model_info()
         else:
             id = os.path.basename(os.path.abspath(self._args.model_path))
             api_type = "internal"
@@ -1735,7 +1595,6 @@ class VlmPipeline:
         enable_audio=False,
         request_id="",
         video_codec=None,
-        decode_only=False,
     ):
         with self._enqueue_lock:
             curr_chunk_counter = self._chunk_counter
@@ -1765,7 +1624,6 @@ class VlmPipeline:
                 enable_audio=enable_audio,
                 request_id=request_id,
                 video_codec=video_codec,
-                decode_only=decode_only,
             )
 
     def add_live_stream(

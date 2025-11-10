@@ -65,10 +65,8 @@ class CustomModel(CustomModelBase):
                     configs = asdict(generation_config)
                 else:
                     configs = None
-                for idx, tensor in enumerate(input_tensors):
-                    result = self._inference.generate(
-                        prompt, tensor, configs, video_frames_times[idx]
-                    )
+                for tensor in input_tensors:
+                    result = self._inference.generate(prompt, tensor, configs)
                     summary.append(result)
         return summary
 

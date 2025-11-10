@@ -11,9 +11,8 @@ vss:
   applicationSpecs:
     vss-deployment:
       securityContext:
-        # fsGroup: 0
         runAsGroup: 0
-        runAsUser: 0     
+        runAsUser: 0       
       containers:
         vss:
           image:
@@ -22,44 +21,17 @@ vss:
             tag: IMAGE_TAG
           env:
           - name: VLM_MODEL_TO_USE
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: VLM_MODEL_TO_USE
-          - name: OPENAI_API_KEY
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: OPENAI_API_KEY
-          - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
-          - name: VIA_VLM_ENDPOINT
-            valueFrom:
-              configMapKeyRef:
-                name: vss-vlm-config
-                key: VIA_VLM_ENDPOINT
-          # - name: MODEL_PATH
-          #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+            value: vila-1.5
+          - name: MODEL_PATH
+            value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
+          - name: ASSET_STORAGE_DIR
+            value: /tmp/custom-asset-dir
+          - name: EXAMPLE_STREAMS_DIR
+            value: /tmp/custom-example-streams-dir
           - name: ENABLE_AUDIO
             value: 'true'
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
             value: 'true'
-          - name: RIVA_ASR_SERVER_URI
-            value: riva-multilang-service.vss.svc.cluster.local
-          # CV Pipeline
-          # - name: INSTALL_PROPRIETARY_CODECS
-          #   value: "true"
-          # - name: DISABLE_CV_PIPELINE
-          #   value: "false"
-          # - name: GDINO_INFERENCE_INTERVAL
-          #   value: "1"
-          # - name: NUM_CV_CHUNKS_PER_GPU
-          #   value: "2"
-          # - name: VSS_LOG_LEVEL
-          #   value: "DEBUG"
           startupProbe:
             failureThreshold: 360
   configs:
@@ -68,53 +40,52 @@ vss:
         embedding:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         llm:
-          base_url: http://llm-openai-svc:8000/v1
+          base_url: http://llm-nim-svc:8000/v1
           model: meta/llama-3.1-70b-instruct
         reranker:
           base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
       notification:
         llm:
-          base_url: http://llm-openai-svc:8000/v1
+          base_url: http://llm-nim-svc:8000/v1
           model: meta/llama-3.1-70b-instruct
       summarization:
         embedding:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         llm:
-          base_url: http://llm-openai-svc:8000/v1
+          base_url: http://llm-nim-svc:8000/v1
           model: meta/llama-3.1-70b-instruct
     guardrails_config.yaml:
       models:
       - engine: nim
         model: meta/llama-3.1-70b-instruct
         parameters:
-          base_url: http://llm-openai-svc:8000/v1
+          base_url: http://llm-nim-svc:8000/v1
         type: main
       - engine: nim
         model: nvidia/llama-3.2-nv-embedqa-1b-v2
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  # USE EXTERNAL VLM - GPU 리소스 할당 비활성화
+  extraPodVolumeMounts:
+  - mountPath: /tmp/custom-asset-dir
+    name: custom-asset-dir
+  - mountPath: /tmp/custom-example-streams-dir
+    name: custom-example-streams-dir
+  extraPodVolumes:
+  - hostPath:
+      path: /home/nvadmin/Workspace/blueprint/video_uploads
+    name: custom-asset-dir
+  - hostPath:
+      path: /home/nvadmin/Workspace/blueprint/video_examples
+    name: custom-example-streams-dir
   resources:
-    requests:
-      nvidia.com/gpu: 1
     limits:
-      nvidia.com/gpu: 1
-  # 기존 GPU 할당 주석 처리
-  # resources:
-  #   limits:
-  #     nvidia.com/gpu: 2
-  #     nvidia.com/gpu: 3 # CV Pipeline
+      nvidia.com/gpu: 2
   workloadSpecs:
     dummy: {}
     wl-env:
       wl_env:
         - name: NGC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              key: NGC_API_KEY
-              name: infisical-managed-secrets
-        - name: NVIDIA_API_KEY
           valueFrom:
             secretKeyRef:
               key: NGC_API_KEY
@@ -133,26 +104,26 @@ vss:
 
 etcd:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss
   storageClassName: gpfs
 
 minio:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss  
   storageClassName: gpfs
 
 
 milvus:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss  
   storageClassName: gpfs
 
 neo4j:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss  
   storageClassName: gpfs
 
@@ -181,12 +152,8 @@ neo4j:
 
 
 nim-llm:
-  # CV Pipeline
-  # env:
-  # - name: NIM_MAX_MODEL_LEN
-  #   value: "128000"
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss 
   storageClassName: gpfs
   persistence:
@@ -204,7 +171,7 @@ nim-llm:
 
 nemo-embedding:
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   namespace: vss  
   storageClassName: gpfs
   workloadSpecs:
@@ -227,7 +194,7 @@ nemo-embedding:
 nemo-rerank:
   namespace: vss  
   nodeSelector: 
-    pyler.io/group: dgx
+    kubernetes.io/hostname: dgx-b200-08
   storageClassName: gpfs
   workloadSpecs:
     wl-env:
@@ -245,24 +212,24 @@ nemo-rerank:
       nvidia.com/gpu: 1
 
 riva:
-  enabled: false
-  # namespace: vss  
-  # nodeSelector: 
-  #   pyler.io/group: dgx
-  # storageClassName: gpfs
-  # workloadSpecs:
-  #   dummy: {}
-  #   wl-env:
-  #     wl_env:
-  #     - name: NGC_API_KEY
-  #       valueFrom:
-  #         secretKeyRef:
-  #           key: NGC_API_KEY
-  #           name: infisical-managed-secrets
-  #     - name: NIM_HTTP_API_PORT
-  #       value: '9000'
-  #     - name: NIM_GRPC_API_PORT
-  #       value: '50051'
-  #     - name: NIM_CACHE_PATH
-  #       value: /mnt/nim-cache
-  #     wl_units: 1
+  enabled: true
+  namespace: vss  
+  nodeSelector: 
+    kubernetes.io/hostname: dgx-b200-03
+  storageClassName: gpfs
+  workloadSpecs:
+    dummy: {}
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_HTTP_API_PORT
+        value: '9000'
+      - name: NIM_GRPC_API_PORT
+        value: '50051'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1

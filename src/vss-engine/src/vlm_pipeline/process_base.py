@@ -12,7 +12,6 @@
 """Base for VIA processes for decode / embedding / VLM etc."""
 
 import concurrent.futures
-import gc
 import multiprocessing
 import os
 import queue
@@ -173,10 +172,6 @@ class ViaProcessBase(mp_ctx.Process):
                     }
                 )
         torch.cuda.empty_cache()
-        # Force Garbage Collect
-        if os.environ.get("VSS_FORCE_GC"):
-            print("Force Garbage Collect in VIA Server")
-            gc.collect()
 
     def __process_int(self, **kwargs):
         """Process the next batch of inputs"""
@@ -257,10 +252,6 @@ class ViaProcessBase(mp_ctx.Process):
             max_workers=self._num_futures_threads
         )
         torch.cuda.empty_cache()
-        # Force Garbage Collect
-        if os.environ.get("VSS_FORCE_GC"):
-            print("Force Garbage Collect in VIA Server")
-            gc.collect()
         self._init_done_event.set()
 
         items = []
@@ -329,10 +320,6 @@ class ViaProcessBase(mp_ctx.Process):
         if not self._disabled:
             self._deinitialize()
             torch.cuda.empty_cache()
-            # Force Garbage Collect
-            if os.environ.get("VSS_FORCE_GC"):
-                print("Force Garbage Collect in VIA Server")
-                gc.collect()
         self._cmd_handler_thread.join()
 
     def enqueue_chunk(self, chunk, **kwargs):

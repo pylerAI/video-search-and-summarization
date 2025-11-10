@@ -146,13 +146,10 @@ class GPUMonitor:
                 for i in range(self.num_gpus):
                     handle = DEVICE_HANDLES[i]
                     utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
                     volatile_gpu_utilization = utilization.gpu
                     row[f"GPU{i}_Usage"] = volatile_gpu_utilization
-                    try:
-                        memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                        row[f"GPU{i}_MemUsage"] = memory.used / memory.total * 100
-                    except Exception:
-                        row[f"GPU{i}_MemUsage"] = 0
+                    row[f"GPU{i}_MemUsage"] = memory.used / memory.total * 100
                 writer.writerow(row)
                 second_id += 1
                 time.sleep(interval_in_seconds)

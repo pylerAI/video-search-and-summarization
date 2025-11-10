@@ -1,16 +1,16 @@
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: image-prepull
-  namespace: vss
-spec:
-  template:
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: image-prepull
+      namespace: vss
     spec:
-      containers:
-      - name: prepull
-        image: harbor.pyler.local/apps/dev/vss-engine:IMAGE_TAG
-        command: ["/bin/sh", "-c", "echo pulled"]
-      restartPolicy: Never
-      nodeSelector:
-        kubernetes.io/hostname: dgx-b200-08
-  backoffLimit: 0
+      template:
+        spec:
+          containers:
+          - name: prepull
+            image: harbor.pyler.local/apps/dev/vss-engine:IMAGE_TAG
+            command: ["/bin/sh", "-c", "echo pulled"]
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: dgx-b200-08
+      backoffLimit: 0
