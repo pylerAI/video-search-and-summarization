@@ -1535,9 +1535,6 @@ class ViaStreamHandler:
         req_info.chat_top_p = query.chat_top_p
         req_info.chat_temperature = query.chat_temperature
         req_info.chat_max_tokens = query.chat_max_tokens
-        req_info.notification_top_p = query.notification_top_p
-        req_info.notification_temperature = query.notification_temperature
-        req_info.notification_max_tokens = query.notification_max_tokens
 
         req_info.chunk_overlap_duration = query.chunk_overlap_duration
 
@@ -2424,13 +2421,13 @@ class ViaStreamHandler:
 
         # Update notification LLM tool parameters
         self._update_llm_tool_param(
-            ca_rag_config, "notification", "top_p", req_info.notification_top_p
+            ca_rag_config, "top_p"
         )
         self._update_llm_tool_param(
-            ca_rag_config, "notification", "temperature", req_info.notification_temperature
+            ca_rag_config, "temperature"
         )
         self._update_llm_tool_param(
-            ca_rag_config, "notification", "max_tokens", req_info.notification_max_tokens
+            ca_rag_config, "max_tokens"
         )
 
         self._update_db_tool_param(
