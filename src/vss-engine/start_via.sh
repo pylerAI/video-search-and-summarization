@@ -332,7 +332,7 @@ start_via_server() {
         $EXTRA_ARGS &
     check_via_process_status
 }
-
+#changing ot check
 start_processes() {
 
     sed -i 's/llm-nim-svc/llm-openai-svc/g' /opt/nvidia/via/guardrails_config/config.yml

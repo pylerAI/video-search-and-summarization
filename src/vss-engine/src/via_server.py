@@ -537,7 +537,7 @@ class SummarizationQuery(ViaBaseModel):
     )
     model: str = Field(
         description="Model to use for this query.",
-        examples=["VILA1.5-40B", "Qwen-Qwen2.5-VL-32B-Instruct"],
+        examples=["VILA1.5-40B", "Qwen-Qwen2.5-VL-32B-Instruct", "vila-1.5"],
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
