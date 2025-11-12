@@ -404,8 +404,7 @@ class ViaStreamHandler:
 
         self._lock = RLock()
         self._request_info_map: dict[str, RequestInfo] = {}
-        self._notification_llm_api_key = None
-        self._notification_llm_params = None
+
 
         self._start_time = time.time()
         self._metrics = ViaStreamHandler.Metrics()
