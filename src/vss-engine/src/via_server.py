@@ -26,7 +26,6 @@ import os
 import re
 import time
 import traceback
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Optional
 from uuid import UUID
@@ -60,7 +59,6 @@ from vss_api_models import (
     PATH_PATTERN,
     UUID_LENGTH,
     AddFileInfoResponse,
-    ChatCompletionQuery,
     ChatCompletionToolType,
     CompletionFinishReason,
     CompletionResponse,
@@ -148,15 +146,6 @@ class ViaServer:
                 {
                     "name": "Models",
                     "description": "List and describe the various models available in the API.",
-                },
-                {
-                    "name": "Recommended Config",
-                    "description": "Operations related to querying recommended"
-                    " VIA request parameters.",
-                },
-                {
-                    "name": "Review Alert",
-                    "description": "Operations related to reviewing external alerts.",
                 },
                 {
                     "name": "Summarization",
@@ -1336,185 +1325,6 @@ class ViaServer:
             except json.JSONDecodeError as e:
                 print(f"Error decoding JSON: {e}")
                 return None
-
-        @self._app.post(
-            f"{API_PREFIX}/chat/completions",
-            summary="VIA Chat or Q&A",
-            description="Run video interactive question and answer.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-                503: {
-                    "model": ViaError,
-                    "description": (
-                        "Server is busy processing another file / live-stream."
-                        " Client may try again in some time."
-                    ),
-                },
-            },
-            tags=["Summarization"],
-        )
-        async def qa(query: ChatCompletionQuery, request: Request) -> CompletionResponse:
-
-            videoIdListUUID = query.id_list
-            logger.debug(f"{videoIdListUUID}")
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
-            assetList = []
-
-            def json_to_string(input):
-                try:
-                    return json.dumps(input)
-                except TypeError:
-                    return input
-
-            if len(videoIdList) > 1:
-                for videoId in videoIdList:
-                    asset = self._asset_manager.get_asset(videoId)
-                    assetList.append(asset)
-                    if asset.media_type != "image":
-                        raise ViaException(
-                            "Multi-file Q&A: Only image files supported."
-                            f" {asset._filename} is a not an image",
-                            "BadParameters",
-                            400,
-                        )
-
-            videoId = videoIdList[0]  # Note: Other files processed only for multi-image qa() below
-            asset = self._asset_manager.get_asset(videoId)
-
-            logger.debug(f"Q&A; messages={query.messages}")
-
-            media_info_start = 0
-            media_info_end = 0
-
-            if query.media_info:
-                # Extract user specified start/end time filter.
-                # For files, it is in terms of "offset" - start/end time in seconds
-                # For live stream, it is in terms of "timetamp" - start/end NTP timestamp.
-                if query.media_info.type == "offset":
-                    media_info_start = query.media_info.start_offset
-                    media_info_end = query.media_info.end_offset
-                if query.media_info.type == "timetamp":
-                    media_info_start = query.media_info.start_timestamp
-                    media_info_end = query.media_info.end_timestamp
-
-            logger.info(
-                "Received QA query, id - %s (live-stream=%d), "
-                "chunk_duration=%d, chunk_overlap_duration=%d, "
-                "media-offset-type=%s, media-start-time=%r, "
-                "media-end-time=%r, modelParams=%s, summary_duration=%d, stream=%r",
-                ", ".join(videoIdList),
-                asset.is_live,
-                query.chunk_duration,
-                query.chunk_overlap_duration,
-                query.media_info and query.media_info.type,
-                media_info_start,
-                media_info_end,
-                json.dumps(
-                    {
-                        "max_tokens": query.max_tokens,
-                        "temperature": query.temperature,
-                        "top_p": query.top_p,
-                        "top_k": query.top_k,
-                    }
-                ),
-                query.summary_duration,
-                query.stream,
-            )
-
-            # Check if user has specified the model that is initialized
-            model_info = self._stream_handler.get_models_info()
-            if query.model != model_info.id:
-                raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
-
-            if query.api_type and query.api_type != model_info.api_type:
-                raise ViaException(
-                    f"api_type {query.api_type} not supported by model '{query.model}'",
-                    "BadParameters",
-                    400,
-                )
-
-            # For non-CA RAG usecase, only streaming output is supported
-            if self._stream_handler._ctx_mgr is None:
-                raise ViaException(
-                    "Chat functionality disabled",
-                    "BadParameters",
-                    400,
-                )
-
-            loop = asyncio.get_event_loop()
-            request_id = str(uuid.uuid4())
-
-            if len(videoIdList) == 1:
-                assetList = [asset]
-
-            # Measure chat completions latency
-            chat_start_time = time.time()
-
-            answer_resp = await loop.run_in_executor(
-                self._async_executor,
-                self._stream_handler.qa,
-                assetList,
-                str(query.messages[-1].content),
-                {},
-                media_info_start,
-                media_info_end,
-                query.highlight,
-            )
-
-            chat_end_time = time.time()
-            chat_latency = chat_end_time - chat_start_time
-
-            # Record the chat completions latency metrics
-            self._stream_handler._metrics.chat_completions_latency.observe(chat_latency)
-            self._stream_handler._metrics.chat_completions_latency_latest.set(chat_latency)
-
-            logger.info("Created query %s for id %s", request_id, videoId)
-            logger.info("Waiting for results of query %s", request_id)
-            logger.info("Chat completions latency: %.3f seconds", chat_latency)
-
-            logger.debug(f"Q&A answer:{answer_resp}")
-            if len(answer_resp) > 0 and answer_resp[0] == "{":
-                try:
-                    json_resp = json.loads(answer_resp)
-                    if json_resp.get("type") == "highlight":
-                        video_path = self._asset_manager.get_asset(videoId).path
-                        highlight_resp_with_path = adding_video_path(
-                            json_resp["highlightResponse"], video_path
-                        )
-                        json_resp["highlightResponse"] = json.loads(highlight_resp_with_path)
-                        answer_resp = json.dumps(json_resp)
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, proceed with original behavior
-                    pass
-            response = {
-                "id": str(request_id),
-                "model": model_info.id,
-                "created": int(0),
-                "object": "summarization.completion",
-                "media_info": {
-                    "type": "offset",
-                    "start_offset": media_info_start,
-                    "end_offset": media_info_end,
-                },
-                "choices": [
-                    {
-                        "finish_reason": CompletionFinishReason.STOP.value,
-                        "index": 0,
-                        "message": {
-                            "content": answer_resp,
-                            "role": "assistant",
-                        },
-                    }
-                ],
-                "usage": {
-                    "total_chunks_processed": 0,
-                    "query_processing_time": int(0),
-                },
-            }
-            return response
-
-        # ======================= Q&A API
 
     def _setup_exception_handlers(self):
         # Handle incorrect request schema (user error)
