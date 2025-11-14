@@ -10,8 +10,7 @@
 # its affiliates is strictly prohibited.
 ######################################################################################################
 
-from vlm_pipeline import VlmPipeline, VlmRequestParams, VlmChunkResponse, VlmModelType  # isort:skip
-import argparse
+from vlm_pipeline import VlmPipeline, VlmRequestParams, VlmChunkResponse  # isort:skip
 import concurrent.futures
 import copy
 import glob
@@ -36,7 +35,6 @@ import nvtx
 import prometheus_client as prom
 from asset_manager import Asset
 from chunk_info import ChunkInfo
-from cv_pipeline import CVPipeline
 from minio import Minio
 from otel_helper import create_historical_span, get_tracer, is_tracing_enabled
 from pyaml_env import parse_config
@@ -443,49 +441,7 @@ class ViaStreamHandler:
             # Create LLM Rails pool
             self._create_llm_rails_pool()
 
-        self._args.cv_pipeline_configs["gdino_engine"] = CVPipeline.get_gdino_engine()
-        self._args.cv_pipeline_configs["tracker_config"] = CVPipeline.get_tracker_config()
-        self._args.cv_pipeline_configs["inference_interval"] = CVPipeline.get_inference_interval()
-        logger.info(self._args.cv_pipeline_configs)
-
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
-
-        if not self._args.disable_cv_pipeline:
-            try:
-                self._cv_pipeline_args = argparse.Namespace()
-                if (
-                    os.environ.get("NUM_CV_CHUNKS_PER_GPU")
-                    and int(os.environ.get("NUM_CV_CHUNKS_PER_GPU")) > 0
-                ):
-                    setattr(
-                        self._cv_pipeline_args,
-                        "num_chunks",
-                        self._args.num_gpus * int(os.environ.get("NUM_CV_CHUNKS_PER_GPU")),
-                    )
-                else:
-                    setattr(self._cv_pipeline_args, "num_chunks", self._args.num_gpus * 2)
-                # setattr(
-                #     self._cv_pipeline_args,
-                #     "gdino_engine",
-                #     "/tmp/via/data/models/gdino-sam/swinb.fp16.engine",
-                # )
-                setattr(
-                    self._cv_pipeline_args,
-                    "tracker_config",
-                    os.environ.get(
-                        "CV_PIPELINE_TRACKER_CONFIG",
-                        "/opt/nvidia/via/config/default_tracker_config.yml",
-                    ),
-                )
-                setattr(
-                    self._cv_pipeline_args, "fusion_config", "config/MOT_EVAL_config_fusion.yml"
-                )
-                setattr(self._cv_pipeline_args, "inference_interval", 0)
-                self._cv_pipeline = CVPipeline(self._cv_pipeline_args)
-            except Exception as e:
-                raise (ValueError(f"CV pipeline setup failed. {str(e)}")) from e
-        else:
-            self._cv_pipeline = None
 
         if not args.disable_ca_rag:
             try:
@@ -667,32 +623,6 @@ class ViaStreamHandler:
         self._metrics.queries_pending.dec()
         req_info.status_event.set()
 
-    def _get_cv_metadata_for_chunk(self, json_file, frame_times):
-        cv_meta = []
-        if json_file:
-            with open(json_file, "r") as f:
-                data = json.load(f)
-
-            # Sort data by timestamp once
-            sorted_data = sorted(data, key=lambda x: x["timestamp"])
-            current_idx = 0
-
-            for frame_time in frame_times:
-                frame_time_ns = frame_time * 1e9  # Convert to nanoseconds
-                # Continue from last found position instead of searching from start
-                while (
-                    current_idx < len(sorted_data)
-                    and sorted_data[current_idx]["timestamp"] < 0.99 * frame_time_ns
-                ):
-                    current_idx += 1
-
-                if (
-                    current_idx < len(sorted_data)
-                    and sorted_data[current_idx]["timestamp"] <= 1.01 * frame_time_ns
-                ):
-                    cv_meta.append(sorted_data[current_idx])
-
-        return cv_meta
 
     @staticmethod
     def _remove_segmasks_from_cv_meta(cv_meta_):
@@ -995,10 +925,6 @@ class ViaStreamHandler:
             cur_time = time.time()
 
             self._finalize_stream_fps_tracking(req_info)
-
-            # if OSD pipeline was executed, create a video from all the cached frames
-            if req_info.enable_cv_pipeline:
-                self.osd_output_video_file = self._create_video_from_cached_frames(req_info)
 
             if req_info.status == RequestInfo.Status.FAILED:
                 self._vlm_pipeline.abort_chunks_done(req_info.assets[0].asset_id)
@@ -1363,15 +1289,6 @@ class ViaStreamHandler:
         if not query.prompt:
             query.prompt = self.default_caption_prompt
 
-        if query.enable_cv_metadata and self._args.vlm_model_type == VlmModelType.COSMOS_REASON1:
-            # Enable reasoning for Cosmos Reason1 to extract SoM metadata
-            if os.environ.get("VSS_FORCE_CR1_REASONING_FOR_CV_METADATA", "true").lower() in [
-                "true",
-                "1",
-            ]:
-                query.enable_reasoning = True
-                query.max_tokens = max(query.max_tokens, 1024)
-
         return self.query(
             assets=assets,
             query=query,
@@ -1545,48 +1462,9 @@ class ViaStreamHandler:
         # Add the request to the pending queue
         self._metrics.queries_pending.inc()
 
-        req_info.enable_cv_pipeline = query.enable_cv_metadata
         req_info.cv_metadata_json_file = pregenerated_cv_metadata_json_file
 
-        if self._cv_pipeline and req_info.enable_cv_pipeline:
-            print("Executing CV pipeline")
-            cv_pipeline_start_time = time.time()
-
-            def _on_cv_pipeline_done(json_fused_file, req_info):
-                cv_pipeline_end_time = time.time()
-                cv_pipeline_latency = cv_pipeline_end_time - cv_pipeline_start_time
-
-                # Record CV pipeline latency metrics
-                self._metrics.cv_pipeline_latency_latest.set(cv_pipeline_latency)
-
-                print(
-                    f"Finished processing CV pipeline for {req_info.file} \
-                        and output is in {json_fused_file}"
-                )
-                print(f"Time taken by cv pipeline in sec = {cv_pipeline_latency}")
-
-                # OTEL trace for cv pipeline
-                create_historical_span(
-                    "CV Pipeline",
-                    cv_pipeline_start_time,
-                    cv_pipeline_end_time,
-                    {"operation": "cv_pipeline"},
-                )
-
-                # Add the output json file to req_info
-                req_info.cv_metadata_json_file = json_fused_file
-                self._trigger_query(req_info, cv_pipeline_start_time)
-
-            self._cv_pipeline.process_cv_pipeline(
-                req_info.file,
-                lambda json_fused_file, req_info=req_info: _on_cv_pipeline_done(
-                    json_fused_file, req_info
-                ),
-                text_prompt=query.cv_pipeline_prompt,
-                output_file="",
-            )
-        else:
-            self._trigger_query(req_info, None)
+        self._trigger_query(req_info, None)
 
         return req_info.request_id
 

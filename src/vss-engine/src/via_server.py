@@ -625,8 +625,6 @@ class ViaServer:
                 "notification_top_p = %s, "
                 "summarization enabled = %s, "
                 "chat enabled = %s, "
-                "cv_pipeline_prompt = %s, "
-                "enable_cv_metadata = %d, "
                 "enable_chat_history = %d, "
                 "collection_name = %s, "
                 "custom_metadata = %s, "
@@ -667,8 +665,6 @@ class ViaServer:
                 query.notification_top_p,
                 query.summarize,
                 query.enable_chat,
-                query.cv_pipeline_prompt,
-                query.enable_cv_metadata,
                 query.enable_chat_history,
                 query.collection_name,
                 str(query.custom_metadata),
@@ -1016,8 +1012,6 @@ class ViaServer:
                 "stream=%r num_frames_per_chunk=%d "
                 "vlm_input_width = %d, "
                 "vlm_input_height = %d, "
-                "cv_pipeline_prompt = %s, "
-                "enable_cv_metadata = %d, "
                 "enable_reasoning = %d",
                 ", ".join(videoIdList),
                 asset.is_live,
@@ -1038,8 +1032,6 @@ class ViaServer:
                 query.num_frames_per_chunk,
                 query.vlm_input_width,
                 query.vlm_input_height,
-                query.cv_pipeline_prompt,
-                query.enable_cv_metadata,
                 query.enable_reasoning,
             )
 
@@ -1080,8 +1072,6 @@ class ViaServer:
                 "chunk_overlap_duration": query.chunk_overlap_duration,
                 "user": query.user,
                 "tools": query.tools,
-                "enable_cv_metadata": query.enable_cv_metadata,
-                "cv_pipeline_prompt": query.cv_pipeline_prompt,
                 "num_frames_per_chunk": query.num_frames_per_chunk,
                 "vlm_input_width": query.vlm_input_width,
                 "vlm_input_height": query.vlm_input_height,
