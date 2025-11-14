@@ -433,13 +433,6 @@ class ViaStreamHandler:
 
         self._LLMRailsPool = []
         self._rails_config = None
-        if not self._args.disable_guardrails:
-            # Load guardrails config from file
-            from nemoguardrails import RailsConfig
-
-            self._rails_config = RailsConfig.from_path(self._args.guardrails_config)
-            # Create LLM Rails pool
-            self._create_llm_rails_pool()
 
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
@@ -468,69 +461,6 @@ class ViaStreamHandler:
         self._via_health_eval = health_eval_value in ("true", "1")
 
         logger.info("Initialized VIA Stream Handler")
-
-    def _create_llm_rails_pool(self):
-        from nemoguardrails import LLMRails
-
-        with self._lock:
-            # Create LLM Rails pool only if the pool is empty
-            if len(self._LLMRailsPool) > 0:
-                return
-            # Create LLM Rails pool of size MAX_RAILS_INSTANCES with default as 64
-            max_rails_instances = int(os.environ.get("MAX_RAILS_INSTANCES", "") or 64)
-            max_rails_instances = min(max(max_rails_instances, 1), 256)
-            for i in range(max_rails_instances):
-                self._LLMRailsPool.append(LLMRails(self._rails_config))
-
-                if i == 0:
-                    try:
-                        response = self._LLMRailsPool[0].generate(
-                            messages=[{"role": "user", "content": "Hi"}]
-                        )
-                    except Exception as e:
-                        logger.error("Error in guardrails: %s", str(e))
-                        self.stop(True)
-                        raise Exception("Guardrails failed")
-                    if "an internal error has occurred" in response["content"]:
-                        self.stop(True)
-                        raise Exception("Guardrails failed")
-        logger.info("Loaded Guardrails")
-
-    def _check_rails(self, prompt: str):
-        if self._rails_config:
-            with TimeMeasure("Guardrails process"):
-                nvtx_guardrails_start = nvtx.start_range(message="Guardrails-", color="blue")
-                logger.info("Guardrails in progress")
-                rails = None
-                while rails is None:
-                    with self._lock:
-                        if len(self._LLMRailsPool) > 0:
-                            rails = self._LLMRailsPool.pop()
-                            break
-                    time.sleep(0.1)  # Unlock and sleep for 100ms before trying again
-                try:
-                    response = rails.generate(
-                        messages=[{"role": "user", "content": prompt.strip()}]
-                    )
-                except Exception as e:
-                    logger.error("Error in guardrails: %s", str(e))
-                    with self._lock:
-                        self._LLMRailsPool.append(rails)
-                    raise Exception("Guardrails failed")
-                # Return the rails to the pool
-                with self._lock:
-                    self._LLMRailsPool.append(rails)
-
-                nvtx.end_range(nvtx_guardrails_start)
-
-                if response["content"] != "lmm":
-                    if "an internal error has occurred" in response["content"]:
-                        logger.error("Guardrails failed")
-                        raise ViaException("An internal error has occurred")
-                    logger.info("Guardrails engaged")
-                    raise ViaException(response["content"], "", 400)
-
-                logger.info("Guardrails pass")
 
     def _create_ctx_mgr_pool(self, config):
         from vss_ctx_rag.context_manager import ContextManager
@@ -1194,14 +1124,6 @@ class ViaStreamHandler:
                         + request_infos[-1].request_id
                     )
 
-                # Run guardrails on the user supplied prompt
-                try:
-                    self._check_rails(messages)
-                except ViaException as ex:
-                    return ex.message
-                except Exception:
-                    return "Guardrails failed."
-
                 if highlight:
                     highlight_query = process_highlight_request(messages)
                     result = request_infos[-1]._ctx_mgr.call(
@@ -1347,10 +1269,6 @@ class ViaStreamHandler:
             raise ViaException(
                 "chunkOverlapDuration must be less than chunkDuration", "BadParameter", 400
             )
-
-        # Run guardrails on the user supplied prompt
-        if not skip_guardrails:
-            self._check_rails(query.prompt)
 
         vlm_generation_config = {}
         # Extract user specified llm output parameters
