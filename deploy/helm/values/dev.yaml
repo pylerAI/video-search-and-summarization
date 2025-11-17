@@ -13,7 +13,7 @@ global:
 vss:
   nodeSelector:
     kubernetes.io/hostname: dgx-b200-08
-  namespace: vss
+  namespace: vss-240
   storageClassName: gpfs
   applicationSpecs:
     vss-deployment:
@@ -25,7 +25,7 @@ vss:
           image:
             pullPolicy: IfNotPresent
             repository: harbor.pyler.local/apps/dev/vss-engine
-            tag: IMAGE_TAG
+            tag: 46d5778af40e4b608c7463cdf2aa5d2fd91a49c4
           env:
           - name: VLM_MODEL_TO_USE
             valueFrom:
@@ -51,47 +51,94 @@ vss:
             value: 'true'
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
             value: 'true'
+          - name: LLM_MODEL
+            value: openai/gpt-oss-120b
+          - name: DISABLE_GUARDRAILS
+            value: 'true'
           # multi-language support
           - name: RIVA_ASR_SERVER_URI
-            value: riva-multilang-service
+            value: riva-multilang-service.vss.svc.cluster.local
+          - name: ENABLE_VIA_HEALTH_EVAL
+            value: "true"
+          - name: VIA_CTX_RAG_ENABLE_OTEL
+            value: "true"
+          - name: VIA_CTX_RAG_EXPORTER
+            value: "otlp"
+          - name: VIA_CTX_RAG_OTEL_ENDPOINT
+            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
+          - name: VIA_ENABLE_OTEL
+            value: "true"
+          - name: VIA_OTEL_EXPORTER
+            value: "otlp"
+          - name: VIA_OTEL_ENDPOINT
+            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
           startupProbe:
             failureThreshold: 360
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
+          waiting for milvus; sleep 2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-milvus-up
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
+          2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-neo4j-up
+      - args:
+        - "while ! curl -s -f -o /dev/null http://llm-openai-svc.vss.svc.cluster.local:8000/v1/health/live;\
+          \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
+        command:
+        - sh
+        - -c
+        image: curlimages/curl:latest
+        name: check-llm-up
 
   configs:
     ca_rag_config.yaml:
       tools:
         chat_llm:
           params:
-            base_url: http://llm-nim-svc:8000/v1
+            base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
         notification_llm:
           params:
-            base_url: http://llm-nim-svc:8000/v1
+            base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
         nvidia_embedding:
           params:
-            base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+            base_url: http://nemo-embedding-embedding-deployment-embedding-service.vss.svc.cluster.local:8000/v1
         nvidia_reranker:
           params:
-            base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
+            base_url: http://nemo-rerank-ranking-deployment-ranking-service.vss.svc.cluster.local:8000/v1
         summarization_llm:
           params:
-            base_url: http://llm-nim-svc:8000/v1
+            base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
     guardrails_config.yaml:
       models:
       - engine: nim
-        model: meta/llama-3.1-70b-instruct
+        model: openai/gpt-oss-120b
         parameters:
-          base_url: http://llm-nim-svc:8000/v1
+          base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
         type: main
       - engine: nim
         model: nvidia/llama-3.2-nv-embedqa-1b-v2
         parameters:
-          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service.vss.svc.cluster.local:8000/v1
         type: embeddings
   egress:
     # multi-language support
     riva-api:
-      address: riva-multilang-service
+      address: riva-multilang-service.vss.svc.cluster.local
       port: 9000
+    llm-openai-api:
+      address: llm-openai-svc.vss.svc.cluster.local
+      port: 8000
+
   resources:
     limits:
       nvidia.com/gpu: 2
@@ -179,13 +226,13 @@ vss:
 etcd:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss
+  namespace: vss-240
   storageClassName: gpfs
 
 minio:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss  
+  namespace: vss-240  
   storageClassName: gpfs
   applicationSpecs:
     minio-deployment:
@@ -228,13 +275,13 @@ minio:
 milvus:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss  
+  namespace: vss-240  
   storageClassName: gpfs
 
 neo4j:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss  
+  namespace: vss-240  
   storageClassName: gpfs
 
   extraPodVolumes:
@@ -261,102 +308,105 @@ neo4j:
     readOnly: true
 
 nim-llm:
-  profile: f17543bf1ee65e4a5c485385016927efe49cbc068a6021573d83eacb32537f76
-  nodeSelector: 
-    pyler.io/group: dgx
-  namespace: vss 
-  storageClassName: gpfs
-  persistence:
-    storageClass: gpfs
-  image:
-    repository: nvcr.io/nim/meta/llama-3.1-70b-instruct
-    tag: 1.10.1
-  model:
-    name: meta/llama-3.1-70b-instruct
-    ngcAPISecret: infisical-managed-secrets
-    tag: 1.10.1
-  resources:
-    limits:
-      nvidia.com/gpu: 4
-  startupProbe:
-    failureThreshold: 360
+  enabled: false
+  # profile: f17543bf1ee65e4a5c485385016927efe49cbc068a6021573d83eacb32537f76
+  # nodeSelector: 
+  #   pyler.io/group: dgx
+  # namespace: vss 
+  # storageClassName: gpfs
+  # persistence:
+  #   storageClass: gpfs
+  # image:
+  #   repository: nvcr.io/nim/openai/gpt-oss-120b
+  #   tag: 1.10.1
+  # model:
+  #   name: openai/gpt-oss-120b
+  #   ngcAPISecret: infisical-managed-secrets
+  #   tag: 1.10.1
+  # resources:
+  #   limits:
+  #     nvidia.com/gpu: 4
+  # startupProbe:
+  #   failureThreshold: 360
 
 
 nemo-embedding:
-  nodeSelector: 
-    pyler.io/group: dgx
-  namespace: vss  
-  storageClassName: gpfs
-  applicationSpecs:
-    embedding-deployment:
-      containers:
-        embedding-container:
-          livenessProbe:
-            initialDelaySeconds: 300
-  workloadSpecs:
-    wl-env:
-      wl_env:
-      - name: NGC_API_KEY
-        valueFrom:
-          secretKeyRef:
-            key: NGC_API_KEY
-            name: infisical-managed-secrets
-      - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
-        value: '1'
-      - name: NIM_CACHE_PATH
-        value: /mnt/nim-cache
-      wl_units: 1
-  resources:
-    limits:
-      nvidia.com/gpu: 1
+  enabled: false
+  # nodeSelector: 
+  #   pyler.io/group: dgx
+  # namespace: vss  
+  # storageClassName: gpfs
+  # applicationSpecs:
+  #   embedding-deployment:
+  #     containers:
+  #       embedding-container:
+  #         livenessProbe:
+  #           initialDelaySeconds: 300
+  # workloadSpecs:
+  #   wl-env:
+  #     wl_env:
+  #     - name: NGC_API_KEY
+  #       valueFrom:
+  #         secretKeyRef:
+  #           key: NGC_API_KEY
+  #           name: infisical-managed-secrets
+  #     - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
+  #       value: '1'
+  #     - name: NIM_CACHE_PATH
+  #       value: /mnt/nim-cache
+  #     wl_units: 1
+  # resources:
+  #   limits:
+  #     nvidia.com/gpu: 1
 
 nemo-rerank:
-  namespace: vss  
-  nodeSelector: 
-    pyler.io/group: dgx
-  storageClassName: gpfs
-  workloadSpecs:
-    wl-env:
-      wl_env:
-      - name: NGC_API_KEY
-        valueFrom:
-          secretKeyRef:
-            key: NGC_API_KEY
-            name: infisical-managed-secrets
-      - name: NIM_CACHE_PATH
-        value: /mnt/nim-cache
-      wl_units: 1
-  resources:
-    limits:
-      nvidia.com/gpu: 1
+  enabled: false
+  # namespace: vss  
+  # nodeSelector: 
+  #   pyler.io/group: dgx
+  # storageClassName: gpfs
+  # workloadSpecs:
+  #   wl-env:
+  #     wl_env:
+  #     - name: NGC_API_KEY
+  #       valueFrom:
+  #         secretKeyRef:
+  #           key: NGC_API_KEY
+  #           name: infisical-managed-secrets
+  #     - name: NIM_CACHE_PATH
+  #       value: /mnt/nim-cache
+  #     wl_units: 1
+  # resources:
+  #   limits:
+  #     nvidia.com/gpu: 1
 
 riva:
-  enabled: true
-  namespace: vss  
-  nodeSelector: 
-    pyler.io/group: dgx
-  storageClassName: gpfs
-  workloadSpecs:
-    dummy: {}
-    wl-env:
-      wl_env:
-      - name: NGC_API_KEY
-        valueFrom:
-          secretKeyRef:
-            key: NGC_API_KEY
-            name: infisical-managed-secrets
-      - name: NIM_HTTP_API_PORT
-        value: '9000'
-      - name: NIM_GRPC_API_PORT
-        value: '50051'
-      - name: NIM_CACHE_PATH
-        value: /mnt/nim-cache
-      wl_units: 1
+  enabled: false
+  # namespace: vss  
+  # nodeSelector: 
+  #   pyler.io/group: dgx
+  # storageClassName: gpfs
+  # workloadSpecs:
+  #   dummy: {}
+  #   wl-env:
+  #     wl_env:
+  #     - name: NGC_API_KEY
+  #       valueFrom:
+  #         secretKeyRef:
+  #           key: NGC_API_KEY
+  #           name: infisical-managed-secrets
+  #     - name: NIM_HTTP_API_PORT
+  #       value: '9000'
+  #     - name: NIM_GRPC_API_PORT
+  #       value: '50051'
+  #     - name: NIM_CACHE_PATH
+  #       value: /mnt/nim-cache
+  #     wl_units: 1
 
 arango-db:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss  
+  namespace: vss-240  
   storageClassName: gpfs
   applicationSpecs:
     arango-db-deployment:
