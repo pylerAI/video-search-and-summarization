@@ -1,12 +1,12 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: vss-web
-  namespace: vss
+  name: vss-web-240
+  namespace: vss-240
 spec:
   ingressClassName: cilium
   rules:
-  - host: vss-web.idc.local
+  - host: vss-web-240.idc.local
     http:
       paths:
       - backend:
@@ -20,12 +20,12 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: vss-api
-  namespace: vss
+  name: vss-api-240
+  namespace: vss-240
 spec:
   ingressClassName: cilium
   rules:
-  - host: vss-api.idc.local
+  - host: vss-api-240.idc.local
     http:
       paths:
       - backend:
