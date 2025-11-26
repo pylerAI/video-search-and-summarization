@@ -24,12 +24,12 @@ jobs:
 
       - name: Create Simple Dockerfile
         run: |
-          sleep infinity
-          # cat > /tmp/Dockerfile.test << 'EOF'
-          # FROM alpine:latest
-          # RUN echo "Test image built at $(date)" > /test.txt
-          # CMD ["cat", "/test.txt"]
-          # EOF
+          # sleep infinity
+          cat > /tmp/Dockerfile.test << 'EOF'
+          FROM alpine:latest
+          RUN echo "Test image built at $(date)" > /test.txt
+          CMD ["cat", "/test.txt"]
+          EOF
 
       - name: Build & Push Simple Test Image
         uses: docker/build-push-action@v6
