@@ -1,0 +1,45 @@
+name: Test Build and Push to Harbor
+
+on:
+  push:
+    branches:
+      - test/builder-test
+
+jobs:
+  test-build-push:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: harbor.pyler.local
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Create Simple Dockerfile
+        run: |
+          cat > /tmp/Dockerfile.test << 'EOF'
+          FROM alpine:latest
+          RUN echo "Test image built at $(date)" > /test.txt
+          CMD ["cat", "/test.txt"]
+          EOF
+
+      - name: Build & Push Simple Test Image
+        uses: docker/build-push-action@v6
+        with:
+          context: /tmp
+          push: true
+          tags: harbor.pyler.local/apps/test/simple-test:test-${{ github.sha }}
+          file: /tmp/Dockerfile.test
+
+      - name: Verify Push
+        run: |
+          echo "✅ 이미지 빌드 및 푸시 완료!"
+          echo "이미지 태그: harbor.pyler.local/apps/simple-test:test-${{ github.sha }}"
+
