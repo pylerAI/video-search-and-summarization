@@ -1046,7 +1046,15 @@ class ViaStreamHandler:
                         req_matches = False
                         break
                 if req_matches:
-                    if request_info.summarize:
+                    if request_info.enable_chat:
+                        request_info._ctx_mgr.reset(
+                            {
+                                "summarization": {"uuid": request_info.stream_id},
+                                "retriever_function": {"uuid": request_info.stream_id},
+                                "ingestion_function": {"uuid": request_info.stream_id},
+                            }
+                        )
+                    elif request_info.summarize:
                         request_info._ctx_mgr.reset(
                             {
                                 "summarization": {"uuid": request_info.stream_id},
@@ -1336,6 +1344,21 @@ class ViaStreamHandler:
                 logger.error("Query failed for %s - %s", req_info.request_id, str(ex))
                 return req_info.request_id
 
+            if (
+                self.first_init
+                and req_info.enable_chat
+                and os.environ.get("VSS_DISABLE_DB_RESET_ON_INIT", "false").lower()
+                not in ["true", "1"]
+            ):
+                self.first_init = False
+                req_info._ctx_mgr.reset(
+                    {
+                        "summarization": {"erase_db": True},
+                        "retriever_function": {},
+                        "ingestion_function": {"erase_db": True},
+                    }
+                )
+
         # Lock the asset(s) so that it cannot be deleted while it is being used.
         for asset in req_info.assets:
             asset.lock()
@@ -1569,8 +1592,22 @@ class ViaStreamHandler:
             }
 
         for ctx_mgr, req_info in ctx_mgrs_to_be_removed:
-            
-            if req_info.summarize:
+            if req_info.enable_chat:
+                logger.info(
+                    f"Resetting context manager {ctx_mgr._process_index}"
+                    " for ingestion, retrieval and summarization"
+                )
+                ctx_mgr.reset(
+                    {
+                        "summarization": {"uuid": req_info.stream_id},
+                        "retriever_function": {"uuid": req_info.stream_id},
+                        "ingestion_function": {
+                            "uuid": req_info.stream_id,
+                            "delete_external_collection": req_info.delete_external_collection,
+                        },
+                    }
+                )
+            elif req_info.summarize:
                 logger.info(
                     f"Resetting context manager {ctx_mgr._process_index}" " for summarization"
                 )
@@ -1784,23 +1821,53 @@ class ViaStreamHandler:
                                 )
 
                         if req_info.summarize:
-                            with TimeMeasure("Context Manager Summarize/call - summarize"):
-                                agg_response = req_info._ctx_mgr.call(
-                                    {
-                                        "summarization": {
-                                            "start_index": (
-                                                2 * chunk_responses[0].chunk.chunkIdx
-                                                if req_info.enable_audio
-                                                else chunk_responses[0].chunk.chunkIdx
-                                            ),
-                                            "end_index": (
-                                                2 * chunk_responses[-1].chunk.chunkIdx + 1
-                                                if req_info.enable_audio
-                                                else chunk_responses[-1].chunk.chunkIdx
-                                            ),
+                            if req_info.enable_chat:
+                                with TimeMeasure(
+                                    "Context Manager Summarize/call - summarize_and_ingest"
+                                ):
+                                    logger.debug(
+                                        f"Summarizing and ingesting chunk"
+                                        f" {chunk_responses[0].chunk.chunkIdx}"
+                                        f" to {chunk_responses[-1].chunk.chunkIdx}"
+                                    )
+                                    agg_response = req_info._ctx_mgr.call(
+                                        {
+                                            "summarization": {
+                                                "start_index": (
+                                                    2 * chunk_responses[0].chunk.chunkIdx
+                                                    if req_info.enable_audio
+                                                    else chunk_responses[0].chunk.chunkIdx
+                                                ),
+                                                "end_index": (
+                                                    2 * chunk_responses[-1].chunk.chunkIdx + 1
+                                                    if req_info.enable_audio
+                                                    else chunk_responses[-1].chunk.chunkIdx
+                                                ),
+                                            },
+                                            "ingestion_function": {
+                                                "uuid": req_info.stream_id,
+                                                "camera_id": req_info.camera_id,
+                                            },
                                         }
-                                    }
-                                )
+                                    )
+                            else:
+                                with TimeMeasure("Context Manager Summarize/call - summarize"):
+                                    agg_response = req_info._ctx_mgr.call(
+                                        {
+                                            "summarization": {
+                                                "start_index": (
+                                                    2 * chunk_responses[0].chunk.chunkIdx
+                                                    if req_info.enable_audio
+                                                    else chunk_responses[0].chunk.chunkIdx
+                                                ),
+                                                "end_index": (
+                                                    2 * chunk_responses[-1].chunk.chunkIdx + 1
+                                                    if req_info.enable_audio
+                                                    else chunk_responses[-1].chunk.chunkIdx
+                                                ),
+                                            }
+                                        }
+                                    )
 
                             if "error" in agg_response and agg_response["error"]:
                                 logger.error(
@@ -1823,6 +1890,16 @@ class ViaStreamHandler:
                                     f.write("Chunk_ID,Answer\n")
                                     summ = str(agg_response).replace("\n", "  ")
                                     f.write(f'{0},"{summ}"\n')
+                        elif req_info.enable_chat:
+                            req_info._ctx_mgr.call(
+                                {
+                                    "ingestion_function": {
+                                        "uuid": req_info.stream_id,
+                                        "camera_id": req_info.camera_id,
+                                    },
+                                }
+                            )
+                            agg_response = "Media processed"
                         else:
                             agg_response = "Media processed"
                 except Exception as ex:
@@ -2017,18 +2094,18 @@ class ViaStreamHandler:
 
         # Get the tool that this function references for LLM operations
         functions = ca_rag_config.get("functions", {})
-        llm_tool_name = functions.get(function_name, {}).get("tools", {}).get("llm", "nvidia_llm")
+        # llm_tool_name = functions.get(function_name, {}).get("tools", {}).get("llm", "nvidia_llm")
 
         # Ensure tools and params sections exist
         if "tools" not in ca_rag_config:
             ca_rag_config["tools"] = {}
-        if llm_tool_name not in ca_rag_config["tools"]:
-            ca_rag_config["tools"][llm_tool_name] = {"params": {}}
-        elif "params" not in ca_rag_config["tools"][llm_tool_name]:
-            ca_rag_config["tools"][llm_tool_name]["params"] = {}
+        # if llm_tool_name not in ca_rag_config["tools"]:
+        #     ca_rag_config["tools"][llm_tool_name] = {"params": {}}
+        # elif "params" not in ca_rag_config["tools"][llm_tool_name]:
+        #     ca_rag_config["tools"][llm_tool_name]["params"] = {}
 
         # Set the parameter
-        ca_rag_config["tools"][llm_tool_name]["params"][param_name] = param_value
+        # ca_rag_config["tools"][llm_tool_name]["params"][param_name] = param_value
 
     def update_ca_rag_config(self, req_info: RequestInfo):
         """
@@ -2102,22 +2179,50 @@ class ViaStreamHandler:
         else:
             if "summarization" in ca_rag_config["context_manager"]["functions"]:
                 ca_rag_config["context_manager"]["functions"].remove("summarization")
-        
-        if "retriever_function" in ca_rag_config["context_manager"]["functions"]:
-            ca_rag_config["context_manager"]["functions"].remove("retriever_function")
-        if "ingestion_function" in ca_rag_config["context_manager"]["functions"]:
-            ca_rag_config["context_manager"]["functions"].remove("ingestion_function")
 
-        # Update notification LLM tool parameters
-        self._update_llm_tool_param(
-            ca_rag_config, "top_p"
-        )
-        self._update_llm_tool_param(
-            ca_rag_config, "temperature"
-        )
-        self._update_llm_tool_param(
-            ca_rag_config, "max_tokens"
-        )
+        # Configure chat functionality
+        if req_info.enable_chat:
+            # Update LLM tool parameters for chat functions
+            self._update_llm_tool_param(
+                ca_rag_config, "retriever_function", "top_p", req_info.chat_top_p
+            )
+            self._update_llm_tool_param(
+                ca_rag_config, "retriever_function", "temperature", req_info.chat_temperature
+            )
+            self._update_llm_tool_param(
+                ca_rag_config, "retriever_function", "max_tokens", req_info.chat_max_tokens
+            )
+            self._update_llm_tool_param(
+                ca_rag_config, "ingestion_function", "top_p", req_info.chat_top_p
+            )
+            self._update_llm_tool_param(
+                ca_rag_config, "ingestion_function", "temperature", req_info.chat_temperature
+            )
+            self._update_llm_tool_param(
+                ca_rag_config, "ingestion_function", "max_tokens", req_info.chat_max_tokens
+            )
+
+            # Configure chat history
+            logger.info(f"enable_chat_history | STREAM_HANDLER: {req_info.enable_chat_history}")
+            ca_rag_config["functions"]["retriever_function"]["params"][
+                "chat_history"
+            ] = req_info.enable_chat_history
+        else:
+            if "retriever_function" in ca_rag_config["context_manager"]["functions"]:
+                ca_rag_config["context_manager"]["functions"].remove("retriever_function")
+            if "ingestion_function" in ca_rag_config["context_manager"]["functions"]:
+                ca_rag_config["context_manager"]["functions"].remove("ingestion_function")
+
+        # #Update notification LLM tool parameters
+        # self._update_llm_tool_param(
+        #     ca_rag_config, "top_p"
+        # )
+        # self._update_llm_tool_param(
+        #     ca_rag_config, "temperature"
+        # )
+        # self._update_llm_tool_param(
+        #     ca_rag_config, "max_tokens"
+        # )
 
         self._update_db_tool_param(
             ca_rag_config,
