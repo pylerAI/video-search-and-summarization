@@ -8,5 +8,5 @@ metadata:
 data:
   VLM_MODEL_TO_USE: "openai-compat"
   OPENAI_API_KEY: "fake_key"
-  VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-40B"
-  VIA_VLM_ENDPOINT: "http://vila-server-service:8000/v1"
+  VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "openai/gpt-oss-120b"
+  VIA_VLM_ENDPOINT: "http://llm-openai-svc:8000/v1"

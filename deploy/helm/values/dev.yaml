@@ -3,7 +3,7 @@ global:
 
 vss:
   nodeSelector: 
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
   # securityContext: {}
@@ -45,6 +45,8 @@ vss:
           #   value: ngc:nim/nvidia/vila-1.5-40b:vila-yi-34b-siglip-stage3_1003_video_v8
           - name: ENABLE_AUDIO
             value: 'true'
+          - name: RIVA_ASR_SERVER_URI
+            value: riva-multilang-service.vss.svc.cluster.local
           - name: ENABLE_RIVA_SERVER_READINESS_CHECK
             value: 'true'
           # CV Pipeline
@@ -60,6 +62,32 @@ vss:
           #   value: "DEBUG"
           startupProbe:
             failureThreshold: 360
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
+          waiting for milvus; sleep 2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-milvus-up
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
+          2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-neo4j-up
+      - args:
+        - "while ! curl -s -f -o /dev/null http://llm-openai-svc.vss.svc.cluster.local:8000/v1/health/live;\
+          \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
+        command:
+        - sh
+        - -c
+        image: curlimages/curl:latest
+        name: check-llm-up
+
   configs:
     ca_rag_config.yaml:
       chat:
@@ -92,7 +120,14 @@ vss:
         parameters:
           base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
-  # USE EXTERNAL VLM - GPU 리소스 할당 비활성화
+  egress:
+    # multi-language support
+    riva-api:
+      address: riva-multilang-service.vss.svc.cluster.local
+      port: 9000
+    llm-openai-api:
+      address: llm-openai-svc.vss.svc.cluster.local
+      port: 8000
   resources:
     requests:
       nvidia.com/gpu: 1
@@ -243,24 +278,24 @@ nemo-rerank:
       nvidia.com/gpu: 1
 
 riva:
-  enabled: true
-  namespace: vss  
-  nodeSelector: 
-    pyler.io/group: dgx
-  storageClassName: gpfs
-  workloadSpecs:
-    dummy: {}
-    wl-env:
-      wl_env:
-      - name: NGC_API_KEY
-        valueFrom:
-          secretKeyRef:
-            key: NGC_API_KEY
-            name: infisical-managed-secrets
-      - name: NIM_HTTP_API_PORT
-        value: '9000'
-      - name: NIM_GRPC_API_PORT
-        value: '50051'
-      - name: NIM_CACHE_PATH
-        value: /mnt/nim-cache
-      wl_units: 1
+  enabled: false
+  # namespace: vss  
+  # nodeSelector: 
+  #   pyler.io/group: dgx
+  # storageClassName: gpfs
+  # workloadSpecs:
+  #   dummy: {}
+  #   wl-env:
+  #     wl_env:
+  #     - name: NGC_API_KEY
+  #       valueFrom:
+  #         secretKeyRef:
+  #           key: NGC_API_KEY
+  #           name: infisical-managed-secrets
+  #     - name: NIM_HTTP_API_PORT
+  #       value: '9000'
+  #     - name: NIM_GRPC_API_PORT
+  #       value: '50051'
+  #     - name: NIM_CACHE_PATH
+  #       value: /mnt/nim-cache
+  #     wl_units: 1

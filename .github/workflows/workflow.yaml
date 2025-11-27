@@ -3,7 +3,7 @@ name: VSS Deploy
 on:
   push:
     branches:
-      - develop
+      - develop-2.3.1
     paths-ignore:
       - 'deploy/k8s/vlm/Qwen/model-config.yaml'
       - 'deploy/k8s/vlm/VILA/model-config.yaml'
@@ -82,6 +82,7 @@ jobs:
           registry: ${{ vars.HARBOR_REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
+          insecure: true
 
       - name: Build & Push VSS Engine Image
         uses: docker/build-push-action@v6
@@ -93,6 +94,7 @@ jobs:
           build-args: |
             BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.3.1
           ssh: default=${{ env.SSH_AUTH_SOCK }}
+          insecure: true
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
@@ -110,27 +112,27 @@ jobs:
           find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           kubectl apply -f deploy/k8s/${{ env.PROJECT_ENV }} --recursive
 
-      - name: Wait for image pull job to complete (up to 20min)
-        run: |
-          for i in {1..80}; do
-            STATUS=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
-            FAILED=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
-            if [ "$STATUS" == "True" ]; then
-              echo "Job completed successfully."
-              exit 0
-            elif [ "$FAILED" == "True" ]; then
-              echo "Job failed!"
-              kubectl describe job image-prepull -n vss
-              exit 1
-            fi
-            echo "Waiting for job to complete..."
-            sleep 15
-          done
-          echo "Timeout reached. Job did not complete in time."
-          exit 1
+      # - name: Wait for image pull job to complete (up to 20min)
+      #   run: |
+      #     for i in {1..80}; do
+      #       STATUS=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
+      #       FAILED=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
+      #       if [ "$STATUS" == "True" ]; then
+      #         echo "Job completed successfully."
+      #         exit 0
+      #       elif [ "$FAILED" == "True" ]; then
+      #         echo "Job failed!"
+      #         kubectl describe job image-prepull -n vss
+      #         exit 1
+      #       fi
+      #       echo "Waiting for job to complete..."
+      #       sleep 15
+      #     done
+      #     echo "Timeout reached. Job did not complete in time."
+      #     exit 1
 
-      - name: Clean up prepull job
-        run: kubectl delete job image-prepull -n vss --ignore-not-found
+      # - name: Clean up prepull job
+      #   run: kubectl delete job image-prepull -n vss --ignore-not-found
 
       - name: Deploy vss app to Onprem
         run: |
@@ -139,3 +141,11 @@ jobs:
           find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.3.1.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
           kubectl scale deployment vss-vss-deployment -n vss --replicas=1
+          # llm server scale down (not use)
+          kubectl scale statefulset vss -n vss --replicas=0
+
+      - name: Patch schedulerName for deployments
+        run: |
+          kubectl patch deployment nemo-embedding-embedding-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment nemo-rerank-ranking-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment vss-vss-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'

@@ -1,21 +1,38 @@
-nim-llm:
-  nodeSelector: 
-    pyler.io/group: dgx
-  namespace: vss 
-  storageClassName: gpfs
-  persistence:
-    storageClass: gpfs
-  image:
-    repository: nvcr.io/nim/openai/gpt-oss-120b
-    tag: latest
-  model:
-    name: openai/gpt-oss-120b
-    ngcAPISecret: infisical-managed-secrets
-  resources:
-    limits:
-      nvidia.com/gpu: 4  
+global:
+  ngcImagePullSecretName: ngc-docker-reg-secret
 
-  service:
-    name: llm-openai-svc
-    type: ClusterIP
-    openaiPort: 8000
+# nim-llm:
+nodeSelector: 
+  pyler.io/group: dgx
+namespace: vss 
+storageClassName: gpfs
+persistence:
+  storageClass: gpfs
+image:
+  repository: nvcr.io/nim/openai/gpt-oss-120b
+  tag: 1.12.4
+model:
+  name: openai/gpt-oss-120b
+  ngcAPISecret: infisical-managed-secrets
+resources:
+  limits:
+    nvidia.com/gpu: 8
+
+livenessProbe:
+  enabled: true
+  method: http
+  path: /v1/health/ready
+  initialDelaySeconds: 600  # 10분 후부터 체크
+  timeoutSeconds: 1
+  periodSeconds: 10
+  successThreshold: 1
+  failureThreshold: 6
+
+service:
+  name: llm-openai-svc
+  type: ClusterIP
+  openaiPort: 8000
+
+persistence:
+  enabled: true
+  existingClaim: model-store-vss-openai-

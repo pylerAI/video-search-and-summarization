@@ -52,6 +52,6 @@ spec:
           medium: Memory
           sizeLimit: 16Gi
         name: shm-volume
-
+      schedulerName: bin-packing-scheduler
       nodeSelector:
         pyler.io/group: dgx
