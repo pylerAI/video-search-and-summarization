@@ -29,9 +29,8 @@ import nvtx
 import riva.client
 import torch
 import yaml
-from grpc._channel import _MultiThreadedRendezvous
-
 from chunk_info import ChunkInfo
+from grpc._channel import _MultiThreadedRendezvous
 from models.custom.custom_model import CustomModelContext, CustomModuleLoader
 from via_logger import LOG_STATUS_LEVEL, TimeMeasure, logger
 
@@ -114,8 +113,6 @@ class DecoderProcess(ViaProcessBase):
 
     def _initialize(self):
         from .video_file_frame_getter import DefaultFrameSelector, VideoFileFrameGetter
-
-        self._live_stream_handle_info: dict[str, dict] = {}
 
         self._nfrms = self._num_frames_per_chunk
         self._image_mean = None
@@ -387,132 +384,6 @@ class DecoderProcess(ViaProcessBase):
 
     def _handle_command(self, command, **kwargs):
         logger.debug(f"command is {command}")
-        if command == "start-live-stream":
-            logger.debug("start-live-stream")
-            self._thread_pool.submit(self._live_stream, **kwargs)
-            logger.debug("start-live-stream")
-        if command == "stop-live-stream":
-            live_stream_id = kwargs["live_stream_id"]
-            logger.debug(f"Stop live stream - {live_stream_id} checking")
-            if live_stream_id in self._live_stream_handle_info:
-                logger.debug(f"Stop live stream - {live_stream_id} found")
-                fgetter = self._live_stream_handle_info[live_stream_id]["frame_getter"]
-                self._thread_pool.submit(fgetter.stop_stream)
-            else:
-                logger.error(f"Stop live stream - {live_stream_id} not found")
-
-    def _live_stream(
-        self,
-        live_stream_id: str,
-        live_stream_url: str,
-        username: str,
-        password: str,
-        chunk_size: int,
-        num_frames_per_chunk: int,
-        vlm_input_width: int,
-        vlm_input_height: int,
-        enable_audio: bool,
-        enable_cv_pipeline: bool,
-        cv_pipeline_text_prompt: str,
-        **kwargs,
-    ):
-        from .video_file_frame_getter import DefaultFrameSelector, VideoFileFrameGetter
-
-        logger.info(f"Starting live stream {live_stream_id}")
-        if num_frames_per_chunk:
-            frame_selector = DefaultFrameSelector(num_frames_per_chunk)
-        else:
-            frame_selector = DefaultFrameSelector(self._nfrms)
-
-        fgetter = VideoFileFrameGetter(
-            frame_selector=frame_selector,
-            frame_width=self._width,
-            frame_height=self._height,
-            gpu_id=0,
-            do_preprocess=self._do_preprocess,
-            image_mean=self._image_mean,
-            rescale_factor=self._rescale_factor,
-            image_std=self._image_std,
-            crop_height=self._crop_height,
-            crop_width=self._crop_width,
-            shortest_edge=self._shortest_edge,
-            image_aspect_ratio=self._image_aspect_ratio,
-            enable_jpeg_output=self._enable_jpeg_tensors,
-            data_type_int8=self._data_type_int8,
-            audio_support=self._enable_audio,
-            cv_pipeline_configs=self._cv_pipeline_configs,
-        )
-        if vlm_input_width or vlm_input_height:
-            fgetter._set_frame_resolution(vlm_input_width, vlm_input_height)
-
-        self._live_stream_handle_info[live_stream_id] = {"frame_getter": fgetter, "num_chunks": 0}
-
-        def on_chunk_decoded(
-            chunk: ChunkInfo, frames, frame_times, transcripts, error, live_stream_id, **kwargs
-        ):
-            frame_times = [float("%.2f" % frame_ele) for frame_ele in frame_times]
-            chunk.streamId = live_stream_id
-
-            asr_output = ""
-            for asr_transcript in transcripts:
-                asr_output += asr_transcript["transcript"] + " "
-            transcript = asr_output if len(asr_output) != 0 else None
-
-            if error is not None:
-                error_msg = "Decode error: " + error
-                logger.error(f"Error decoding chunk {chunk}: {error}")
-            else:
-                error_msg = None
-                logger.log(
-                    LOG_STATUS_LEVEL, "Decoded new chunk (%s), frames=%d", chunk, len(frames)
-                )
-
-            if len(frames) >= self._minframes:
-                self._handle_result(
-                    {
-                        "chunk": chunk,
-                        "frames": frames,
-                        "frame_times": frame_times,
-                        "audio_transcript": transcript,
-                        "error": error_msg,
-                        "is_live_stream": True,
-                        **kwargs,
-                    },
-                    chunk=chunk,
-                    **kwargs,
-                )
-                self._live_stream_handle_info[live_stream_id]["num_chunks"] += 1
-
-        logger.debug(f"Pipeline for live stream starting up: {live_stream_id}")
-        fgetter.stream(
-            live_stream_url=live_stream_url,
-            chunk_duration=chunk_size,
-            chunk_overlap_duration=0,
-            username=username,
-            password=password,
-            enable_cv_pipeline=enable_cv_pipeline,
-            cv_pipeline_text_prompt=cv_pipeline_text_prompt,
-            live_stream_id=live_stream_id,
-            on_chunk_decoded=(
-                lambda chunk, frames, frame_times, transcripts, error=None, live_stream_id=live_stream_id, kwargs=kwargs: on_chunk_decoded(  # noqa: E501
-                    chunk, frames, frame_times, transcripts, error, live_stream_id, **kwargs
-                )
-            ),
-            enable_audio=enable_audio,
-        )
-
-        logger.debug(f"Pipeline for live stream tearing down: {live_stream_id}")
-        fgetter.destroy_pipeline()
-        logger.debug(f"Pipeline for live stream torn down: {live_stream_id}")
-
-        self._final_output_queue.put(
-            {
-                "live_stream_ended": True,
-                "live_stream_id": live_stream_id,
-                "total_chunks": self._live_stream_handle_info[live_stream_id]["num_chunks"],
-            }
-        )
-        self._live_stream_handle_info.pop(live_stream_id)
 
     def _deinitialize(self):
         for fgetter in self._fgetters:
@@ -1767,77 +1638,6 @@ class VlmPipeline:
                 video_codec=video_codec,
                 decode_only=decode_only,
             )
-
-    def add_live_stream(
-        self,
-        live_stream_id: str,
-        live_stream_url: str,
-        chunk_size: int,
-        on_chunk_reponse: Callable[[VlmChunkResponse], None],
-        request_params: Optional[VlmRequestParams] = None,
-        username: str = None,
-        password: str = None,
-        num_frames_per_chunk=0,
-        vlm_input_width=0,
-        vlm_input_height=0,
-        enable_audio=False,
-        enable_cv_pipeline=False,
-        cv_pipeline_text_prompt="",
-    ):
-        gpu_dec_use_cnt = {i: 0 for i in range(self._args.num_gpus)}
-        for info in self._live_stream_id_map.values():
-            gpu_dec_use_cnt[info.gpu_id] += 1
-        least_used_gpu = min(gpu_dec_use_cnt, key=gpu_dec_use_cnt.get)
-
-        self._live_stream_id_map[live_stream_id] = self._LiveStreamInfo()
-        self._live_stream_id_map[live_stream_id].gpu_id = least_used_gpu
-        self._live_stream_id_map[live_stream_id].on_chunk_reponse = on_chunk_reponse
-        self._decoder_procs[least_used_gpu].send_command(
-            "start-live-stream",
-            live_stream_id=live_stream_id,
-            live_stream_url=live_stream_url,
-            username=username,
-            password=password,
-            request_params=request_params,
-            chunk_size=chunk_size,
-            num_frames_per_chunk=num_frames_per_chunk,
-            vlm_input_width=vlm_input_width,
-            vlm_input_height=vlm_input_height,
-            enable_audio=enable_audio,
-            enable_cv_pipeline=enable_cv_pipeline,
-            cv_pipeline_text_prompt=cv_pipeline_text_prompt,
-        )
-
-    def remove_live_stream(self, live_stream_id: str):
-        if live_stream_id not in self._live_stream_id_map:
-            return
-        lsinfo = self._live_stream_id_map[live_stream_id]
-        self._decoder_procs[lsinfo.gpu_id].send_command(
-            "stop-live-stream", live_stream_id=live_stream_id
-        )
-
-        for proc in self._emb_gen_procs:
-            proc.send_command("drop-chunks", stream_id=live_stream_id)
-        for proc in self._vlm_procs:
-            proc.send_command("drop-chunks", stream_id=live_stream_id)
-        for proc in self._asr_procs:
-            proc.send_command("drop-chunks", stream_id=live_stream_id)
-
-        while not lsinfo.all_chunks_processed:
-            time.sleep(0.1)
-
-        try:
-            self._live_stream_id_map.pop(live_stream_id)
-        except KeyError as e:
-            # can happen if multiple stream delete requests are happening in parallel
-            logger.info(f"{e}: live stream already removed from map;")
-
-        for proc in self._emb_gen_procs:
-            proc.send_command("stop-drop-chunks", stream_id=live_stream_id)
-        for proc in self._vlm_procs:
-            proc.send_command("stop-drop-chunks", stream_id=live_stream_id)
-        for proc in self._asr_procs:
-            proc.send_command("stop-drop-chunks", stream_id=live_stream_id)
 
     @staticmethod
     def populate_argument_parser(parser: ArgumentParser):

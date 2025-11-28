@@ -21,7 +21,6 @@ from threading import Thread
 from typing import Callable
 
 import aiofiles
-
 from via_exception import ViaException
 from via_logger import TimeMeasure, logger
 
@@ -364,52 +363,6 @@ class AssetManager:
         logger.info(
             f"[AssetManager] Added file from path - asset-id: {asset_id} original path: {file_path}"
         )
-        return asset_id
-
-    def add_live_stream(self, url: str, description="", username="", password="", camera_id=""):
-        """Add a live stream.
-
-        Args:
-            url: RTSP url of the stream
-            description (optional): Description of the live stream. Defaults to "".
-            username (optional): Username to access the stream. Defaults to "".
-            password (optional): Password to access the stream. Defaults to "".
-            camera_id (optional): Camera ID to be used for the live stream. Defaults to "".
-        Returns:
-            A unique id for the asset.
-        """
-        # Generate a unique id for the asset.
-        asset_id = str(uuid.uuid4())
-        while asset_id in self._asset_map:
-            asset_id = str(uuid.uuid4())
-        asset_dir = os.path.join(self._asset_dir, asset_id)
-
-        try:
-            os.makedirs(asset_dir)
-        except Exception:
-            raise ViaException("Could not create directory for asset")
-
-        # Save asset info as json
-        with open(os.path.join(asset_dir, "info.json"), "w") as f:
-            json.dump(
-                {
-                    "assetId": asset_id,
-                    "fileName": url,
-                    "path": url,
-                    "purpose": "",
-                    "media_type": "",
-                    "username": username,
-                    "password": password,
-                    "description": description,
-                    "video_fps": None,
-                    "camera_id": camera_id,
-                },
-                f,
-            )
-
-        # add an entry in the asset map
-        self._asset_map[asset_id] = Asset.fromdir(asset_dir)
-        logger.info(f"[AssetManager] Added live stream - asset-id: {asset_id} URL: {url}")
         return asset_id
 
     def cleanup_asset(self, asset_id: str):

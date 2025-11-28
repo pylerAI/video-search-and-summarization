@@ -24,20 +24,18 @@ import gc
 import json
 import os
 import re
-import sys
-import tempfile
 import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from typing import Annotated, List, Optional
+from typing import Annotated, Optional
 from uuid import UUID
 
 import aiofiles
 import aiofiles.os
 import gi
 import uvicorn
+from asset_manager import Asset, AssetManager
 from fastapi import FastAPI, File, Form, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -48,15 +46,10 @@ from prometheus_client import (
     REGISTRY,
     generate_latest,
 )
-from pydantic import Field
 from sse_starlette.sse import EventSourceResponse
-
-from asset_manager import Asset, AssetManager
 from utils import (
     MediaFileInfo,
     StreamSettingsCache,
-    get_available_gpus,
-    get_avg_time_per_chunk,
     validate_required_prompts,
 )
 from via_exception import ViaException
@@ -66,12 +59,7 @@ from vss_api_models import (
     FILE_NAME_PATTERN,
     PATH_PATTERN,
     UUID_LENGTH,
-    AddAlertInfo,
-    AddAlertResponse,
     AddFileInfoResponse,
-    AddLiveStream,
-    AddLiveStreamResponse,
-    AlertInfo,
     ChatCompletionQuery,
     ChatCompletionToolType,
     CompletionFinishReason,
@@ -81,19 +69,9 @@ from vss_api_models import (
     FileInfo,
     ListFilesResponse,
     ListModelsResponse,
-    LiveStreamInfo,
     MediaInfoOffset,
     MediaType,
     Purpose,
-    RecentAlertInfo,
-    RecommendedConfig,
-    RecommendedConfigResponse,
-    ReviewAlertDebugInfo,
-    ReviewAlertRequest,
-    ReviewAlertResponse,
-    ReviewAlertResult,
-    ReviewAlertReviewStatus,
-    ReviewAlertStatus,
     SummarizationQuery,
     ViaError,
     VlmCaptionResponse,
@@ -103,28 +81,12 @@ from vss_api_models import (
 
 gi.require_version("GstRtsp", "1.0")  # isort:skip
 
-from gi.repository import GstRtsp  # noqa: E402
 
 API_PREFIX = (
     "/v1" if os.environ.get("VSS_API_ENABLE_VERSIONING", "").lower() in ["true", "1"] else ""
 )
 
 ALERT_REVIEW_MEDIA_BASE_DIR = os.environ.get("ALERT_REVIEW_MEDIA_BASE_DIR", "")
-
-
-def convert_seconds_to_string(seconds, need_hour=False, millisec=False):
-    """Convert seconds to a formatted string."""
-    if seconds is None:
-        return "N/A"
-
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-
-    if need_hour or hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    else:
-        return f"{minutes:02d}:{secs:02d}"
 
 
 # Remove some default metrics reported by prometheus client.
@@ -178,28 +140,14 @@ class ViaServer:
             title="Visual Insights Agent API",
             openapi_tags=[
                 {
-                    "name": "Alerts",
-                    "description": "Operations to configure live stream alerts.",
-                },
-                {
                     "name": "Files",
                     "description": "Files are used to upload and manage media files.",
                 },
                 {"name": "Health Check", "description": "Operations to check system health."},
-                {"name": "Live Stream", "description": "Operations related to live streams."},
                 {"name": "Metrics", "description": "Operations to get metrics."},
                 {
                     "name": "Models",
                     "description": "List and describe the various models available in the API.",
-                },
-                {
-                    "name": "Recommended Config",
-                    "description": "Operations related to querying recommended"
-                    " VIA request parameters.",
-                },
-                {
-                    "name": "Review Alert",
-                    "description": "Operations related to reviewing external alerts.",
                 },
                 {
                     "name": "Summarization",
@@ -234,10 +182,7 @@ class ViaServer:
         self._stream_settings_cache = StreamSettingsCache(logger=logger)
 
     def _remove_asset(self, asset: Asset):
-        if asset.is_live:
-            self._stream_handler.remove_rtsp_stream(asset)
-        else:
-            self._stream_handler.remove_video_file(asset)
+        self._stream_handler.remove_video_file(asset)
         return True
 
     def run(self):
@@ -292,19 +237,6 @@ class ViaServer:
             tags=["Health Check"],
         )
         async def health_ready_probe():
-            return Response(status_code=200)
-
-        @self._app.get(
-            f"{API_PREFIX}/health/live",
-            summary="Get VIA liveness status",
-            description="Get VIA liveness status.",
-            responses={
-                200: {"model": None, "description": "Successful Response."},
-                **add_common_error_responses([500]),
-            },
-            tags=["Health Check"],
-        )
-        async def health__live_probe():
             return Response(status_code=200)
 
         # ======================= Health check API
@@ -557,169 +489,6 @@ class ViaServer:
 
         # ======================= Files API
 
-        # ======================= Live Stream API
-        @self._app.post(
-            f"{API_PREFIX}/live-stream",
-            summary="Add a live stream",
-            description="API for adding live / camera stream.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Live Stream"],
-        )
-        async def add_live_stream(query: AddLiveStream) -> AddLiveStreamResponse:
-            url = GstRtsp.RTSPUrl()
-            result, url = GstRtsp.rtsp_url_parse(query.liveStreamUrl)
-            if url and result == GstRtsp.RTSPResult.OK:
-                if (url.user is not None) and (url.passwd is not None):
-                    if bool(query.username) or bool(query.password):
-                        raise ViaException(
-                            "'username' and 'password' should be specified"
-                            " in query or url, not both",
-                            "InvalidParameters",
-                            422,
-                        )
-                    else:
-                        query.username = url.user
-                        query.password = url.passwd
-                        query.liveStreamUrl = query.liveStreamUrl.replace(
-                            "rtsp://" + query.username + ":" + query.password + "@", "rtsp://"
-                        )
-
-            logger.info(
-                "Received add live stream request: url - %s, description - %s, camera_id - %s",
-                query.liveStreamUrl,
-                query.description,
-                query.camera_id,
-            )
-            if bool(query.username) != bool(query.password):
-                raise ViaException(
-                    "Either both 'username' and 'password' should be specified"
-                    " or neither should be specified",
-                    "InvalidParameters",
-                    422,
-                )
-            try:
-                # Check if the RTSP URL contains valid video as well as the passed
-                # username/password are correct before adding it to the server.
-                if not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
-                    media_info = await MediaFileInfo.get_info_async(
-                        query.liveStreamUrl, query.username, query.password
-                    )
-                    if not media_info.video_codec:
-                        raise Exception("Invalid file")
-
-                    # Store media_info for later FPS caching
-                    cached_media_info = media_info
-                else:
-                    cached_media_info = None
-            except Exception:
-                raise ViaException(
-                    "Could not connect to the RTSP URL or"
-                    " there is no video stream from the RTSP URL",
-                    "InvalidFile",
-                    400,
-                )
-            video_id = self._asset_manager.add_live_stream(
-                url=query.liveStreamUrl,
-                description=query.description,
-                username=query.username,
-                password=query.password,
-                camera_id=query.camera_id,
-            )
-
-            # Cache video FPS in the asset if media info was retrieved
-            if cached_media_info and hasattr(cached_media_info, "video_fps"):
-                asset = self._asset_manager.get_asset(video_id)
-                asset.update_video_fps(float(cached_media_info.video_fps))
-
-            return {"id": video_id}
-
-        @self._app.get(
-            f"{API_PREFIX}/live-stream",
-            summary="List all live streams",
-            description="List all live streams.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses([500]),
-            },
-            tags=["Live Stream"],
-        )
-        async def list_live_stream() -> Annotated[list[LiveStreamInfo], Field(max_length=1024)]:
-            def get_stream_params(id: str):
-                if id not in self._stream_handler._live_stream_info_map:
-                    return 0, 0, 0
-                info = self._stream_handler._live_stream_info_map[id]
-                if info.live_stream_ended:
-                    return 0, 0, 0
-
-                if info.req_info and info.req_info[0].status == RequestInfo.Status.PROCESSING:
-                    summary_duration = (
-                        info.req_info[0].summary_duration
-                        if info.req_info and info.req_info[0].summary_duration
-                        else info.chunk_size
-                    )
-                    return info.chunk_size, 0, summary_duration
-                return 0, 0, 0
-
-            live_stream_list = [
-                {
-                    "id": asset.asset_id,
-                    "liveStreamUrl": asset.path,
-                    "description": asset.description,
-                    "chunk_duration": get_stream_params(asset.asset_id)[0],
-                    "chunk_overlap_duration": get_stream_params(asset.asset_id)[1],
-                    "summary_duration": get_stream_params(asset.asset_id)[2],
-                }
-                for asset in self._asset_manager.list_assets()
-                if asset.is_live
-            ]
-            logger.info(
-                "Received list live streams request. Responding with %d live streams info",
-                len(live_stream_list),
-            )
-            return live_stream_list
-
-        @self._app.delete(
-            f"{API_PREFIX}/live-stream/{{stream_id}}",
-            summary="Remove a live stream",
-            description="API for removing live / camerea stream matching `stream_id`.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Live Stream"],
-        )
-        async def delete_live_stream(
-            stream_id: Annotated[
-                UUID, Path(description="Unique identifier for the live stream to be deleted.")
-            ],
-        ):
-            stream_id = str(stream_id)
-            logger.info("Received delete live stream request for %s", stream_id)
-
-            if not self._asset_manager.get_asset(stream_id).is_live:
-                raise ViaException(f"No such live-stream {stream_id}", "InvalidParameter", 400)
-
-            asset = self._asset_manager.get_asset(stream_id)
-            loop = asyncio.get_event_loop()
-
-            # Live stream is being set up, wait for it to be ready
-            while asset.use_count > 1:
-                await asyncio.sleep(1)
-
-            # Remove RTSP stream from the pipeline if it is being summarized
-            await loop.run_in_executor(
-                self._async_executor, self._stream_handler.remove_rtsp_stream, asset
-            )
-            await loop.run_in_executor(
-                self._async_executor, self._asset_manager.cleanup_asset, stream_id
-            )
-            return Response(status_code=200)
-
-        # ======================= Live Stream API
-
         # ======================= Models API
         @self._app.get(
             f"{API_PREFIX}/models",
@@ -847,8 +616,6 @@ class ViaServer:
                 "notification_top_p = %s, "
                 "summarization enabled = %s, "
                 "chat enabled = %s, "
-                "cv_pipeline_prompt = %s, "
-                "enable_cv_metadata = %d, "
                 "enable_chat_history = %d, "
                 "collection_name = %s, "
                 "custom_metadata = %s, "
@@ -889,8 +656,6 @@ class ViaServer:
                 query.notification_top_p,
                 query.summarize,
                 query.enable_chat,
-                query.cv_pipeline_prompt,
-                query.enable_cv_metadata,
                 query.enable_chat_history,
                 query.collection_name,
                 str(query.custom_metadata),
@@ -942,83 +707,26 @@ class ViaServer:
 
             loop = asyncio.get_event_loop()
 
-            if asset.is_live:
-                # Check if summarization is already running / already completed.
-                if videoId in self._stream_handler._live_stream_info_map:
-                    # Reconnect client to existing summarization stream
-                    request_id = (
-                        self._stream_handler._live_stream_info_map[videoId].req_info[0].request_id
-                    )
-                    logger.info(
-                        "Re-connecting to existing live stream query %s for videoId %s",
-                        request_id,
-                        videoId,
-                    )
-                else:
-                    # Add live stream to the pipeline and start summarization
-                    self._stream_handler.add_rtsp_stream(asset, query.chunk_duration)
-                    try:
-                        asset.lock()
-                        request_id = await loop.run_in_executor(
-                            self._async_executor,
-                            self._stream_handler.add_rtsp_stream_query,
-                            asset,
-                            query,
-                        )
-                    except Exception as ex:
-                        self._stream_handler._live_stream_info_map.pop(asset.asset_id, None)
-                        asset.unlock()
-                        raise ex from None
-                    finally:
-                        asset.unlock()
-                    logger.info("Created live stream query %s for videoId %s", request_id, videoId)
+        
+            if len(videoIdList) == 1:
+                assetList = [asset]
+            # Summarize on a file or multiple files
+            request_id = await loop.run_in_executor(
+                self._async_executor,
+                self._stream_handler.summarize,
+                assetList,
+                query,
+            )
+            logger.info("Created video file query %s for videoId %s", request_id, videoId)
 
-                    for tool in query.tools:
-                        if tool.type == ChatCompletionToolType.ALERT:
-                            self._stream_handler.add_live_stream_alert(
-                                liveStreamId=asset.asset_id,
-                                events=tool.alert.events,
-                                isCallback=True,
-                                callbackUrl=(
-                                    tool.alert.callbackUrl
-                                    if tool.alert.callbackUrl is None
-                                    else str(tool.alert.callbackUrl)
-                                ),
-                                callbackToken=(
-                                    tool.alert.callbackToken
-                                    if tool.alert.callbackToken is None
-                                    else str(tool.alert.callbackToken)
-                                ),
-                                callbackJsonTemplate=str(tool.alert.callbackJsonTemplate),
-                                alertName=tool.alert.name,
-                            )
-            else:
-                if len(videoIdList) == 1:
-                    assetList = [asset]
-                # Summarize on a file or multiple files
-                request_id = await loop.run_in_executor(
-                    self._async_executor,
-                    self._stream_handler.summarize,
-                    assetList,
-                    query,
-                )
-                logger.info("Created video file query %s for videoId %s", request_id, videoId)
-
-                if query.tools:
-                    for tool in query.tools:
-                        if tool.type == ChatCompletionToolType.ALERT:
-                            if not query.stream:
-                                raise ViaException(
-                                    "Only streaming output is supported for alerts",
-                                    "BadParameters",
-                                    400,
-                                )
-                            self._stream_handler.add_alert(
-                                requestId=request_id,
-                                assetId=asset.asset_id,
-                                events=tool.alert.events,
-                                isCallback=False,
-                                alertName=tool.alert.name,
+            if query.tools:
+                for tool in query.tools:
+                    if tool.type == ChatCompletionToolType.ALERT:
+                        if not query.stream:
+                            raise ViaException(
+                                "Only streaming output is supported for alerts",
+                                "BadParameters",
+                                400,
                             )
 
             logger.info("Waiting for results of query %s", request_id)
@@ -1070,42 +778,6 @@ class ViaServer:
                                 len(resp_list),
                             )
 
-                        while req_info.alerts:
-                            alert = req_info.alerts.pop(0)
-                            # Create the response json
-                            response = {
-                                "id": request_id,
-                                "model": model_info.id,
-                                "created": int(req_info.queue_time),
-                                "object": "summarization.progressing",
-                                "choices": [
-                                    {
-                                        "finish_reason": CompletionFinishReason.TOOL_CALLS.value,
-                                        "index": 0,
-                                        "message": {
-                                            "tool_calls": [
-                                                {
-                                                    "type": "alert",
-                                                    "alert": {
-                                                        "name": alert.name,
-                                                        "detectedEvents": alert.detectedEvents,
-                                                        "details": alert.details,
-                                                        **(
-                                                            {"ntpTimestamp": alert.ntpTimestamp}
-                                                            if req_info.is_live
-                                                            else {"offset": alert.offset}
-                                                        ),
-                                                    },
-                                                }
-                                            ],
-                                            "role": "assistant",
-                                        },
-                                    }
-                                ],
-                                "usage": None,
-                            }
-                            yield json.dumps(response)
-
                         # Response list is empty. Stop generation if request is completed or failed.
                         if not resp_list:
                             if req_info.status in [
@@ -1140,26 +812,12 @@ class ViaServer:
 
                         # Set the start/end time info for current response.
                         while resp_list:
-                            if req_info.is_live:
-                                media_info = {
-                                    "type": "timestamp",
-                                    "start_timestamp": resp_list[0].start_timestamp,
-                                    "end_timestamp": resp_list[0].end_timestamp,
-                                }
 
-                                dt = datetime.strptime(
-                                    resp_list[0].end_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ"
-                                ).replace(tzinfo=timezone.utc)
-                                current_time = datetime.now(timezone.utc)
-                                self._stream_handler.update_live_stream_summary_latency(
-                                    (current_time - dt).total_seconds()
-                                )
-                            else:
-                                media_info = {
-                                    "type": "offset",
-                                    "start_offset": int(resp_list[0].start_timestamp),
-                                    "end_offset": int(resp_list[0].end_timestamp),
-                                }
+                            media_info = {
+                                "type": "offset",
+                                "start_offset": int(resp_list[0].start_timestamp),
+                                "end_offset": int(resp_list[0].end_timestamp),
+                            }
 
                             # Create the response json
                             response = {
@@ -1345,8 +1003,6 @@ class ViaServer:
                 "stream=%r num_frames_per_chunk=%d "
                 "vlm_input_width = %d, "
                 "vlm_input_height = %d, "
-                "cv_pipeline_prompt = %s, "
-                "enable_cv_metadata = %d, "
                 "enable_reasoning = %d",
                 ", ".join(videoIdList),
                 asset.is_live,
@@ -1367,8 +1023,6 @@ class ViaServer:
                 query.num_frames_per_chunk,
                 query.vlm_input_width,
                 query.vlm_input_height,
-                query.cv_pipeline_prompt,
-                query.enable_cv_metadata,
                 query.enable_reasoning,
             )
 
@@ -1409,8 +1063,6 @@ class ViaServer:
                 "chunk_overlap_duration": query.chunk_overlap_duration,
                 "user": query.user,
                 "tools": query.tools,
-                "enable_cv_metadata": query.enable_cv_metadata,
-                "cv_pipeline_prompt": query.cv_pipeline_prompt,
                 "num_frames_per_chunk": query.num_frames_per_chunk,
                 "vlm_input_width": query.vlm_input_width,
                 "vlm_input_height": query.vlm_input_height,
@@ -1442,48 +1094,16 @@ class ViaServer:
 
             summarization_query = SummarizationQuery(**query_dict)
 
-            if asset.is_live:
-                # Check if summarization is already running / already completed.
-                if videoId in self._stream_handler._live_stream_info_map:
-                    # Reconnect client to existing summarization stream
-                    request_id = (
-                        self._stream_handler._live_stream_info_map[videoId].req_info[0].request_id
-                    )
-                    logger.info(
-                        "Re-connecting to existing live stream query %s for videoId %s",
-                        request_id,
-                        videoId,
-                    )
-                else:
-                    # Add live stream to the pipeline and start summarization
-                    self._stream_handler.add_rtsp_stream(asset, summarization_query.chunk_duration)
-                    try:
-                        request_id = await loop.run_in_executor(
-                            self._async_executor,
-                            self._stream_handler.generate_vlm_captions,
-                            [asset],  # Pass as list for consistency
-                            summarization_query,
-                            True,  # is_rtsp=True for rtsp stream
-                        )
-                    except Exception as ex:
-                        self._stream_handler._live_stream_info_map.pop(asset.asset_id, None)
-                        asset.unlock()
-                        raise ex from None
-                    logger.info("Created live stream query %s for videoId %s", request_id, videoId)
-
-            else:
-                if len(videoIdList) == 1:
-                    assetList = [asset]
-                # Summarize on a file or multiple files
-                request_id = await loop.run_in_executor(
-                    self._async_executor,
-                    self._stream_handler.generate_vlm_captions,
-                    assetList,
-                    summarization_query,
-                    False,  # is_rtsp=False for file
-                )
-                logger.info("Created video file query %s for videoId %s", request_id, videoId)
-
+            if len(videoIdList) == 1:
+                assetList = [asset]
+            # Summarize on a file or multiple files
+            request_id = await loop.run_in_executor(
+                self._async_executor,
+                self._stream_handler.generate_vlm_captions,
+                assetList,
+                summarization_query,
+            )
+            logger.info("Created video file query %s for videoId %s", request_id, videoId)
             logger.info("Waiting for results of query %s", request_id)
 
             if query.stream:
@@ -1554,25 +1174,12 @@ class ViaServer:
 
                         # Set the start/end time info for current response.
                         while resp_list:
-                            if req_info.is_live:
-                                media_info = {
-                                    "type": "timestamp",
-                                    "start_timestamp": resp_list[0].start_timestamp,
-                                    "end_timestamp": resp_list[0].end_timestamp,
-                                }
-                                dt = datetime.strptime(
-                                    resp_list[0].end_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ"
-                                ).replace(tzinfo=timezone.utc)
-                                current_time = datetime.now(timezone.utc)
-                                self._stream_handler.update_live_stream_captions_latency(
-                                    (current_time - dt).total_seconds()
-                                )
-                            else:
-                                media_info = {
-                                    "type": "offset",
-                                    "start_offset": int(resp_list[0].start_timestamp),
-                                    "end_offset": int(resp_list[0].end_timestamp),
-                                }
+
+                            media_info = {
+                                "type": "offset",
+                                "start_offset": int(resp_list[0].start_timestamp),
+                                "end_offset": int(resp_list[0].end_timestamp),
+                            }
 
                             # Build chunk responses for VLM captions
                             chunk_responses = []
@@ -1899,346 +1506,6 @@ class ViaServer:
             return response
 
         # ======================= Q&A API
-
-        # ======================= Recommended Config API
-
-        # Returns recommended config viz: chunk-size
-        # based on /opt/nvidia/via/default_runtime_stats.yaml
-        # Notes:
-        # 1) return chunk-size = 0 if GPU config unavailable in the yaml file
-        @self._app.post(
-            f"{API_PREFIX}/recommended_config",
-            summary="Recommend config for a video",
-            description="Recommend config for a video.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Recommended Config"],
-        )
-        async def recommended_config(
-            query: RecommendedConfig, request: Request
-        ) -> RecommendedConfigResponse:
-            def round_up(s):
-                """
-                Rounds up a string representation of a number to an integer.
-
-                Example:
-                >>> round_up("7.9s")
-                8
-                """
-                # Strip any non-numeric characters from the string
-                num_str = re.sub(r"[a-zA-Z]+", "", s)
-
-                # Convert the string to a float and round up to the nearest integer
-                num = float(num_str)
-                return -(-num // 1)  # equivalent to math.ceil(num) in Python 3.x
-
-            logger.info(
-                f"recommended_config(); chunk_size={query.video_length};"
-                f" target_response_time={query.target_response_time};"
-                f" usecase_event_duration={query.usecase_event_duration}"
-            )
-            recommended_chunk_size = 60
-            recommendation_text = "NA"
-
-            if self._args and self._args.vlm_model_type:
-                model_id = str(self._args.vlm_model_type)
-            else:
-                model_id = "openai-compat"
-
-            try:
-                loop = asyncio.get_event_loop()
-                gpus = await loop.run_in_executor(self._async_executor, get_available_gpus)
-                if gpus:
-                    avg_time_per_chunk = get_avg_time_per_chunk(
-                        gpus[0]["name"], model_id, "/opt/nvidia/via/default_runtime_stats.yaml"
-                    )
-                    avg_time_per_chunk = round_up(avg_time_per_chunk)
-                    # Equation is: query.target_response_time =
-                    #           avg_time_per_chunk * (video_leng / chunk_size)
-                    recommended_chunk_size = (
-                        avg_time_per_chunk * query.video_length
-                    ) / query.target_response_time
-                    # Chunk size needed for usecase would be:
-                    # usecase_requirement_for_chunk_size =
-                    #         query.usecase_event_duration * num_frames_per_chunk
-                    if recommended_chunk_size > query.video_length:
-                        recommended_chunk_size = query.video_length
-                    logger.info(f"recommended_chunk_size is {recommended_chunk_size}")
-            except Exception:
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                error_string = "".join(
-                    traceback.format_exception(exc_type, exc_value, exc_traceback)
-                )
-                logger.info(error_string)
-                recommended_chunk_size = 0
-
-            # Create response json and return it
-            return {"chunk_size": int(recommended_chunk_size), "text": recommendation_text}
-
-        # ======================= Recommended Config API
-
-        # ======================= Alerts API
-        @self._app.post(
-            f"{API_PREFIX}/alerts",
-            summary="Add an alerts",
-            description="Add an alert for a live stream.",
-            responses={
-                200: {"description": "Successful Response."},
-                405: {"description": "Alert functionality not enabled."},
-                **add_common_error_responses(),
-            },
-            tags=["Alerts"],
-        )
-        def add_alert(query: AddAlertInfo) -> AddAlertResponse:
-            logger.info(
-                "Received add alert request: live-stream-id %s, events [%s],"
-                " callbackJsonTemplate %s",
-                str(query.liveStreamId),
-                ", ".join(query.events),
-                query.callbackJsonTemplate,
-            )
-
-            if query.name:
-                alertName = query.name
-            elif query.events:
-                alertName = query.events[0]
-            else:
-                raise ViaException("Alert name or events are required", "BadParameters", 400)
-
-            alert = self._stream_handler.add_live_stream_alert(
-                liveStreamId=str(query.liveStreamId),
-                events=query.events,
-                callbackUrl=str(query.callback),
-                callbackJsonTemplate=query.callbackJsonTemplate,
-                callbackToken=query.callbackToken,
-                isCallback=True,
-                alertName=alertName,
-            )
-            logger.info("Added alert with id %s", alert.alert_id)
-
-            return {"id": alert.alert_id}
-
-        @self._app.get(
-            f"{API_PREFIX}/alerts",
-            summary="List all live stream alerts",
-            description="List all live stream alerts added to the VIA Server.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Alerts"],
-        )
-        def list_alerts() -> Annotated[List[AlertInfo], Field(max_length=1000)]:
-            alerts = [
-                {
-                    "liveStreamId": alert.liveStreamId,
-                    "events": alert.events,
-                    "alertId": alert.alert_id,
-                    "name": alert.name,
-                }
-                for alert in self._stream_handler.live_stream_alerts()
-            ]
-            logger.info(
-                "Received list alerts request. Responding with %d alerts info",
-                len(alerts),
-            )
-            return alerts
-
-        @self._app.delete(
-            f"{API_PREFIX}/alerts/{{alert_id}}",
-            summary="Delete a live stream alert",
-            description="Delete a live stream alert added to the VIA Server.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Alerts"],
-        )
-        def delete_alert(
-            alert_id: Annotated[UUID, Path(description="Unique ID of the alert to be deleted.")],
-        ):
-            logger.info("Received delete alert request for %s", str(alert_id))
-            self._stream_handler.remove_live_stream_alert(str(alert_id))
-
-        @self._app.get(
-            f"{API_PREFIX}/alerts/recent",
-            summary="Get recent alerts",
-            description="Get recently generated alerts. Optionally filter by live stream ID.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Alerts"],
-        )
-        def get_recent_alerts(
-            live_stream_id: Annotated[
-                UUID | None,
-                Query(
-                    description="Optional live stream ID to filter alerts.",
-                ),
-            ] = None,
-        ) -> Annotated[List[RecentAlertInfo], Field(max_length=1000)]:
-            """Get recent alerts.
-
-            Returns:
-                List[RecentAlertInfo]: List of recent alerts with timestamps
-            """
-            logger.info(
-                "Received get recent alerts request%s",
-                f" for stream {live_stream_id}" if live_stream_id else "all",
-            )
-            alerts = self._stream_handler.get_recent_alert(str(live_stream_id or ""))
-            logger.info("Responding with %d recent alerts", len(alerts))
-            return [
-                {
-                    "alert_name": alert.name,
-                    "alert_id": alert.alertId,
-                    "live_stream_id": alert.streamId,
-                    "detected_events": alert.detectedEvents,
-                    "alert_text": alert.details,
-                    "ntp_timestamp": alert.ntpTimestamp,
-                }
-                for alert in reversed(alerts)
-            ]
-
-        # ======================= Alerts API
-
-        # ======================= Review Alert API
-
-        @self._app.post(
-            f"{API_PREFIX}/reviewAlert",
-            summary="Review an external alert",
-            description=(
-                "Review an external alert. The API supports generating a dense caption as well as "
-                " a boolean true/false. The prompt and system prompt must be configured by the user"
-                " accordingly.\n\n"
-                "Additionally, `do_verification` may be set to `true`. When this is set, VSS"
-                " will look for truthy words like `yes` or `true` in the VLM response and set"
-                " `verification_result` accordingly.\n\n"
-                "Reasoning can be requested by setting `enable_reasoning` to `true`. In this case,"
-                " system prompt can be optionally modified to request VLM to respond with"
-                " `<think></think>` <answer></answer>` tags. If not done explicitly by user, "
-                "VSS would modify the prompt internally.\n\n"
-                "Examples:\n\n"
-                "- **Caption Only**: \n\n"
-                "  `system_prompt: You are a helpful assistant. Answer the user's question.`\n\n"
-                "  `prompt: Describe the scene in the video in one line.`\n\n"
-                "  `do_verification: false`\n\n"
-                "- **Caption with Boolean Answer**: \n\n"
-                "  `system_prompt: You are a helpful assistant. Answer the user's question.`\n\n"
-                "  `prompt: Did a person enter the room? Describe the scene in the video in one line.`\n\n"
-                "  `do_verification: true`\n\n"
-                "- **Boolean Answer Only**: \n\n"
-                "  `system_prompt: You are a helpful assistant. Answer the user's question with a yes or no only.`\n\n"  # noqa: E501
-                "  `prompt: Did a person enter the room?`\n\n"
-                "  `do_verification: true`."
-            ),
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
-            tags=["Review Alert"],
-            response_model_exclude_unset=True,
-        )
-        async def review_alert(query: ReviewAlertRequest) -> ReviewAlertResponse:
-            video_path = query.video_path
-            if not os.path.isabs(video_path) and os.path.isdir(ALERT_REVIEW_MEDIA_BASE_DIR):
-                video_path = os.path.join(ALERT_REVIEW_MEDIA_BASE_DIR, video_path)
-
-            cv_metadata_path = query.cv_metadata_path
-            if (
-                cv_metadata_path
-                and not os.path.isabs(cv_metadata_path)
-                and os.path.isdir(ALERT_REVIEW_MEDIA_BASE_DIR)
-            ):
-                query.cv_metadata_path = os.path.join(ALERT_REVIEW_MEDIA_BASE_DIR, cv_metadata_path)
-
-            loop = asyncio.get_event_loop()
-
-            error_string = ""
-            ex = None
-            result = False
-            response = ""
-            selected_frames_ts = []
-            reasoning_description = ""
-
-            try:
-                with tempfile.TemporaryDirectory() as td:
-                    (
-                        result,
-                        response,
-                        selected_frames_ts,
-                        reasoning_description,
-                    ) = await loop.run_in_executor(
-                        self._async_executor,
-                        self._stream_handler.review_alert,
-                        query,
-                        Asset(str(uuid.uuid4()), video_path, "vision", "video", td),
-                    )
-            except ViaException as e:
-                error_string = e.message
-                ex = e
-            except Exception as e:
-                error_string = str(e)
-                ex = e
-
-            query.alert.status = (
-                ReviewAlertStatus.REVIEW_FAILED if error_string else ReviewAlertStatus.REVIEWED
-            )
-
-            review_response = ReviewAlertResponse(
-                id=query.id,
-                version=query.version,
-                timestamp=query.timestamp,
-                sensor_id=query.sensor_id,
-                video_path=query.video_path,
-                cv_metadata_path=query.cv_metadata_path,
-                confidence=query.confidence,
-                start_time=query.start_time,
-                end_time=query.end_time,
-                alert=query.alert,
-                event=query.event,
-                result=ReviewAlertResult(
-                    status=(
-                        ReviewAlertReviewStatus.FAILURE
-                        if error_string
-                        else ReviewAlertReviewStatus.SUCCESS
-                    ),
-                    error_string=error_string,
-                    reasoning=(
-                        reasoning_description if reasoning_description else "No reasoning available"
-                    ),
-                    review_method="VSS",
-                    reviewed_by=self._stream_handler.get_models_info().id,
-                    reviewed_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
-                    notes="Alert auto-reviewed by VSS; confidence above threshold.",
-                    description=str(response),
-                    input_prompt=query.vss_params.vlm_params.prompt,
-                ),
-            )
-
-            if query.stream_name:
-                review_response.stream_name = query.stream_name
-
-            if query.vss_params.do_verification:
-                review_response.result.verification_result = result
-
-            if query.meta_labels:
-                review_response.meta_labels = query.meta_labels
-
-            if query.vss_params.debug:
-                review_response.result.debug = ReviewAlertDebugInfo(
-                    selected_frames_ts=selected_frames_ts
-                )
-
-            if ex:
-                raise ex from None
-
-            return review_response
-
-        # ======================= Review Alert API
 
     def _setup_exception_handlers(self):
         # Handle incorrect request schema (user error)
