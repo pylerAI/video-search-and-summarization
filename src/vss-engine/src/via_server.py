@@ -36,6 +36,7 @@ from asset_manager import Asset, AssetManager
 from fastapi import FastAPI, File, Form, Path, Query, Request, Response, UploadFile
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from model_registry import get_model_registry
 from prometheus_client import (
     GC_COLLECTOR,
     PLATFORM_COLLECTOR,
@@ -171,10 +172,127 @@ class ViaServer:
         self._server = None
 
         self._stream_settings_cache = StreamSettingsCache(logger=logger)
+        
+        # Initialize model registry
+        try:
+            self._model_registry = get_model_registry()
+            logger.info(f"Model registry initialized with {len(self._model_registry)} models")
+            
+            # Validate all external models during startup
+            self._validate_external_models()
+        except Exception as e:
+            logger.error(f"Failed to initialize model registry: {e}")
+            self._model_registry = None
 
     def _remove_asset(self, asset: Asset):
         self._stream_handler.remove_video_file(asset)
         return True
+
+    def _validate_external_models(self):
+        """Validate all external models during server startup to catch configuration errors early."""
+        if not self._model_registry:
+            logger.warning("No model registry available for validation")
+            return
+        
+        # First, do basic configuration validation
+        config_errors = self._model_registry.validate_all_models()
+        if config_errors:
+            logger.warning(f"Model configuration errors detected:")
+            for model_id, error in config_errors.items():
+                logger.error(f"  - {model_id}: {error}")
+        
+        available_models = self._model_registry.list_available_models()
+        if not available_models:
+            logger.info("No external models to validate")
+            return
+        
+        logger.info(f"Validating {len(available_models)} external models with API test calls...")
+        
+        validation_results = {
+            'valid': [],
+            'invalid': [],
+            'errors': {}
+        }
+        
+        for model_id in available_models:
+            try:
+                model_config = self._model_registry.get_model_config(model_id)
+                if not model_config:
+                    validation_results['invalid'].append(model_id)
+                    validation_results['errors'][model_id] = "Model configuration not found"
+                    continue
+                
+                logger.info(f"Testing API connectivity for model '{model_id}' (deployment: '{model_config.deployment_name}')...")
+                
+                # Create a temporary OpenAI client for validation
+                from openai import OpenAI
+                
+                client = OpenAI(
+                    base_url=model_config.endpoint,
+                    api_key=model_config.api_key,
+                    max_retries=1,
+                    timeout=10.0  # Quick timeout for startup validation
+                )
+                
+                # Make a minimal test call to validate the model
+                response = client.chat.completions.create(
+                    model=model_config.deployment_name,
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=1
+                )
+                
+                validation_results['valid'].append(model_id)
+                logger.info(f"✓ Model '{model_id}' API test successful")
+                
+            except Exception as e:
+                validation_results['invalid'].append(model_id)
+                validation_results['errors'][model_id] = str(e)
+                
+                # Extract specific error types for better messaging
+                error_msg = str(e).lower()
+                if "does not exist" in error_msg or "not found" in error_msg:
+                    error_type = "Model does not exist"
+                elif "invalid api key" in error_msg or "unauthorized" in error_msg:
+                    error_type = "Invalid API key"
+                elif "rate limit" in error_msg or "quota" in error_msg:
+                    error_type = "Rate limit/quota exceeded"
+                elif "timeout" in error_msg:
+                    error_type = "Connection timeout"
+                else:
+                    error_type = "API connection error"
+                
+                logger.error(f"✗ Model '{model_id}' API test failed: {error_type} - {e}")
+        
+        # Log summary
+        total_models = len(available_models)
+        valid_count = len(validation_results['valid'])
+        invalid_count = len(validation_results['invalid'])
+        
+        logger.info(f"Model validation complete: {valid_count}/{total_models} models passed API tests")
+        
+        if validation_results['valid']:
+            logger.info(f"Valid models: {', '.join(validation_results['valid'])}")
+        
+        if validation_results['invalid']:
+            logger.warning(f"Invalid models (API test failed): {', '.join(validation_results['invalid'])}")
+            
+            # Optionally fail server startup on invalid models (configurable behavior)
+            fail_on_invalid = os.environ.get('VSS_FAIL_ON_INVALID_MODELS', 'false').lower() == 'true'
+            if fail_on_invalid:
+                error_details = []
+                for model_id in validation_results['invalid']:
+                    error = validation_results['errors'].get(model_id, 'Unknown error')
+                    error_details.append(f"  - {model_id}: {error}")
+                
+                error_message = f"Server startup failed due to invalid model configurations:\n" + "\n".join(error_details)
+                raise Exception(error_message)
+            else:
+                logger.warning("Invalid models detected, but server will continue (set VSS_FAIL_ON_INVALID_MODELS=true to fail startup)")
+        
+        # Show which models would fail silently without this validation
+        total_invalid = len(config_errors) + invalid_count
+        if total_invalid > 0:
+            logger.warning(f"Without startup validation, {total_invalid} invalid models would cause silent failures during requests!")
 
     def run(self):
         # Initialize OpenTelemetry if enabled (optional)
@@ -200,6 +318,27 @@ class ViaServer:
         self._server = None
 
         self._stream_handler.stop()
+
+    def _validate_and_log_model(self, query) -> None:
+        """
+        Validate that the query has a valid model and that the model exists in the registry.
+        
+        Args:
+            query: Query object with model field
+            
+        Raises:
+            ViaException: If model is missing or model not found in registry
+        """
+        # All models now come from external model registry
+        # query.model is required field in Pydantic model, so it should exist
+        if not query.model:
+            raise ViaException("model is required", "BadParameters", 400)
+            
+        # Validate model exists in registry
+        if not self._model_registry or not self._model_registry.is_model_available(query.model):
+            raise ViaException(f"Model '{query.model}' not found in registry", "BadParameters", 400)
+        
+        logger.info(f"Using external model from registry: {query.model}")
 
     def _setup_routes(self):
         # Mount the ASGI app exposed by prometheus client as a FastAPI endpoint.
@@ -554,11 +693,24 @@ class ViaServer:
             tags=["Models"],
         )
         async def list_models() -> ListModelsResponse:
-
-            # Get the loaded model information from pipeline
+            # All models now come from external model registry
+            if not self._model_registry:
+                raise ViaException("Model registry not available", "InternalServerError", 500)
+                
+                    model_data = self._model_registry.get_model_info_for_api()
+                    logger.info(f"Received list models request. Responding with {len(model_data)} models from registry")
+                    return {
+                        "object": "list",
+                        "data": model_data,
+                    }
+                else:
+                    logger.warning("Model registry not available, falling back to pipeline model info")
+            except Exception as e:
+                logger.error(f"Error getting models from registry: {e}, falling back to pipeline")
+            
+            # Fallback to original logic
             minfo = self._stream_handler.get_models_info()
-
-            logger.info("Received list models request. Responding with 1 models info")
+            logger.info("Received list models request. Responding with 1 models info (fallback)")
             return {
                 "object": "list",
                 "data": [
@@ -680,9 +832,7 @@ class ViaServer:
             self._stream_settings_cache.update_stream_settings(main_asset_id, filtered_query_json)
 
             # 6. 모델 및 프롬프트 검증
-            model_info = self._stream_handler.get_models_info()
-            if query.model != model_info.id:
-                raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
+            self._validate_and_log_model(query)
 
             validation_errors = validate_required_prompts(
                 query.prompt,
@@ -715,9 +865,21 @@ class ViaServer:
                 raise ViaException(f"Failed to generate summary: {req_info.error_message}", "InternalServerError", 500)
 
             # 9. 응답 반환
+            # Build usage dict based on stream_options.include_usage setting
+            usage_dict = {
+                "total_chunks_processed": req_info.chunk_count,
+                "query_processing_time": int(req_info.end_time - req_info.start_time),
+            }
+            
+            # Add token usage information if available from aggregated token stats
+            if hasattr(req_info, 'aggregated_token_stats') and req_info.aggregated_token_stats:
+                usage_dict["prompt_tokens"] = req_info.aggregated_token_stats.get('input_tokens')
+                usage_dict["completion_tokens"] = req_info.aggregated_token_stats.get('output_tokens')
+                usage_dict["total_tokens"] = req_info.aggregated_token_stats.get('total_tokens')
+        
             return {
                 "id": request_id,
-                "model": model_info.id,
+                "model": query.model,  # Return the model as model for API compatibility
                 "created": int(req_info.queue_time),
                 "object": "summarization.completion",
                 "media_info": {
@@ -732,10 +894,7 @@ class ViaServer:
                         "message": {"content": resp_list[0].response, "role": "assistant"},
                     }
                 ] if resp_list else [],
-                "usage": {
-                    "total_chunks_processed": req_info.chunk_count,
-                    "query_processing_time": int(req_info.end_time - req_info.start_time),
-                },
+                "usage": usage_dict,
             }
 
 
@@ -847,18 +1006,8 @@ class ViaServer:
             logger.debug(f"Filtered Query JSON: {filtered_query_json}")
             self._stream_settings_cache.update_stream_settings(videoId, filtered_query_json)
 
-            # Check if user has specified the model that is initialized
-            model_info = self._stream_handler.get_models_info()
-            if query.model != model_info.id:
-                raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
-
-            if query.api_type and query.api_type != model_info.api_type:
-                raise ViaException(
-                    f"api_type {query.api_type} not supported by model '{query.model}'",
-                    "BadParameters",
-                    400,
-                )
-
+            # Model validation
+            self._validate_and_log_model(query)
 
             loop = asyncio.get_event_loop()
 
@@ -868,7 +1017,6 @@ class ViaServer:
                 "id": query.id,
                 "prompt": query.prompt,
                 "model": query.model,
-                "api_type": query.api_type,
                 "response_format": query.response_format,
                 "stream": query.stream,
                 "chunk_duration": query.chunk_duration,
@@ -932,7 +1080,7 @@ class ViaServer:
             # Create response json and return it
             return VlmCaptionsCompletionResponse(
                 id=request_id,
-                model=model_info.id,
+                model=query.model,  # Return the model as model for API compatibility
                 created=int(req_info.queue_time),
                 media_info=MediaInfoOffset(
                     type="offset",
@@ -959,6 +1107,21 @@ class ViaServer:
                 usage=CompletionUsage(
                     total_chunks_processed=req_info.chunk_count,
                     query_processing_time=int(req_info.end_time - req_info.start_time),
+                    prompt_tokens=(
+                        req_info.aggregated_token_stats.get('input_tokens')
+                        if hasattr(req_info, 'aggregated_token_stats') and req_info.aggregated_token_stats 
+                        else None
+                    ),
+                    completion_tokens=(
+                        req_info.aggregated_token_stats.get('output_tokens')
+                        if hasattr(req_info, 'aggregated_token_stats') and req_info.aggregated_token_stats 
+                        else None
+                    ),
+                    total_tokens=(
+                        req_info.aggregated_token_stats.get('total_tokens')
+                        if hasattr(req_info, 'aggregated_token_stats') and req_info.aggregated_token_stats
+                        else None
+                    ),
                 ),
             )
 
@@ -1076,9 +1239,7 @@ class ViaServer:
             )
 
             # 4. 모델 정보 확인
-            model_info = self._stream_handler.get_models_info()
-            if query.model != model_info.id:
-                raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
+            self._validate_and_log_model(query)
 
             if self._stream_handler._ctx_mgr is None:
                 raise ViaException("Chat functionality disabled", "BadParameters", 400)
@@ -1112,7 +1273,7 @@ class ViaServer:
             # 7. 응답 반환
             return {
                 "id": str(request_id),
-                "model": model_info.id,
+                "model": query.model,  # Return the model as model for API compatibility
                 "created": int(time.time()),
                 "object": "summarization.completion",
                 "media_info": {

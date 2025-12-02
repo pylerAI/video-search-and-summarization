@@ -1,0 +1,73 @@
+# VLM Models Configuration
+# This file defines external OpenAI-compatible VLM models that can be used by VSS
+# All models should follow the OpenAI API specification
+
+vlm_models:
+  # OpenAI GPT-4o
+  gpt-4o:
+    type: "openai-compat"
+    api_key_env: "OPENAI_GPT4O_API_KEY"  # Environment variable containing the API key
+    endpoint: "https://api.openai.com/v1/"
+    deployment_name: "gpt-4o"
+    enabled: true
+    description: "OpenAI GPT-4o model with vision capabilities"
+    
+  # OpenAI GPT-4o-mini
+  gpt-4o-mini:
+    type: "openai-compat"
+    api_key_env: "OPENAI_GPT4O_MINI_API_KEY"
+    endpoint: "https://api.openai.com/v1/"
+    deployment_name: "gpt-4o-mini"
+    enabled: true
+    description: "OpenAI GPT-4o-mini model - faster and more cost-effective"
+    
+  # Google Gemini 2.0 Flash
+  gemini-2.0-flash:
+    type: "openai-compat"
+    api_key_env: "GOOGLE_GEMINI_API_KEY"
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    deployment_name: "gemini-2.0-flash-exp"
+    enabled: true
+    description: "Google Gemini 2.0 Flash experimental model"
+    
+  # Google Gemini 2.5 Pro
+  gemini-2.5-pro:
+    type: "openai-compat"
+    api_key_env: "GOOGLE_GEMINI_API_KEY"
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    deployment_name: "gemini-2.5-pro"
+    enabled: true
+    description: "Google Gemini 2.5 Pro model with vision capabilities"
+      
+  # Local/On-premise OpenAI-compatible endpoint (example)
+  local-vlm:
+    type: "openai-compat"
+    api_key_env: "LOCAL_VLM_API_KEY"  # Can be a dummy key for local deployments
+    endpoint: "http://100.10.30.7:32213/svc-vss/v1"  # Your local endpoint
+    deployment_name: "qwen3-vl-30b-a3b-instruct"
+    enabled: false  # Disabled by default
+    description: "Local on-premise VLM model with OpenAI-compatible API"
+    
+  # NVIDIA NIM endpoint (example)
+  nvidia-nim-vlm:
+    type: "openai-compat"
+    api_key_env: "NVIDIA_API_KEY"
+    endpoint: "https://integrate.api.nvidia.com/v1/"
+    deployment_name: "nvidia/vila-1.5-8b"  # Example NIM model
+    enabled: false  # Disabled by default
+    description: "NVIDIA NIM hosted VLM model"
+
+# Default model configuration
+default_model: "gpt-4o-mini"  # This will be used if no model is specified in API calls
+
+# Global settings for all OpenAI-compatible models
+global_settings:
+  timeout: 30  # Request timeout in seconds
+  max_retries: 3  # Maximum retry attempts
+  retry_delay: 1  # Delay between retries in seconds
+  
+# Model-specific parameter defaults (can be overridden per request)
+default_parameters:
+  temperature: 0.1
+  max_tokens: 4000
+  top_p: 0.9
