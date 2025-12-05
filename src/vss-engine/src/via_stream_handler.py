@@ -1232,6 +1232,24 @@ class ViaStreamHandler:
         req_info.is_summarization = is_summarization
         req_info.vlm_request_params.vlm_prompt = query.prompt
         req_info.vlm_request_params.vlm_generation_config = vlm_generation_config
+        
+        # Populate model configuration if available
+        if hasattr(query, 'model') and query.model:
+            try:
+                from model_registry import get_model_registry
+                model_registry = get_model_registry()
+                model_config = model_registry.get_model_config(query.model)
+                if model_config:
+                    req_info.vlm_request_params.model_id = model_config.model_id
+                    req_info.vlm_request_params.model_endpoint = model_config.endpoint
+                    req_info.vlm_request_params.model_api_key = model_config.api_key
+                    req_info.vlm_request_params.model_deployment_name = model_config.deployment_name
+                    req_info.vlm_request_params.model_additional_headers = model_config.additional_headers
+                    logger.info(f"Populated model config for {query.model} in request {req_info.request_id}")
+                else:
+                    logger.warning(f"Model config not found for {query.model}")
+            except Exception as e:
+                logger.error(f"Failed to get model config for {query.model}: {e}")
         req_info.assets = assets
         req_info.stream_id = req_info.assets[0].asset_id
         req_info.start_timestamp = (

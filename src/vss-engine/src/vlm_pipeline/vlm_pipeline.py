@@ -80,14 +80,27 @@ class VlmModelInfo:
 class VlmRequestParams:
     vlm_generation_config: Optional[dict] = None
     vlm_prompt: Optional[str] = None
+    # Model configuration for dynamic model selection
+    model_id: Optional[str] = None
+    model_endpoint: Optional[str] = None
+    model_api_key: Optional[str] = None
+    model_deployment_name: Optional[str] = None
+    model_additional_headers: Optional[dict] = None
 
     def __eq__(self, other) -> bool:
         if isinstance(other, VlmRequestParams):
             return (
                 self.vlm_prompt == other.vlm_prompt
                 and self.vlm_generation_config == other.vlm_generation_config
+                and self.model_id == other.model_id
+                and self.model_endpoint == other.model_endpoint
+                and self.model_deployment_name == other.model_deployment_name
             )
         return False
+    
+    def has_model_config(self) -> bool:
+        """Check if this request has model configuration"""
+        return bool(self.model_id and self.model_endpoint and self.model_deployment_name)
 
 
 class DecoderProcess(ViaProcessBase):
@@ -644,13 +657,20 @@ class VlmProcess(ViaProcessBase):
         elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.openai_compat.openai_compat_model import CompOpenAIModel
 
-            self._model = CompOpenAIModel(True)
+            # Check if we have dynamic model configuration
+            model_config = getattr(self, '_dynamic_model_config', None)
+            self._model = CompOpenAIModel(True, model_config=model_config)
             self._batch_size = 1
         elif self._vlm_model_type is None:
             loader = CustomModuleLoader(self._model_path)
             self._model = loader.load_model()
             self._batch_size = 1
         return True
+    
+    def set_dynamic_model_config(self, model_config):
+        """Set dynamic model configuration for this VLM process"""
+        self._dynamic_model_config = model_config
+        logger.info(f"Set dynamic model config for VLM process: {model_config.get('model_id', 'unknown')}")
 
     def _deinitialize(self):
         self._model = None
@@ -1582,6 +1602,20 @@ class VlmPipeline:
         video_codec=None,
         decode_only=False,
     ):
+        # Configure VLM processes with dynamic model config if available
+        if request_params and request_params.has_model_config():
+            model_config = {
+                'model_id': request_params.model_id,
+                'endpoint': request_params.model_endpoint,
+                'api_key': request_params.model_api_key,
+                'deployment_name': request_params.model_deployment_name,
+                'additional_headers': request_params.model_additional_headers or {}
+            }
+            # Set dynamic config on all VLM processes
+            for vlm_proc in self._vlm_procs:
+                vlm_proc.set_dynamic_model_config(model_config)
+            logger.info(f"Configured VLM processes for model: {request_params.model_id}")
+        
         with self._enqueue_lock:
             curr_chunk_counter = self._chunk_counter
             self._chunk_counter += 1

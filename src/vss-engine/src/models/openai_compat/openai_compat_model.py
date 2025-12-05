@@ -156,6 +156,27 @@ class CompOpenAIModel:
                 if not os.environ.get("OPENAI_API_KEY", ""):
                     raise Exception("OPENAI_API_KEY not configured")
 
+    def init_with_dynamic_config(self, model_config):
+        """Initialize with dynamic model configuration from model registry"""
+        self._key = model_config.get('api_key')
+        self._model_name = model_config.get('deployment_name')
+        self._endpoint = model_config.get('endpoint')
+        
+        logger.info(f"Dynamic config - Model: {self._model_name}, Endpoint: {self._endpoint}")
+        
+        # Configure client with dynamic settings
+        from openai import OpenAI
+        
+        if self._key and self._endpoint and self._model_name:
+            self._client = OpenAI(
+                base_url=self._endpoint,
+                api_key=self._key,
+                max_retries=OPENAI_RECONNECT_ATTEMPTS
+            )
+            logger.info(f"Initialized OpenAI client with dynamic config for {self._model_name}")
+        else:
+            raise Exception(f"Invalid dynamic model configuration: missing required fields")
+    
     def init_gpt_4(self, key=None):
         self._key = key
 
@@ -187,12 +208,22 @@ class CompOpenAIModel:
         else:
             self.configure_openai()
 
-    def __init__(self, test_api_call=False) -> None:
+    def __init__(self, test_api_call=False, model_config=None) -> None:
         self._model_name = None
         self._model = None
         self._client = None
         self._endpoint = ""
-        self.init_gpt_4()
+        self._model_config = model_config  # Store dynamic model configuration
+        
+        if model_config:
+            # Use dynamic configuration
+            logger.info(f"Using dynamic model configuration for {model_config.get('model_id', 'unknown')}")
+            self.init_with_dynamic_config(model_config)
+        else:
+            # Fallback to environment variables (existing behavior)
+            logger.info("Using environment variables for model configuration")
+            self.init_gpt_4()
+        
         # Overwrite environment with final selected endpoint
         logger.info(f"endpoint is {self._endpoint}")
         os.environ["VIA_VLM_ENDPOINT"] = self._endpoint
