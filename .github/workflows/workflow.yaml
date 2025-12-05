@@ -108,27 +108,6 @@ jobs:
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
           find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           kubectl apply -f deploy/k8s/${{ env.PROJECT_ENV }} --recursive
-      # - name: Wait for image pull job to complete (up to 20min)
-      #   run: |
-      #     for i in {1..80}; do
-      #       STATUS=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
-      #       FAILED=$(kubectl get job image-prepull -n vss -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
-      #       if [ "$STATUS" == "True" ]; then
-      #         echo "Job completed successfully."
-      #         exit 0
-      #       elif [ "$FAILED" == "True" ]; then
-      #         echo "Job failed!"
-      #         kubectl describe job image-prepull -n vss
-      #         exit 1
-      #       fi
-      #       echo "Waiting for job to complete..."
-      #       sleep 15
-      #     done
-      #     echo "Timeout reached. Job did not complete in time."
-      #     exit 1
-
-      # - name: Clean up prepull job
-      #   run: kubectl delete job image-prepull -n vss --ignore-not-found
 
       - name: Deploy vss app to Onprem
         run: |
