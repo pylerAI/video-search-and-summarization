@@ -21,3 +21,5 @@ riva-nim/*
 riva-nim-1.0.0.tgz
 
 deploy/helm/nvidia-blueprint-vss/*
+deploy/helm/nvidia-blueprint-vss-2.3.1/*
+deploy/helm/nvidia-blueprint-vss-2.4.0/*

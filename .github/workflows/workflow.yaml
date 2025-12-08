@@ -10,6 +10,8 @@ on:
       - 'deploy/k8s/dev/vss-vlm-config.yaml'
       - 'vlm_deploy/Qwen/**'
       - 'vlm_deploy/VILA/**'
+      - 'deploy/helm/values/dev.yaml'
+      - '.github/workflows/**'
 
   workflow_call:
     inputs:
