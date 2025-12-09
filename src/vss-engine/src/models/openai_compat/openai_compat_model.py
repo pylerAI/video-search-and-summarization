@@ -322,6 +322,12 @@ class CompOpenAIModel:
                     ],
                 }
             ]
+            # Override system prompt in environment variable with reasoning prompt if enable_reasoning is True
+            if generation_config.get("enable_reasoning") and "<think>" not in generation_config.get("system_prompt", ""):
+                generation_config["system_prompt"] += (
+                    " Answer the question in the following format: "
+                    "<think>\nyour reasoning\n</think>\n\n<answer>\nyour answer\n</answer>.\n"
+                )
             if "system_prompt" in generation_config and generation_config["system_prompt"]:
                 messages.insert(
                     0, {"role": "system", "content": generation_config["system_prompt"]}
