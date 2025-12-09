@@ -259,6 +259,9 @@ class CompOpenAIModel:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+        if "reasoning_effort" not in generation_config:
+            generation_config["reasoning_effort"] = "medium"        
+        
         if chunk:
             if len(video_frames_times) != len(chunk):
                 logger.error("chunk size not matching in openai-compat generate")
@@ -347,9 +350,12 @@ class CompOpenAIModel:
                             temperature=generation_config["temperature"],
                             seed=seed,
                             top_p=generation_config["top_p"],
+                            reasoning_effort=generation_config["reasoning_effort"],
                         )
                         content = response_obj.content
                     elif self._client:
+                        logger.debug("Reasoning effort: ")
+                        logger.debug(generation_config["reasoning_effort"])
                         resp = self._client.chat.completions.create(
                             model=self._model_name,
                             messages=messages,
@@ -357,6 +363,7 @@ class CompOpenAIModel:
                             temperature=generation_config["temperature"],
                             seed=seed,
                             top_p=generation_config["top_p"],
+                            reasoning_effort=generation_config["reasoning_effort"],
                         )
                         content = ""
                         for choice in resp.choices:

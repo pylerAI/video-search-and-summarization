@@ -622,6 +622,8 @@ class ViaServer:
                 "delete_external_collection = %s, "
                 "camera_id = %s, "
                 "enable_audio = %d",
+                "reasoning_effort = %s, ",
+                "include_reasoning = %s ",
                 ", ".join(videoIdList),
                 asset.is_live,
                 query.chunk_duration,
@@ -662,6 +664,8 @@ class ViaServer:
                 query.delete_external_collection,
                 query.camera_id,
                 query.enable_audio,
+                query.reasoning_effort,
+                query.include_reasoning,
             )
 
             # Save stream settings to json file

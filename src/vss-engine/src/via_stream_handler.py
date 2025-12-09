@@ -1285,6 +1285,10 @@ class ViaStreamHandler:
             vlm_generation_config["enable_reasoning"] = query.enable_reasoning
         if query.system_prompt:
             vlm_generation_config["system_prompt"] = query.system_prompt
+        if query.reasoning_effort:
+            vlm_generation_config["reasoning_effort"] = query.reasoning_effort
+        if query.include_reasoning:
+            vlm_generation_config["include_reasoning"] = query.include_reasoning
 
         # Create a RequestInfo object and populate it
         req_info = RequestInfo()

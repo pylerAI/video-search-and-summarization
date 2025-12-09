@@ -603,6 +603,18 @@ class SummarizationQuery(ViaBaseModel):
         examples=[True, False],
     )
 
+    reasoning_effort: str = Field(
+        default=None,
+        examples=["low", "medium", "high"],
+        description="Reasoning effort level for VLM captions generation",
+    )
+
+    include_reasoning: bool = Field(
+        default=False,
+        description="Include reasoning steps in the final output",
+        examples=[True, False],
+    )
+
     summarize_batch_size: int = Field(
         default=None,
         examples=[5],
