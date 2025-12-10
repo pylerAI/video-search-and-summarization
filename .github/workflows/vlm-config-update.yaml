@@ -3,7 +3,7 @@ name: VLM Config Update
 on:
   push:
     branches:
-      - develop
+      - develop-2.4.0
     paths:
       - 'deploy/k8s/vlm/Qwen/model-config.yaml'
       - 'deploy/k8s/vlm/VILA/model-config.yaml'

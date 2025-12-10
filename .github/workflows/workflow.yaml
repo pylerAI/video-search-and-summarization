@@ -12,6 +12,7 @@ on:
       - 'vlm_deploy/VILA/**'
       - 'deploy/helm/values/dev.yaml'
       - '.github/workflows/**'
+      - 'deploy/k8s/dev/vss-configs-cm.yaml'
 
   workflow_call:
     inputs:
@@ -117,7 +118,8 @@ jobs:
           kubectl scale deployment vss-vss-deployment -n vss-240 --replicas=0
           find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.0.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss-240 --install
-          kubectl scale deployment vss-vss-deployment -n vss-240 --replicas=1
+          # apply configmap
+          kubectl apply -f deploy/k8s/dev/vss-configs-cm.yaml -n vss-240
 
       - name: Patch schedulerName for deployments
         run: |
@@ -127,6 +129,8 @@ jobs:
 
       - name: scale down not use service
         run: |
+          # engine scale down
+          kubectl scale deployment vss-vss-deployment -n vss-240 --replicas=0
           # llm server scale down (not use)
           kubectl scale statefulset vss -n vss-240 --replicas=0
           # embedding and reranker scale down
