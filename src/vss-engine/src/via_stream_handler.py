@@ -87,7 +87,6 @@ class RequestInfo:
         self.vlm_request_params = VlmRequestParams()
         self.progress = 0
         self.response: list[RequestInfo.Response] = []
-        self.is_live = False
         self.start_timestamp = None
         self.end_timestamp = None
         self.queue_time = None
@@ -504,16 +503,13 @@ class ViaStreamHandler:
                 new_response = self._get_aggregated_summary(req_info, chunk_responses)
             except Exception as ex:
                 logger.error("".join(traceback.format_exception(ex)))
-                if not req_info.is_live:
-                    req_info.status = RequestInfo.Status.FAILED
-                else:
-                    req_info.response += [
-                        RequestInfo.Response(
-                            chunk_responses[0].chunk.start_ntp,
-                            chunk_responses[-1].chunk.end_ntp,
-                            "Summarization failed",
-                        )
-                    ]
+                req_info.response += [
+                    RequestInfo.Response(
+                        chunk_responses[0].chunk.start_ntp,
+                        chunk_responses[-1].chunk.end_ntp,
+                        "Summarization failed",
+                    )
+                ]
             req_info.response += new_response
 
         if req_info.status == RequestInfo.Status.FAILED:
@@ -733,13 +729,12 @@ class ViaStreamHandler:
             transcript = None
 
         if response.error:
-            if not req_info.is_live:
-                # Error was encountered while processing a chunk,
-                # mark the request as failed for files
-                # For live streams, continue processing new chunks
-                req_info.status = RequestInfo.Status.FAILED
-                req_info.error_message = response.error
-                self._vlm_pipeline.abort_chunks(req_info.assets[0].asset_id)
+            # Error was encountered while processing a chunk,
+            # mark the request as failed for files
+            # For live streams, continue processing new chunks
+            req_info.status = RequestInfo.Status.FAILED
+            req_info.error_message = response.error
+            self._vlm_pipeline.abort_chunks(req_info.assets[0].asset_id)
             logger.error(
                 "Encountered error while processing chunk %r of query %s - %s",
                 chunk,
@@ -902,12 +897,10 @@ class ViaStreamHandler:
                 req_info._e2e_span = tracer.start_span("VIA Pipeline End-to-End")
                 req_info._e2e_span.set_attribute("request_id", req_info.request_id)
                 req_info._e2e_span.set_attribute("stream_id", req_info.stream_id)
-                req_info._e2e_span.set_attribute("is_live", req_info.is_live)
 
                 req_info.vlm_pipeline_span = tracer.start_span("VLM Pipeline Latency")
                 req_info.vlm_pipeline_span.set_attribute("request_id", req_info.request_id)
                 req_info.vlm_pipeline_span.set_attribute("stream_id", req_info.stream_id)
-                req_info.vlm_pipeline_span.set_attribute("is_live", req_info.is_live)
 
         # Start FPS tracking for this stream
         self._start_stream_fps_tracking(req_info)
@@ -1129,7 +1122,6 @@ class ViaStreamHandler:
                         {
                             "retriever_function": {
                                 "question": highlight_query,
-                                "is_live": request_infos[-1].is_live,
                                 "is_last": False,
                             }
                         }
@@ -1165,7 +1157,6 @@ class ViaStreamHandler:
                         {
                             "retriever_function": {
                                 "question": messages,
-                                "is_live": request_infos[-1].is_live,
                                 "is_last": False,
                             }
                         }
@@ -1712,10 +1703,7 @@ class ViaStreamHandler:
                 return
             if not req_info.enable_chat:
                 # If request for file summarization has completed
-                if (not req_info.is_live and req_info.progress == 100) or (
-                    req_info.is_live
-                    and len(req_info.response) == 0
-                ):
+                if (req_info.progress == 100):
                     # If live stream ended
                     self.remove_request_ids(req_info.assets)
                     if req_info._ctx_mgr:
@@ -1802,23 +1790,22 @@ class ViaStreamHandler:
                     ):
                         # Summarize indivudual chunk VLM responses using CA-RAG
                         # TODO: Handle the last chunk id, should be -1
-                        if not req_info.is_live:
-                            last_meta = vars(chunk_responses[-1].chunk)
-                            last_meta["is_last"] = True
-                            last_meta["uuid"] = req_info.stream_id
-                            last_meta["cv_meta"] = ""
-                            last_meta["asset_dir"] = self._args.asset_dir
-                            last_meta["camera_id"] = req_info.camera_id
-                            with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
-                                req_info._ctx_mgr.add_doc(
-                                    ".",
-                                    doc_i=(
-                                        2 * chunk_responses[-1].chunk.chunkIdx + 2
-                                        if req_info.enable_audio
-                                        else chunk_responses[-1].chunk.chunkIdx + 1
-                                    ),
-                                    doc_meta=last_meta,
-                                )
+                        last_meta = vars(chunk_responses[-1].chunk)
+                        last_meta["is_last"] = True
+                        last_meta["uuid"] = req_info.stream_id
+                        last_meta["cv_meta"] = ""
+                        last_meta["asset_dir"] = self._args.asset_dir
+                        last_meta["camera_id"] = req_info.camera_id
+                        with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
+                            req_info._ctx_mgr.add_doc(
+                                ".",
+                                doc_i=(
+                                    2 * chunk_responses[-1].chunk.chunkIdx + 2
+                                    if req_info.enable_audio
+                                    else chunk_responses[-1].chunk.chunkIdx + 1
+                                ),
+                                doc_meta=last_meta,
+                            )
 
                         if req_info.summarize:
                             if req_info.enable_chat:
@@ -1926,14 +1913,10 @@ class ViaStreamHandler:
             return [
                 RequestInfo.Response(
                     (
-                        chunk_responses[0].chunk.start_ntp
-                        if req_info.is_live
-                        else chunk_responses[0].chunk.start_pts / 1e9
+                        chunk_responses[0].chunk.start_pts / 1e9
                     ),
                     (
-                        chunk_responses[-1].chunk.end_ntp
-                        if req_info.is_live
-                        else chunk_responses[-1].chunk.end_pts / 1e9
+                        chunk_responses[-1].chunk.end_pts / 1e9
                     ),
                     agg_response,
                     combined_reasoning,
@@ -1951,14 +1934,10 @@ class ViaStreamHandler:
             responses.append(
                 RequestInfo.Response(
                     (
-                        processed_chunk.chunk.start_ntp
-                        if req_info.is_live
-                        else processed_chunk.chunk.start_pts / 1e9
+                        processed_chunk.chunk.start_pts / 1e9
                     ),
                     (
-                        processed_chunk.chunk.end_ntp
-                        if req_info.is_live
-                        else processed_chunk.chunk.end_pts / 1e9
+                        processed_chunk.chunk.end_pts / 1e9
                     ),
                     processed_chunk.vlm_response,
                     reasoning_description,
