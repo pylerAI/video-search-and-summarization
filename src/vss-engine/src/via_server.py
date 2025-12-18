@@ -382,8 +382,7 @@ class ViaServer:
             file_id = str(file_id)
             logger.info("Received delete video file request for %s", file_id)
             asset = self._asset_manager.get_asset(file_id)
-            if asset.is_live:
-                raise ViaException(f"No such file {file_id}", "BadParameter", 400)
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 self._async_executor, self._stream_handler.remove_video_file, asset
@@ -435,7 +434,6 @@ class ViaServer:
                     "media_type": asset.media_type,
                 }
                 for asset in self._asset_manager.list_assets()
-                if not asset.is_live
             ]
             logger.info(
                 "Received list files request. Responding with %d files info", len(video_file_list)
@@ -459,8 +457,6 @@ class ViaServer:
         ) -> FileInfo:
             file_id = str(file_id)
             asset = self._asset_manager.get_asset(file_id)
-            if asset.is_live:
-                raise ViaException(f"No such resource {file_id}", "BadParameter", 400)
             try:
                 fsize = (await aiofiles.os.stat(asset.path)).st_size
             except Exception:
@@ -483,8 +479,7 @@ class ViaServer:
             ],
         ):
             asset = self._asset_manager.get_asset(str(file_id))
-            if asset.is_live:
-                raise ViaException(f"No such resource {str(file_id)}", "BadParameter", 400)
+
             return FileResponse(asset.path)
 
         # ======================= Files API
@@ -623,7 +618,6 @@ class ViaServer:
                 "camera_id = %s, "
                 "enable_audio = %d",
                 ", ".join(videoIdList),
-                asset.is_live,
                 query.chunk_duration,
                 query.chunk_overlap_duration,
                 query.media_info and query.media_info.type,
@@ -692,11 +686,7 @@ class ViaServer:
                 error_message = "; ".join(validation_errors)
                 raise ViaException(error_message, "BadParameters", 400)
 
-            # Only streaming output is supported for live streams
-            if asset.is_live and not query.stream:
-                raise ViaException(
-                    "Only streaming output is supported for live-streams", "BadParameters", 400
-                )
+
             # For non-CA RAG usecase, only streaming output is supported
             if self._stream_handler._ctx_mgr is None and not query.stream:
                 raise ViaException(
@@ -925,17 +915,14 @@ class ViaServer:
 
             Args:
                 resp: Response object with start_timestamp, end_timestamp, and response fields
-                req_info: Request info object with is_live field
+                req_info: Request info object
 
             Returns:
                 str: Formatted chunk response with timestamp
             """
-            if req_info.is_live:
-                start_time = resp.start_timestamp
-                end_time = resp.end_timestamp
-            else:
-                start_time = str(resp.start_timestamp)
-                end_time = str(resp.end_timestamp)
+
+            start_time = str(resp.start_timestamp)
+            end_time = str(resp.end_timestamp)
 
             return f"[{start_time} - {end_time}] {resp.response}"
 
@@ -1005,7 +992,6 @@ class ViaServer:
                 "vlm_input_height = %d, "
                 "enable_reasoning = %d",
                 ", ".join(videoIdList),
-                asset.is_live,
                 query.chunk_duration,
                 query.chunk_overlap_duration,
                 query.media_info and query.media_info.type,
@@ -1043,11 +1029,7 @@ class ViaServer:
                     400,
                 )
 
-            # Only streaming output is supported for live streams
-            if asset.is_live and not query.stream:
-                raise ViaException(
-                    "Only streaming output is supported for live-streams", "BadParameters", 400
-                )
+
             loop = asyncio.get_event_loop()
 
             # Convert VlmQuery to SummarizationQuery for internal processing
@@ -1186,14 +1168,10 @@ class ViaServer:
                             for resp in resp_list:
                                 chunk_response = {
                                     "start_time": (
-                                        resp.start_timestamp
-                                        if req_info.is_live
-                                        else str(resp.start_timestamp)
+                                        str(resp.start_timestamp)
                                     ),
                                     "end_time": (
-                                        resp.end_timestamp
-                                        if req_info.is_live
-                                        else str(resp.end_timestamp)
+                                        str(resp.end_timestamp)
                                     ),
                                     "content": resp.response,
                                 }
@@ -1276,14 +1254,10 @@ class ViaServer:
                         [
                             VlmCaptionResponse(
                                 start_time=(
-                                    resp.start_timestamp
-                                    if req_info.is_live
-                                    else str(resp.start_timestamp)
+                                    str(resp.start_timestamp)
                                 ),
                                 end_time=(
-                                    resp.end_timestamp
-                                    if req_info.is_live
-                                    else str(resp.end_timestamp)
+                                    str(resp.end_timestamp)
                                 ),
                                 content=resp.response,
                                 reasoning_description=getattr(resp, "reasoning_description", ""),
@@ -1395,7 +1369,6 @@ class ViaServer:
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, summary_duration=%d, stream=%r",
                 ", ".join(videoIdList),
-                asset.is_live,
                 query.chunk_duration,
                 query.chunk_overlap_duration,
                 query.media_info and query.media_info.type,
