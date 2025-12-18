@@ -20,7 +20,6 @@ as required by the VLM model.
 import ctypes
 import glob
 import io
-import json
 import os
 import re
 import shutil
@@ -53,9 +52,8 @@ import riva.client
 import torch
 import torch.nn.functional as F
 import yaml
-from torchvision.transforms import v2
-
 from chunk_info import ChunkInfo
+from torchvision.transforms import v2
 from utils import JsonCVMetadata, MediaFileInfo, get_json_file_name
 from via_logger import TimeMeasure, logger
 
@@ -432,7 +430,6 @@ class VideoFileFrameGetter:
         self._pipeline = None
         self._last_stream_id = ""
         self._last_cv_json_file = ""
-        self._is_live = False
         self._live_stream_frame_selectors: dict[BaseFrameSelector, any] = {}
         self._live_stream_frame_selectors_lock = Lock()
         self._audio_start_cv = Condition()
@@ -725,10 +722,8 @@ class VideoFileFrameGetter:
             ffmpeg_path = shutil.which("ffmpeg_for_overlay_video")
             return ffmpeg_path is not None
 
-        if self._is_live:
-            video_path = f"{self._cached_frames_dir}/../{self._request_id}_{chunk_idx}.ts"
-        else:
-            video_path = f"{self._cached_frames_dir}/{self._request_id}_{chunk_idx}.ts"
+
+        video_path = f"{self._cached_frames_dir}/{self._request_id}_{chunk_idx}.ts"
         images_path = f"{self._cached_frames_dir}/frame_*.jpg"
         if os.path.exists(self._cached_frames_dir) and check_ffmpeg():
             # BN TBD : Need better way to handle this
@@ -750,7 +745,7 @@ class VideoFileFrameGetter:
                 "-i",
                 images_path,
                 "-c:v",
-                *(["libx264", "-preset", "ultrafast"] if self._is_live else ["copy"]),
+                *(["copy"]),
                 video_path,
             ]
             try:
@@ -1012,7 +1007,6 @@ class VideoFileFrameGetter:
         # uridecodebin -> probe (frame selector) -> nvjpegenc -> appsink -> add to cache
         # For audio: uridecodebin -> probe -> audioconvert ->
         # resample -> asr -> appsink -> add text_to cache
-        self._is_live = file_or_rtsp.startswith("rtsp://")
         pipeline = self._pipeline if create_source_elems_only else Gst.Pipeline()
 
         def cb_elem_added(elem, username, password, selff):
@@ -1071,96 +1065,91 @@ class VideoFileFrameGetter:
                 logger.info("Audio stream found.")
 
         uridecodebin = None
-        if self._is_live:
-            uridecodebin = Gst.ElementFactory.make("uridecodebin")
-            uridecodebin.set_property("uri", file_or_rtsp)
-            pipeline.add(uridecodebin)
-            self._uridecodebin = uridecodebin
-        else:
-            filesrc = Gst.ElementFactory.make("filesrc")
-            filesrc.set_property("location", file_or_rtsp)
-            pipeline.add(filesrc)
-            self._filesrc = filesrc
 
-            self._parsebin = Gst.ElementFactory.make("parsebin")
-            pipeline.add(self._parsebin)
+        filesrc = Gst.ElementFactory.make("filesrc")
+        filesrc.set_property("location", file_or_rtsp)
+        pipeline.add(filesrc)
+        self._filesrc = filesrc
 
-            filesrc.link(self._parsebin)
+        self._parsebin = Gst.ElementFactory.make("parsebin")
+        pipeline.add(self._parsebin)
 
-            def cb_newpad_parsebin(parsebin, parsebin_pad, self):
-                caps = parsebin_pad.query_caps(None)
-                if not caps:
-                    return
-                gststruct = caps.get_structure(0)
-                gstname = gststruct.get_name()
+        filesrc.link(self._parsebin)
 
-                if gstname.find("video") != -1:
-                    if (
-                        gstname.find("h264") != -1
-                        and os.environ.get("VSS_DISABLE_DECODER_REUSE", "true") == "false"
-                    ):
-                        if not self._vdecodebin_h264:
-                            self._vdecodebin_h264 = Gst.ElementFactory.make("decodebin")
-                            pipeline.add(self._vdecodebin_h264)
-                            self._vdecodebin_h264.set_state(Gst.State.PLAYING)
-                            self._vdecodebin_h264.connect("pad-added", cb_newpad_decodebin, self)
-                            self._vdecodebin_h264.connect(
-                                "deep-element-added",
-                                lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
-                                    elem, username, password, selff
-                                ),
-                            )
-                        else:
-                            pipeline.add(self._vdecodebin_h264)
-                            self._vdecodebin_h264.link(self._q1)
-                        self._vdecodebin = self._vdecodebin_h264
-                    elif (
-                        gstname.find("h265") != -1
-                        and os.environ.get("VSS_DISABLE_DECODER_REUSE", "true") == "false"
-                    ):
-                        if not self._vdecodebin_h265:
-                            self._vdecodebin_h265 = Gst.ElementFactory.make("decodebin")
-                            pipeline.add(self._vdecodebin_h265)
-                            self._vdecodebin_h265.set_state(Gst.State.PLAYING)
-                            self._vdecodebin_h265.connect("pad-added", cb_newpad_decodebin, self)
-                            self._vdecodebin_h265.connect(
-                                "deep-element-added",
-                                lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
-                                    elem, username, password, selff
-                                ),
-                            )
-                        else:
-                            pipeline.add(self._vdecodebin_h265)
-                            self._vdecodebin_h265.link(self._q1)
-                        self._vdecodebin = self._vdecodebin_h265
-                    elif not self._vdecodebin:
-                        self._vdecodebin = Gst.ElementFactory.make("decodebin")
-                        pipeline.add(self._vdecodebin)
-                        self._vdecodebin.set_state(Gst.State.PLAYING)
-                        self._vdecodebin.connect("pad-added", cb_newpad_decodebin, self)
-                        self._vdecodebin.connect(
+        def cb_newpad_parsebin(parsebin, parsebin_pad, self):
+            caps = parsebin_pad.query_caps(None)
+            if not caps:
+                return
+            gststruct = caps.get_structure(0)
+            gstname = gststruct.get_name()
+
+            if gstname.find("video") != -1:
+                if (
+                    gstname.find("h264") != -1
+                    and os.environ.get("VSS_DISABLE_DECODER_REUSE", "true") == "false"
+                ):
+                    if not self._vdecodebin_h264:
+                        self._vdecodebin_h264 = Gst.ElementFactory.make("decodebin")
+                        pipeline.add(self._vdecodebin_h264)
+                        self._vdecodebin_h264.set_state(Gst.State.PLAYING)
+                        self._vdecodebin_h264.connect("pad-added", cb_newpad_decodebin, self)
+                        self._vdecodebin_h264.connect(
                             "deep-element-added",
                             lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
                                 elem, username, password, selff
                             ),
                         )
-                    parsebin_pad.link(self._vdecodebin.get_static_pad("sink"))
+                    else:
+                        pipeline.add(self._vdecodebin_h264)
+                        self._vdecodebin_h264.link(self._q1)
+                    self._vdecodebin = self._vdecodebin_h264
+                elif (
+                    gstname.find("h265") != -1
+                    and os.environ.get("VSS_DISABLE_DECODER_REUSE", "true") == "false"
+                ):
+                    if not self._vdecodebin_h265:
+                        self._vdecodebin_h265 = Gst.ElementFactory.make("decodebin")
+                        pipeline.add(self._vdecodebin_h265)
+                        self._vdecodebin_h265.set_state(Gst.State.PLAYING)
+                        self._vdecodebin_h265.connect("pad-added", cb_newpad_decodebin, self)
+                        self._vdecodebin_h265.connect(
+                            "deep-element-added",
+                            lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
+                                elem, username, password, selff
+                            ),
+                        )
+                    else:
+                        pipeline.add(self._vdecodebin_h265)
+                        self._vdecodebin_h265.link(self._q1)
+                    self._vdecodebin = self._vdecodebin_h265
+                elif not self._vdecodebin:
+                    self._vdecodebin = Gst.ElementFactory.make("decodebin")
+                    pipeline.add(self._vdecodebin)
+                    self._vdecodebin.set_state(Gst.State.PLAYING)
+                    self._vdecodebin.connect("pad-added", cb_newpad_decodebin, self)
+                    self._vdecodebin.connect(
+                        "deep-element-added",
+                        lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
+                            elem, username, password, selff
+                        ),
+                    )
+                parsebin_pad.link(self._vdecodebin.get_static_pad("sink"))
 
-                if gstname.find("image") != -1:
-                    self._idecodebin = Gst.ElementFactory.make("decodebin")
-                    pipeline.add(self._idecodebin)
-                    self._idecodebin.set_state(Gst.State.PLAYING)
-                    parsebin_pad.link(self._idecodebin.get_static_pad("sink"))
-                    self._idecodebin.connect("pad-added", cb_newpad_decodebin, self)
+            if gstname.find("image") != -1:
+                self._idecodebin = Gst.ElementFactory.make("decodebin")
+                pipeline.add(self._idecodebin)
+                self._idecodebin.set_state(Gst.State.PLAYING)
+                parsebin_pad.link(self._idecodebin.get_static_pad("sink"))
+                self._idecodebin.connect("pad-added", cb_newpad_decodebin, self)
 
-                if gstname.find("audio") != -1 and self._audio_support and self._enable_audio:
-                    self._adecodebin = Gst.ElementFactory.make("decodebin")
-                    pipeline.add(self._adecodebin)
-                    self._adecodebin.set_state(Gst.State.PLAYING)
-                    parsebin_pad.link(self._adecodebin.get_static_pad("sink"))
-                    self._adecodebin.connect("pad-added", cb_newpad_decodebin, self)
+            if gstname.find("audio") != -1 and self._audio_support and self._enable_audio:
+                self._adecodebin = Gst.ElementFactory.make("decodebin")
+                pipeline.add(self._adecodebin)
+                self._adecodebin.set_state(Gst.State.PLAYING)
+                parsebin_pad.link(self._adecodebin.get_static_pad("sink"))
+                self._adecodebin.connect("pad-added", cb_newpad_decodebin, self)
 
-            self._parsebin.connect("pad-added", cb_newpad_parsebin, self)
+        self._parsebin.connect("pad-added", cb_newpad_parsebin, self)
 
         if create_source_elems_only:
             return
@@ -1171,17 +1160,8 @@ class VideoFileFrameGetter:
         qvideoconvert = Gst.ElementFactory.make("queue")
         pipeline.add(qvideoconvert)
 
-        if self._is_live and not os.environ.get("VSS_DISABLE_LIVESTREAM_PREVIEW", ""):
-            logger.info(
-                "Creating live stream video preview branch for %s", self._live_stream_request_id
-            )
-            if not self._create_live_stream_video_preview_branch(pipeline, self._q1, qvideoconvert):
-                logger.warning(
-                    "Failed to create live stream video preview branch. Additional codecs not installed."  # noqa: E501
-                )
-                self._q1.link(qvideoconvert)
-        else:
-            self._q1.link(qvideoconvert)
+        
+        self._q1.link(qvideoconvert)
 
         q2 = Gst.ElementFactory.make("queue")
         pipeline.add(q2)
@@ -1332,97 +1312,20 @@ class VideoFileFrameGetter:
 
             self._last_frame_pts = buffer.pts
 
-            if self._is_live:
-                buffer_address = hash(buffer)
-                if HAVE_SEI_META_LIB:
-                    video_sei_meta = gst_video_sei_meta.gst_buffer_get_video_sei_meta(
-                        buffer_address
-                    )
-                else:
-                    video_sei_meta = None
-
-                if video_sei_meta:
-                    sei_data = json.loads(video_sei_meta.sei_metadata_ptr)
-                    buffer.pts = sei_data["sim_time"] * 1e9
-
-                new_chunk = False
-                if buffer.pts >= self._live_stream_next_chunk_start_pts:
-                    with self._audio_end_cv:
-                        with self._err_msg_lock:
-                            has_error = self._err_msg is not None
-                        if (
-                            self._audio_present
-                            and self._audio_current_pts < self._live_stream_next_chunk_start_pts
-                            and not has_error
-                            and not self._stop_stream
-                        ):
-                            logger.debug(
-                                "In buffer probe waiting for audio processing,"
-                                "current audio pts: %d",
-                                self._audio_current_pts,
-                            )
-                            self._audio_end_cv.wait(1)
-
-                with self._live_stream_frame_selectors_lock:
-                    if video_sei_meta:
-                        self._sei_data = json.loads(video_sei_meta.sei_metadata_ptr)
-                        if self._sei_base_time is None:
-                            self._sei_base_time = self._sei_data["timestamp"] - buffer.pts
-
-                    if buffer.pts >= self._live_stream_next_chunk_start_pts:
-                        fs = DefaultFrameSelector(self._frame_selector._num_frames)
-                        chunk = ChunkInfo()
-                        chunk.file = self._live_stream_url
-                        chunk.chunkIdx = self._live_stream_next_chunk_idx
-                        chunk.is_first = chunk.chunkIdx == 0
-                        if chunk.is_first:
-                            self._live_stream_next_chunk_start_pts = buffer.pts
-                        chunk.start_pts = int(self._live_stream_next_chunk_start_pts)
-                        chunk.end_pts = int(
-                            chunk.start_pts + self._live_stream_chunk_duration * 1e9
-                        )
-
-                        fs.set_chunk(chunk)
-                        self._live_stream_frame_selectors[fs] = ([], [])
-                        self._live_stream_next_chunk_start_pts = (
-                            chunk.end_pts - self._live_stream_chunk_overlap_duration * 1e9
-                        )
-                        self._live_stream_next_chunk_idx += 1
-                        new_chunk = True
-
-                    choose_frame = False
-                    for fs, (
-                        cached_pts,
-                        cached_frames,
-                    ) in self._live_stream_frame_selectors.items():
-                        if fs.choose_frame(buffer, buffer.pts):
-                            choose_frame = True
-                            cached_pts.append(buffer.pts / 1e9)
-
-                    self._process_finished_chunks(buffer.pts)
-
-                if new_chunk:
-                    with self._audio_start_cv:
-                        self._audio_start_cv.notify()
-
-                if choose_frame:
-                    return Gst.PadProbeReturn.OK
-
-            else:
-                if self._frame_selector.choose_frame(buffer, buffer.pts):
-                    return Gst.PadProbeReturn.OK
-                if len(self._frame_selector._selected_pts_array) == 0 and not self._eos_sent:
-                    if self._audio_present:
-                        if self._audio_eos:
-                            self._pipeline.send_event(Gst.Event.new_eos())
-                            self._eos_sent = True
-                            logger.debug("sent eos")
-                    else:
+            if self._frame_selector.choose_frame(buffer, buffer.pts):
+                return Gst.PadProbeReturn.OK
+            if len(self._frame_selector._selected_pts_array) == 0 and not self._eos_sent:
+                if self._audio_present:
+                    if self._audio_eos:
                         self._pipeline.send_event(Gst.Event.new_eos())
-                        if self._audio_convert:
-                            self._audio_convert.send_event(Gst.Event.new_eos())
                         self._eos_sent = True
                         logger.debug("sent eos")
+                else:
+                    self._pipeline.send_event(Gst.Event.new_eos())
+                    if self._audio_convert:
+                        self._audio_convert.send_event(Gst.Event.new_eos())
+                    self._eos_sent = True
+                    logger.debug("sent eos")
 
             return Gst.PadProbeReturn.DROP
 
@@ -1453,15 +1356,9 @@ class VideoFileFrameGetter:
 
             # Cache the pre-processed frame / jpeg and its timestamp. Convert
             # the timestamps from nanoseconds to seconds.
-            if self._is_live:
-                with self._live_stream_frame_selectors_lock:
-                    for _, (cached_pts, cached_frames) in self._live_stream_frame_selectors.items():
-                        if buffer.pts / 1e9 in cached_pts:
-                            cached_frames.append(image_tensor)
-                    self._process_finished_chunks(buffer.pts)
-            else:
-                self._cached_frames.append(image_tensor)
-                self._cached_frames_pts.append((buffer.pts) / 1000000000.0)
+        
+            self._cached_frames.append(image_tensor)
+            self._cached_frames_pts.append((buffer.pts) / 1000000000.0)
             buffer.unmap(mapinfo)
 
         def add_text_to_cache(buffer):
@@ -1559,16 +1456,12 @@ class VideoFileFrameGetter:
                 buffer = sample.get_buffer()
                 # logger.debug("New audio buffer with pts: %d", buffer.pts)
                 if buffer:
-                    if self._is_live:
-                        if buffer.get_size():
-                            add_audio_to_cache(buffer)
-                    else:
-                        if buffer.pts >= self._end_pts and not self._audio_eos:
-                            self._audio_eos = True
-                            logger.info("Audio pipeline finished for chunk: %d", self._chunkIdx)
-                        if buffer.get_size() and not self._audio_eos:
-                            # Audio buffer for file input
-                            add_audio_to_cache(buffer)
+                    if buffer.pts >= self._end_pts and not self._audio_eos:
+                        self._audio_eos = True
+                        logger.info("Audio pipeline finished for chunk: %d", self._chunkIdx)
+                    if buffer.get_size() and not self._audio_eos:
+                        # Audio buffer for file input
+                        add_audio_to_cache(buffer)
             return Gst.FlowReturn.OK
 
         def cb_ntpquery(pad, info, data):
@@ -1650,7 +1543,7 @@ class VideoFileFrameGetter:
 
             if event.type == Gst.EventType.EOS:
                 if self._audio_convert:
-                    if not self._audio_present or self._is_live:
+                    if not self._audio_present:
                         self._audio_convert.send_event(Gst.Event.new_eos())
             return Gst.PadProbeReturn.OK
 
@@ -1737,9 +1630,6 @@ class VideoFileFrameGetter:
             # Probe callback function to pass chosen frames and drop other frames
             if not self._enable_audio:
                 return Gst.PadProbeReturn.DROP
-
-            if self._is_live:
-                return Gst.PadProbeReturn.OK
 
             buffer = info.get_buffer()
 
@@ -2047,7 +1937,6 @@ class VideoFileFrameGetter:
         cat_list[-1] = cat_list[-1].replace(" .", "")
         self._text_prompts = cat_list
 
-        self._is_live = file_or_rtsp.startswith("rtsp://")
         pipeline = Gst.Pipeline()
 
         def cb_elem_added(elem, username, password, selff):
@@ -2103,92 +1992,87 @@ class VideoFileFrameGetter:
                 logger.info("Audio stream found.")
 
         uridecodebin = None
-        if self._is_live:
-            uridecodebin = Gst.ElementFactory.make("uridecodebin")
-            uridecodebin.set_property("uri", file_or_rtsp)
-            pipeline.add(uridecodebin)
-            self._uridecodebin = uridecodebin
-        else:
-            filesrc = Gst.ElementFactory.make("filesrc")
-            filesrc.set_property("location", file_or_rtsp)
-            pipeline.add(filesrc)
-            self._filesrc = filesrc
+        
+    
+        filesrc = Gst.ElementFactory.make("filesrc")
+        filesrc.set_property("location", file_or_rtsp)
+        pipeline.add(filesrc)
+        self._filesrc = filesrc
 
-            self._parsebin = Gst.ElementFactory.make("parsebin")
-            pipeline.add(self._parsebin)
+        self._parsebin = Gst.ElementFactory.make("parsebin")
+        pipeline.add(self._parsebin)
 
-            filesrc.link(self._parsebin)
+        filesrc.link(self._parsebin)
 
-            def cb_newpad_parsebin(parsebin, parsebin_pad, self):
-                caps = parsebin_pad.query_caps(None)
-                if not caps:
-                    return
-                gststruct = caps.get_structure(0)
-                gstname = gststruct.get_name()
+        def cb_newpad_parsebin(parsebin, parsebin_pad, self):
+            caps = parsebin_pad.query_caps(None)
+            if not caps:
+                return
+            gststruct = caps.get_structure(0)
+            gstname = gststruct.get_name()
 
-                if gstname.find("video") != -1:
-                    if gstname.find("h264") != -1:
-                        if not self._vdecodebin_h264:
-                            self._vdecodebin_h264 = Gst.ElementFactory.make("decodebin")
-                            pipeline.add(self._vdecodebin_h264)
-                            self._vdecodebin_h264.set_state(Gst.State.PLAYING)
-                            self._vdecodebin_h264.connect("pad-added", cb_newpad_decodebin, self)
-                            self._vdecodebin_h264.connect(
-                                "deep-element-added",
-                                lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
-                                    elem, username, password, selff
-                                ),
-                            )
-                        else:
-                            pipeline.add(self._vdecodebin_h264)
-                            self._vdecodebin_h264.link(self._tee)
-                        self._vdecodebin = self._vdecodebin_h264
-                    elif gstname.find("h265") != -1:
-                        if not self._vdecodebin_h265:
-                            self._vdecodebin_h265 = Gst.ElementFactory.make("decodebin")
-                            pipeline.add(self._vdecodebin_h265)
-                            self._vdecodebin_h265.set_state(Gst.State.PLAYING)
-                            self._vdecodebin_h265.connect("pad-added", cb_newpad_decodebin, self)
-                            self._vdecodebin_h265.connect(
-                                "deep-element-added",
-                                lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
-                                    elem, username, password, selff
-                                ),
-                            )
-                        else:
-                            pipeline.add(self._vdecodebin_h265)
-                            self._vdecodebin_h265.link(self._tee)
-                        self._vdecodebin = self._vdecodebin_h265
-                    elif not self._vdecodebin:
-                        self._vdecodebin = Gst.ElementFactory.make("decodebin")
-                        pipeline.add(self._vdecodebin)
-                        self._vdecodebin.set_state(Gst.State.PLAYING)
-                        self._vdecodebin.connect("pad-added", cb_newpad_decodebin, self)
-                        self._vdecodebin.connect(
+            if gstname.find("video") != -1:
+                if gstname.find("h264") != -1:
+                    if not self._vdecodebin_h264:
+                        self._vdecodebin_h264 = Gst.ElementFactory.make("decodebin")
+                        pipeline.add(self._vdecodebin_h264)
+                        self._vdecodebin_h264.set_state(Gst.State.PLAYING)
+                        self._vdecodebin_h264.connect("pad-added", cb_newpad_decodebin, self)
+                        self._vdecodebin_h264.connect(
                             "deep-element-added",
                             lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
                                 elem, username, password, selff
                             ),
                         )
-                    parsebin_pad.link(self._vdecodebin.get_static_pad("sink"))
+                    else:
+                        pipeline.add(self._vdecodebin_h264)
+                        self._vdecodebin_h264.link(self._tee)
+                    self._vdecodebin = self._vdecodebin_h264
+                elif gstname.find("h265") != -1:
+                    if not self._vdecodebin_h265:
+                        self._vdecodebin_h265 = Gst.ElementFactory.make("decodebin")
+                        pipeline.add(self._vdecodebin_h265)
+                        self._vdecodebin_h265.set_state(Gst.State.PLAYING)
+                        self._vdecodebin_h265.connect("pad-added", cb_newpad_decodebin, self)
+                        self._vdecodebin_h265.connect(
+                            "deep-element-added",
+                            lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
+                                elem, username, password, selff
+                            ),
+                        )
+                    else:
+                        pipeline.add(self._vdecodebin_h265)
+                        self._vdecodebin_h265.link(self._tee)
+                    self._vdecodebin = self._vdecodebin_h265
+                elif not self._vdecodebin:
+                    self._vdecodebin = Gst.ElementFactory.make("decodebin")
+                    pipeline.add(self._vdecodebin)
+                    self._vdecodebin.set_state(Gst.State.PLAYING)
+                    self._vdecodebin.connect("pad-added", cb_newpad_decodebin, self)
+                    self._vdecodebin.connect(
+                        "deep-element-added",
+                        lambda bin, subbin, elem, username=username, password=password, selff=self: cb_elem_added(  # noqa: E501
+                            elem, username, password, selff
+                        ),
+                    )
+                parsebin_pad.link(self._vdecodebin.get_static_pad("sink"))
 
-                if gstname.find("image") != -1:
-                    self._idecodebin = Gst.ElementFactory.make("decodebin")
-                    pipeline.add(self._idecodebin)
-                    self._idecodebin.set_state(Gst.State.PLAYING)
-                    parsebin_pad.link(self._idecodebin.get_static_pad("sink"))
-                    self._idecodebin.connect("pad-added", cb_newpad_decodebin, self)
+            if gstname.find("image") != -1:
+                self._idecodebin = Gst.ElementFactory.make("decodebin")
+                pipeline.add(self._idecodebin)
+                self._idecodebin.set_state(Gst.State.PLAYING)
+                parsebin_pad.link(self._idecodebin.get_static_pad("sink"))
+                self._idecodebin.connect("pad-added", cb_newpad_decodebin, self)
 
-                if gstname.find("audio") != -1 and self._audio_support and self._enable_audio:
-                    self._adecodebin = Gst.ElementFactory.make("decodebin")
-                    pipeline.add(self._adecodebin)
-                    self._adecodebin.set_state(Gst.State.PLAYING)
-                    parsebin_pad.link(self._adecodebin.get_static_pad("sink"))
-                    self._adecodebin.connect("pad-added", cb_newpad_decodebin, self)
+            if gstname.find("audio") != -1 and self._audio_support and self._enable_audio:
+                self._adecodebin = Gst.ElementFactory.make("decodebin")
+                pipeline.add(self._adecodebin)
+                self._adecodebin.set_state(Gst.State.PLAYING)
+                parsebin_pad.link(self._adecodebin.get_static_pad("sink"))
+                self._adecodebin.connect("pad-added", cb_newpad_decodebin, self)
 
-            self._parsebin.connect("pad-added", cb_newpad_parsebin, self)
+        self._parsebin.connect("pad-added", cb_newpad_parsebin, self)
 
-        # self._is_live = True
 
         # Add a tee, queue and fakesink reuired for seeking
         # decoder -> tee -> queue -> fakesink
@@ -2238,16 +2122,12 @@ class VideoFileFrameGetter:
             if sample:
                 buffer = sample.get_buffer()
                 if buffer:
-                    if self._is_live:
-                        if buffer.get_size():
-                            add_audio_to_cache(buffer)
-                    else:
-                        if buffer.pts >= self._end_pts and not self._audio_eos:
-                            self._audio_eos = True
-                            logger.info("Audio pipeline finished for chunk: %d", self._chunkIdx)
-                        if buffer.get_size() and not self._audio_eos:
-                            # Audio buffer for file input
-                            add_audio_to_cache(buffer)
+                    if buffer.pts >= self._end_pts and not self._audio_eos:
+                        self._audio_eos = True
+                        logger.info("Audio pipeline finished for chunk: %d", self._chunkIdx)
+                    if buffer.get_size() and not self._audio_eos:
+                        # Audio buffer for file input
+                        add_audio_to_cache(buffer)
             return Gst.FlowReturn.OK
 
         self._audio_q1 = None
@@ -2330,7 +2210,7 @@ class VideoFileFrameGetter:
         q2 = Gst.ElementFactory.make("queue")
         pipeline.add(q2)
 
-        if self._is_live and not os.environ.get("VSS_DISABLE_LIVESTREAM_PREVIEW", ""):
+        if not os.environ.get("VSS_DISABLE_LIVESTREAM_PREVIEW", ""):
             logger.info(
                 "Creating live stream video preview branch for %s", self._live_stream_request_id
             )
@@ -2447,117 +2327,20 @@ class VideoFileFrameGetter:
             if buffer_pts == Gst.CLOCK_TIME_NONE:
                 return Gst.PadProbeReturn.DROP
             self._last_frame_pts = buffer_pts
-            if self._is_live:
-                new_chunk = False
-                if buffer_pts >= self._live_stream_next_chunk_start_pts:
-                    with self._audio_end_cv:
-                        with self._err_msg_lock:
-                            has_error = self._err_msg is not None
-                        if (
-                            self._audio_present
-                            and (self._audio_current_pts) < self._live_stream_next_chunk_start_pts
-                            and not has_error
-                            and not self._stop_stream
-                        ):
-                            logger.debug(
-                                "In buffer probe waiting for audio processing,"
-                                "current audio pts: %d",
-                                self._audio_current_pts,
-                            )
-                            self._audio_end_cv.wait(1)
-
-                with self._live_stream_frame_selectors_lock:
-                    buffer_address = hash(buffer)
-                    if HAVE_SEI_META_LIB:
-                        video_sei_meta = gst_video_sei_meta.gst_buffer_get_video_sei_meta(
-                            buffer_address
-                        )
-                    else:
-                        video_sei_meta = None
-
-                    if video_sei_meta:
-                        self._sei_data = json.loads(video_sei_meta.sei_metadata_ptr)
-                        ntp_pts = self._sei_data["sim_time"] * 1e9
-                        if self._sei_base_time is None:
-                            self._sei_base_time = self._sei_data["timestamp"] - ntp_pts
-                        update_ntp_pts(buffer, ntp_pts)
-
-                    if buffer_pts >= self._live_stream_next_chunk_start_pts:
-                        fs = DefaultFrameSelector(self._frame_selector._num_frames)
-                        chunk = ChunkInfo()
-                        chunk.file = self._live_stream_url
-                        chunk.chunkIdx = self._live_stream_next_chunk_idx
-                        chunk.is_first = chunk.chunkIdx == 0
-                        if chunk.is_first:
-                            self._live_stream_next_chunk_start_pts = buffer_pts
-                        chunk.start_pts = int(self._live_stream_next_chunk_start_pts)
-                        chunk.end_pts = int(
-                            chunk.start_pts + self._live_stream_chunk_duration * 1e9
-                        )
-                        # Create json cv metadata for new chunk
-                        self._output_cv_metadata = JsonCVMetadata(
-                            request_id=self._live_stream_request_id, chunkIdx=chunk.chunkIdx
-                        )
-                        # Create a new directory for saving cached frames
-                        self._cached_frames_dir = (
-                            f"/tmp/via/cached_frames/{self._request_id}/{chunk.chunkIdx}"
-                        )
-                        try:
-                            os.makedirs(self._cached_frames_dir, exist_ok=True)
-                            logger.info(
-                                "Live stream Request ID: %s - chunk %d - Cached frames saved at %s",
-                                self._request_id,
-                                chunk.chunkIdx,
-                                self._cached_frames_dir,
-                            )
-                        except Exception as e:
-                            logger.error("Error creating cached frames directory: %s", e)
-                            self._dump_cached_frames = False
-                        # print(chunk)
-                        fs.set_chunk(chunk)
-                        self._live_stream_frame_selectors[fs] = ([], [])
-                        self._live_stream_next_chunk_start_pts = (
-                            chunk.end_pts - self._live_stream_chunk_overlap_duration * 1e9
-                        )
-                        self._live_stream_next_chunk_idx += 1
-                        new_chunk = True
-
-                    choose_frame = False
-                    for fs, (
-                        cached_pts,
-                        cached_frames,
-                    ) in self._live_stream_frame_selectors.items():
-                        if fs.choose_frame(buffer, buffer_pts):
-                            choose_frame = True
-                            cached_pts.append(buffer_pts / 1e9)
-
-                    # If frame is chosen, then we need to output cv metadata of the frame
-                    if choose_frame:
-                        write_cv_metadata(buffer, data)
-
-                    self._process_finished_chunks(buffer_pts)
-
-                if new_chunk:
-                    with self._audio_start_cv:
-                        self._audio_start_cv.notify()
-
-                if choose_frame:
-                    return Gst.PadProbeReturn.OK
-
-            else:
-                if self._frame_selector.choose_frame(buffer, buffer_pts):
-                    # print(f"Chosen frame buffer.pts = {buffer.pts}")
-                    return Gst.PadProbeReturn.OK
-                if len(self._frame_selector._selected_pts_array) == 0:
-                    if self._audio_present:
-                        if self._audio_eos:
-                            self._pipeline.send_event(Gst.Event.new_eos())
-                            self._eos_sent = True
-                    else:
+            
+            if self._frame_selector.choose_frame(buffer, buffer_pts):
+                # print(f"Chosen frame buffer.pts = {buffer.pts}")
+                return Gst.PadProbeReturn.OK
+            if len(self._frame_selector._selected_pts_array) == 0:
+                if self._audio_present:
+                    if self._audio_eos:
                         self._pipeline.send_event(Gst.Event.new_eos())
-                        if self._audio_convert:
-                            self._audio_convert.send_event(Gst.Event.new_eos())
                         self._eos_sent = True
+                else:
+                    self._pipeline.send_event(Gst.Event.new_eos())
+                    if self._audio_convert:
+                        self._audio_convert.send_event(Gst.Event.new_eos())
+                    self._eos_sent = True
 
             return Gst.PadProbeReturn.DROP
 
@@ -2591,15 +2374,9 @@ class VideoFileFrameGetter:
             buffer_pts = get_buffer_pts(buffer)
             # buffer_pts = buffer.pts
             # print (f"Caching frame with buffer_pts = :{buffer_pts}")
-            if self._is_live:
-                with self._live_stream_frame_selectors_lock:
-                    for _, (cached_pts, cached_frames) in self._live_stream_frame_selectors.items():
-                        if buffer_pts / 1e9 in cached_pts:
-                            cached_frames.append(image_tensor)
-                    self._process_finished_chunks(buffer_pts)
-            else:
-                self._cached_frames.append(image_tensor)
-                self._cached_frames_pts.append((buffer_pts) / 1000000000.0)
+        
+            self._cached_frames.append(image_tensor)
+            self._cached_frames_pts.append((buffer_pts) / 1000000000.0)
             buffer.unmap(mapinfo)
             logger.debug("Picked buffer %d", buffer_pts)
 
@@ -2688,7 +2465,7 @@ class VideoFileFrameGetter:
 
             if event.type == Gst.EventType.EOS:
                 if self._audio_convert:
-                    if not self._audio_present or self._is_live:
+                    if not self._audio_present:
                         self._audio_convert.send_event(Gst.Event.new_eos())
             return Gst.PadProbeReturn.OK
 
@@ -2803,9 +2580,6 @@ class VideoFileFrameGetter:
             if not self._enable_audio:
                 return Gst.PadProbeReturn.DROP
 
-            if self._is_live:
-                return Gst.PadProbeReturn.OK
-
             buffer = info.get_buffer()
 
             # Small overlap in audio chunks so that words are not missed
@@ -2829,7 +2603,7 @@ class VideoFileFrameGetter:
         q1_src_pad = q1.get_static_pad("src")
         mux_sinkpad = nvstreammux.request_pad_simple("sink_0")
         q1_src_pad.link(mux_sinkpad)
-        if self._is_live and self._gdino_engine:
+        if self._gdino_engine:
             # Create gdino - tracker pipeline (Similar to CV pipeline)
             # streammux -> queue3 -> videoconvert2 -> capsfilter1 (RGBA) -> queue4 -> videoconvert3
             # -> queue5 -> tracker -> queue6  ->  videoconvert_to_osd -> osd
