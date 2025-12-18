@@ -611,7 +611,6 @@ class ViaServer:
                 "notification_top_p = %s, "
                 "summarization enabled = %s, "
                 "chat enabled = %s, "
-                "enable_chat_history = %d, "
                 "collection_name = %s, "
                 "custom_metadata = %s, "
                 "delete_external_collection = %s, "
@@ -650,7 +649,6 @@ class ViaServer:
                 query.notification_top_p,
                 query.summarize,
                 query.enable_chat,
-                query.enable_chat_history,
                 query.collection_name,
                 str(query.custom_metadata),
                 query.delete_external_collection,
@@ -1052,7 +1050,6 @@ class ViaServer:
                 # Set VLM captions specific defaults
                 "summarize": False,
                 "enable_chat": False,
-                "enable_chat_history": False,
             }
 
             if query.system_prompt:

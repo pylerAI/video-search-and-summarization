@@ -109,7 +109,6 @@ class RequestInfo:
         self.nvtx_summarization_start = None
         self.summarize = None
         self.enable_chat = True
-        self.enable_chat_history = True
         self.enable_cv_pipeline = False
         self.cv_metadata_json_file = ""
         self.pending_add_doc_start_time = 0
@@ -1268,7 +1267,6 @@ class ViaStreamHandler:
         req_info.enable_image = query.enable_image
         req_info.summarize = query.summarize
         req_info.enable_chat = query.enable_chat
-        req_info.enable_chat_history = query.enable_chat_history
         req_info.num_frames_per_chunk = query.num_frames_per_chunk
         req_info.summarize_batch_size = query.summarize_batch_size
         req_info.rag_top_k = query.rag_top_k
@@ -2142,11 +2140,6 @@ class ViaStreamHandler:
                 ca_rag_config, "ingestion_function", "max_tokens", req_info.chat_max_tokens
             )
 
-            # Configure chat history
-            logger.info(f"enable_chat_history | STREAM_HANDLER: {req_info.enable_chat_history}")
-            ca_rag_config["functions"]["retriever_function"]["params"][
-                "chat_history"
-            ] = req_info.enable_chat_history
         else:
             if "retriever_function" in ca_rag_config["context_manager"]["functions"]:
                 ca_rag_config["context_manager"]["functions"].remove("retriever_function")

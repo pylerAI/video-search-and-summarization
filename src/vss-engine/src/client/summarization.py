@@ -470,7 +470,6 @@ async def summarize(
     vlm_input_height=0,
     cv_pipeline_prompt="",
     enable_audio=False,
-    enable_chat_history=True,
 ):
     logger.info(f"summarize. ip: {request.client.host}")
 
@@ -534,7 +533,6 @@ async def summarize(
             req_json["summary_aggregation_prompt"] = summary_aggregation_prompt
         req_json["summarize"] = summarize
         req_json["enable_chat"] = enable_chat
-        req_json["enable_chat_history"] = enable_chat_history
         req_json["enable_cv_metadata"] = enable_cv_metadata
         if cv_pipeline_prompt:
             req_json["cv_pipeline_prompt"] = cv_pipeline_prompt
@@ -792,9 +790,6 @@ async def chat_checkbox_selected(chat_checkbox):
         gr.update(visible=chat_checkbox),
         gr.update(visible=chat_checkbox),
         gr.update(visible=chat_checkbox),
-        gr.update(
-            value=False if not chat_checkbox else True, interactive=chat_checkbox
-        ),  # chat_history_checkbox
     )
 
 
@@ -979,8 +974,6 @@ def build_summarization(args, app_cfg, logger_):
                         summarize_checkbox = gr.Checkbox(value=True, label="Enable Summarization")
 
                         chat_checkbox = gr.Checkbox(value=True, label="Enable Chat for the file")
-
-                        chat_history_checkbox = gr.Checkbox(value=True, label="Enable chat history")
 
                         enable_audio = gr.Checkbox(
                             value=False,
@@ -1776,7 +1769,6 @@ def build_summarization(args, app_cfg, logger_):
             vlm_input_height,
             cv_pipeline_prompt,
             enable_audio,
-            chat_history_checkbox,
         ],
         outputs=[
             chatbot,
@@ -1883,7 +1875,6 @@ def build_summarization(args, app_cfg, logger_):
             ask_button,
             reset_chat_button,
             question_textbox,
-            chat_history_checkbox,
         ],
     )
 

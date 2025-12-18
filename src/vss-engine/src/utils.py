@@ -621,7 +621,6 @@ class StreamSettingsCache:
             "top_k",
             "stream",
             "enable_chat",
-            "enable_chat_history",
             "stream_options",
             "num_frames_per_chunk",
             "vlm_input_width",

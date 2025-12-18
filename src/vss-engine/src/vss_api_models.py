@@ -549,12 +549,6 @@ class SummarizationQuery(ViaBaseModel):
         examples=[True, False],
     )
 
-    enable_chat_history: bool = Field(
-        default=True,
-        description="Enable chat history during QnA for the input media",
-        examples=[True, False],
-    )
-
     enable_cv_metadata: bool = Field(
         default=False, description="Enable CV metadata", examples=[True, False]
     )
