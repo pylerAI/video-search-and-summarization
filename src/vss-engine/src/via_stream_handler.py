@@ -127,9 +127,6 @@ class RequestInfo:
         self.chat_top_p = None
         self.chat_temperature = None
         self.chat_max_tokens = None
-        self.notification_top_p = None
-        self.notification_temperature = None
-        self.notification_max_tokens = None
         self.graph_db = None
         self.enable_cot = False
         self.enable_image = False
@@ -2145,17 +2142,6 @@ class ViaStreamHandler:
                 ca_rag_config["context_manager"]["functions"].remove("retriever_function")
             if "ingestion_function" in ca_rag_config["context_manager"]["functions"]:
                 ca_rag_config["context_manager"]["functions"].remove("ingestion_function")
-
-        # #Update notification LLM tool parameters
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "top_p"
-        # )
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "temperature"
-        # )
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "max_tokens"
-        # )
 
         self._update_db_tool_param(
             ca_rag_config,

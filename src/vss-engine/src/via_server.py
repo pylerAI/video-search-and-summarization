@@ -606,9 +606,7 @@ class ViaServer:
                 "chat_max_tokens = %s, "
                 "chat_temperature = %s, "
                 "chat_top_p = %s, "
-                "notification_max_tokens = %s, "
-                "notification_temperature = %s, "
-                "notification_top_p = %s, "
+
                 "summarization enabled = %s, "
                 "chat enabled = %s, "
                 "collection_name = %s, "
@@ -644,9 +642,6 @@ class ViaServer:
                 query.chat_max_tokens,
                 query.chat_temperature,
                 query.chat_top_p,
-                query.notification_max_tokens,
-                query.notification_temperature,
-                query.notification_top_p,
                 query.summarize,
                 query.enable_chat,
                 query.collection_name,

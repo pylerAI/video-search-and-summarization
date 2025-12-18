@@ -37,7 +37,6 @@ CAMERA_ID_PATTERN = r"^(?:camera_(\d+)|video_(\d+)|default)?$"
 UUID_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
-LIVE_STREAM_URL_PATTERN = r"^rtsp://"
 KEY_PATTERN = r"^[A-Za-z0-9]*$"
 ANY_CHAR_PATTERN = r"^(.|\n)*$"
 CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
@@ -175,6 +174,8 @@ class ListFilesResponse(ViaBaseModel):
 
 
 # ===================== Models required by Files API
+
+
 
 
 # ===================== Models required by /models API
@@ -682,34 +683,6 @@ class SummarizationQuery(ViaBaseModel):
         ),
     )
 
-    notification_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    notification_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    notification_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
     graph_db: str = Field(
         default=None,
         examples=["neo4j", "arango"],
@@ -956,11 +929,6 @@ class ChatCompletionQuery(ViaBaseModel):
             " Not applicable for live-streaming."
         ),
     )
-    highlight: bool = Field(
-        default=False,
-        description="If true, generate a highlight for the video",
-        examples=[True, False],
-    )
 
     user: str = Field(
         default="",
@@ -1202,6 +1170,130 @@ class RecommendedConfigResponse(ViaBaseModel):
 # ===================== Models required by /recommended_config API
 
 
+# ===================== Models required by /alerts API
+
+
+class RecentAlertInfo(ViaBaseModel):
+    """Information about a recent alert."""
+
+    alert_name: str = Field(
+        description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN
+    )
+    alert_id: UUID = Field(description="ID of the alert")
+    detected_events: list[
+        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
+    ] = Field(
+        description="List of events that were detected",
+        max_length=100,
+        examples=[["Fire", "More than 5 people"]],
+    )
+    alert_text: str = Field(
+        description="Detailed description of the alert", max_length=10000, pattern=ANY_CHAR_PATTERN
+    )
+    ntp_timestamp: str = Field(
+        description="NTP timestamp when the alert was generated",
+        min_length=24,
+        max_length=24,
+        examples=["2024-05-30T01:41:25.000Z"],
+        pattern=TIMESTAMP_PATTERN,
+    )
+
+
+class AddAlertInfo(ViaBaseModel):
+    """Information required to add an alert."""
+
+    name: str = Field(
+        description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN, default=""
+    )
+    liveStreamId: UUID = Field(description="ID of the live stream to configure the alert for")
+    events: list[Annotated[str, Field(min_length=1, max_length=1024, pattern=ANY_CHAR_PATTERN)]] = (
+        Field(
+            description="List of events to generate alert for",
+            max_length=100,
+            examples=[["Fire", "More than 5 people"]],
+        )
+    )
+    callback: HttpUrl = Field(
+        description="URL to call when events are detected",
+        examples=["http://localhost:12000/via-callback-handler"],
+    )
+    callbackJsonTemplate: str = Field(
+        description=(
+            "JSON Template for the callback body. Supported placeholders:"
+            " {{streamId}}, {{alertId}}, {{ntpTimestamp}}, {{alertText}}, {{detectedEvents}}"
+        ),
+        max_length=1024,
+        default=DEFAULT_CALLBACK_JSON_TEMPLATE,
+        pattern=ANY_CHAR_PATTERN,
+    )
+    callbackToken: str = Field(
+        description="Bearer token to use when calling the callback URL",
+        default=None,
+        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+        max_length=10000,
+        pattern=FILE_NAME_PATTERN,
+    )
+
+
+class AddAlertResponse(ViaBaseModel):
+    """Response of the add alert API."""
+
+    id: UUID = Field(description="ID of the newly added alert")
+
+
+class AlertInfo(ViaBaseModel):
+    """Information about an alert added to the server."""
+
+    liveStreamId: UUID = Field(description="ID of the live stream to configure the alert for")
+    events: list[
+        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
+    ] = Field(
+        description="List of events to generate alert for",
+        max_length=100,
+        examples=[["Fire", "More than 5 people"]],
+    )
+    alertId: UUID = Field(description="ID of the alert")
+    name: str = Field(description="Name of the alert", max_length=1000, pattern=DESCRIPTION_PATTERN)
+
+
+# ===================== Models required by /alerts API
+
+
+# ===================== Models required by /reviewAlert API
+
+
+class ReviewAlertAPIVersion(str, Enum):
+    """Alert review API Version."""
+
+    V1_0 = "1.0"
+
+
+class ReviewAlertSeverity(str, Enum):
+    """Alert severity levels."""
+
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFORMAL = "INFORMAL"
+
+
+class ReviewAlertStatus(str, Enum):
+    """Alert status levels."""
+
+    REVIEW_PENDING = "REVIEW_PENDING"
+    REVIEWED = "REVIEWED"
+    REVIEW_FAILED = "REVIEW_FAILED"
+
+
+class ReviewAlertType(str, Enum):
+    """Alert types."""
+
+    RESTRICTED_ACCESS = "RESTRICTED_ACCESS"
+    INTRUSION_DETECTED = "INTRUSION_DETECTED"
+    LOITERING_DETECTED = "LOITERING_DETECTED"
+    MOTION_DETECTED = "MOTION_DETECTED"
+    CROWD_DETECTED = "CROWD_DETECTED"
 
 
 class VlmParams(ViaBaseModel):
@@ -1340,6 +1432,316 @@ class VssParams(ViaBaseModel):
         description="Enable debug output in response", default=False, examples=[True, False]
     )
 
+
+class ReviewAlertMetaLabel(ViaBaseModel):
+    """Metadata label for alert review."""
+
+    key: str = Field(
+        description="Label key",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["location", "camera_id", "zone", "priority", "department"],
+    )
+    value: str = Field(
+        description="Label value",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["warehouse_entrance", "cam_001", "restricted_area", "high", "security"],
+    )
+
+
+class ReviewAlertInfo(ViaBaseModel):
+    """Information about the alert."""
+
+    severity: ReviewAlertSeverity = Field(description="Alert severity")
+    status: ReviewAlertStatus = Field(description="Alert status")
+    type: str = Field(
+        description="Alert type",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "RESTRICTED_ACCESS",
+            "INTRUSION_DETECTED",
+            "LOITERING_DETECTED",
+            "MOTION_DETECTED",
+            "CROWD_DETECTED",
+        ],
+    )
+    description: str = Field(
+        description="Alert description",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "Person detected in restricted area",
+            "Multiple people detected in unauthorized zone",
+            "Suspicious activity detected",
+        ],
+    )
+
+
+class ReviewAlertEventInfo(ViaBaseModel):
+    """Event information for the alert."""
+
+    type: str = Field(
+        description="Event type",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "person_detected",
+            "motion_detected",
+            "crowd_detected",
+            "vehicle_detected",
+            "object_left",
+        ],
+    )
+    description: str = Field(
+        description="Event description",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "Person detected in camera view",
+            "Motion detected in restricted area",
+            "Crowd of people detected",
+            "Vehicle detected in pedestrian zone",
+        ],
+    )
+
+
+class ReviewAlertDebugInfo(ViaBaseModel):
+    """Debug information for the alert review."""
+
+    selected_frames_ts: list[Annotated[float, Field(ge=0.0)]] = Field(
+        description="Selected frames timestamps",
+        max_length=1024,
+        examples=[[0.0, 1.5, 3.0, 4.5, 6.0], [10.0, 12.5, 15.0]],
+    )
+
+
+class ReviewAlertReviewStatus(str, Enum):
+    """Alert review status."""
+
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
+
+
+class ReviewAlertResult(ViaBaseModel):
+    """Review result for the alert."""
+
+    status: ReviewAlertReviewStatus = Field(description="Alert review status")
+    error_string: str = Field(
+        description="Error details",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        default="",
+        examples=["", "Failed to process video", "Model not available"],
+    )
+    verification_result: Optional[bool] = Field(
+        description="Alert review result", examples=[True, False], default=None
+    )
+    reasoning: str = Field(
+        description="Alert review reasoning",
+        max_length=100000,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            (
+                "The VLM analysis confirmed the presence of a person in the restricted area. "
+                "The individual was detected in multiple frames and appears to be unauthorized."
+            ),
+            "Analysis shows no unauthorized access detected in the video.",
+        ],
+    )
+    review_method: str = Field(
+        description="Review method",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["VLM_ANALYSIS", "AI_VERIFICATION", "MANUAL_REVIEW"],
+    )
+    reviewed_by: str = Field(
+        description="Reviewed by",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["vila-1.5", "security_system", "human_operator"],
+    )
+    reviewed_at: str = Field(
+        description="Reviewed at",
+        pattern=TIMESTAMP_PATTERN,
+        max_length=24,
+        examples=["2024-05-30T01:41:25.000Z", "2024-05-30T02:15:30.000Z"],
+    )
+    notes: str = Field(
+        description="Notes",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["", "Alert verified as false positive", "Requires further investigation"],
+    )
+    description: str = Field(
+        description="VLM response",
+        max_length=102400,
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            ("The scene contains ..."),
+        ],
+    )
+    input_prompt: str = Field(
+        max_length=5000,
+        description="VLM prompt for alert review",
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "Is there person detected in restricted area?",
+            "Analyze this video for unauthorized access",
+            "Check for suspicious activity in the monitored area",
+        ],
+    )
+    debug: Optional[ReviewAlertDebugInfo] = Field(description="Debug information", default=None)
+
+
+class ReviewAlertRequest(ViaBaseModel):
+    """Request model for alert review."""
+
+    version: ReviewAlertAPIVersion = Field(description="Alert review API version")
+    id: UUID = Field(description="Unique request ID")
+    timestamp: str = Field(
+        description="NTP timestamp when the alert was generated",
+        min_length=20,
+        max_length=24,
+        examples=["2024-05-30T01:41:25.000Z"],
+        pattern=TIMESTAMP_PATTERN,
+        validation_alias="@timestamp",
+    )
+    sensor_id: str = Field(
+        description="Sensor identifier",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["camera-001", "sensor-west-entrance", "thermal-camera-01"],
+    )
+    video_path: str = Field(
+        description="Path to video file relative to the VSS base media path",
+        pattern=PATH_PATTERN,
+        examples=["alerts/123e4567-e89b-12d3-a456-426614174000/video.mp4"],
+        max_length=1024,
+    )
+    cv_metadata_path: str = Field(
+        description="Path to CV metadata file relative to the VSS base media path",
+        pattern=PATH_PATTERN,
+        examples=["alerts/123e4567-e89b-12d3-a456-426614174000/cv_metadata.json"],
+        max_length=1024,
+        default="",
+    )
+    stream_name: Optional[str] = Field(
+        description="Stream name",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["West Gate Entrance"],
+        default=None,
+    )
+    confidence: float = Field(
+        description="Confidence score", ge=0.0, le=1.0, examples=[0.95, 0.87, 0.72, 0.99]
+    )
+    start_time: Optional[float] = Field(
+        description="Start time of the clip in seconds within the input video",
+        ge=0.0,
+        le=315360000.0,
+        examples=[0.000, 0.333, 0.666],
+        default=0.0,
+    )
+    end_time: Optional[float] = Field(
+        description="End time of the clip in seconds within the input video",
+        ge=0.0,
+        le=315360000.0,
+        examples=[0.000, 0.333, 0.666],
+        default=0.0,
+    )
+    alert: ReviewAlertInfo = Field(description="Alert information")
+    event: ReviewAlertEventInfo = Field(description="Event information")
+    vss_params: VssParams = Field(description="VSS parameters")
+    meta_labels: List[ReviewAlertMetaLabel] = Field(
+        description="Metadata labels",
+        max_length=1024,
+        default=[],
+        examples=[
+            [
+                {"key": "location", "value": "warehouse_entrance"},
+                {"key": "camera_id", "value": "cam_001"},
+                {"key": "priority", "value": "high"},
+            ]
+        ],
+    )
+
+
+class ReviewAlertResponse(ViaBaseModel):
+    """Alert review response."""
+
+    version: ReviewAlertAPIVersion = Field(description="Alert review API version")
+    id: UUID = Field(description="Unique request ID")
+    timestamp: str = Field(
+        description="NTP timestamp when the alert was generated",
+        min_length=20,
+        max_length=24,
+        examples=["2024-05-30T01:41:25.000Z"],
+        pattern=TIMESTAMP_PATTERN,
+        serialization_alias="@timestamp",
+    )
+    sensor_id: str = Field(
+        description="Sensor identifier",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["camera-001", "sensor-west-entrance", "thermal-camera-01"],
+    )
+    video_path: str = Field(
+        description="Path to video file relative to the VSS base media path",
+        pattern=PATH_PATTERN,
+        examples=["alerts/123e4567-e89b-12d3-a456-426614174000/video.mp4"],
+        max_length=1024,
+    )
+    cv_metadata_path: str = Field(
+        description="Path to CV metadata file relative to the VSS base media path",
+        pattern=PATH_PATTERN,
+        examples=["alerts/123e4567-e89b-12d3-a456-426614174000/cv_metadata.json"],
+        max_length=1024,
+        default="",
+    )
+    stream_name: Optional[str] = Field(
+        description="Stream name",
+        max_length=1024,
+        pattern=ANY_CHAR_PATTERN,
+        examples=["West Gate Entrance"],
+        default=None,
+    )
+    confidence: float = Field(
+        description="Confidence score", ge=0.0, le=1.0, examples=[0.95, 0.87, 0.72, 0.99]
+    )
+    start_time: Optional[float] = Field(
+        description="Start time of the clip in seconds within the input video",
+        ge=0.0,
+        le=315360000.0,
+        examples=[0.000, 0.333, 0.666],
+        default=0.0,
+    )
+    end_time: Optional[float] = Field(
+        description="End time of the clip in seconds within the input video",
+        ge=0.0,
+        le=315360000.0,
+        examples=[0.000, 0.333, 0.666],
+        default=0.0,
+    )
+    alert: ReviewAlertInfo = Field(description="Alert information")
+    event: ReviewAlertEventInfo = Field(description="Event information")
+    result: ReviewAlertResult = Field(description="Review result")
+    meta_labels: List[ReviewAlertMetaLabel] = Field(
+        description="Metadata labels",
+        max_length=1024,
+        default=[],
+        examples=[
+            [
+                {"key": "location", "value": "warehouse_entrance"},
+                {"key": "camera_id", "value": "cam_001"},
+                {"key": "priority", "value": "high"},
+            ]
+        ],
+    )
+
+
+# ===================== Models required by /reviewAlert API
 
 
 class VlmQuery(ViaBaseModel):

@@ -282,9 +282,6 @@ async def close_asset(chatbot, question_textbox, video, media_ids, image_mode):
         gr.update(interactive=True, value=0.7),  # chat_top_p
         gr.update(interactive=True, value=0.2),  # chat_temperature
         gr.update(interactive=True, value=512),  # chat_max_tokens
-        gr.update(interactive=True, value=0.7),  # notification_top_p
-        gr.update(interactive=True, value=0.2),  # notification_temperature
-        gr.update(interactive=True, value=2048),  # notification_max_tokens
         gr.update(interactive=True, value=6),  # summarize_batch_size
         gr.update(interactive=True, value=1),  # rag_batch_size
         gr.update(interactive=True, value=5),  # rag_top_k
@@ -454,9 +451,6 @@ async def summarize(
     chat_top_p,
     chat_temperature,
     chat_max_tokens,
-    notification_top_p,
-    notification_temperature,
-    notification_max_tokens,
     summarize_batch_size,
     rag_batch_size,
     rag_top_k,
@@ -517,9 +511,6 @@ async def summarize(
             "chat_top_p": chat_top_p,
             "chat_temperature": chat_temperature,
             "chat_max_tokens": chat_max_tokens,
-            "notification_top_p": notification_top_p,
-            "notification_temperature": notification_temperature,
-            "notification_max_tokens": notification_max_tokens,
             "summarize_batch_size": summarize_batch_size,
             "rag_batch_size": rag_batch_size,
             "rag_top_k": rag_top_k,
@@ -1492,43 +1483,6 @@ def build_summarization(args, app_cfg, logger_):
                         info=("The maximum number of tokens to generate for chat."),
                         elem_classes="white-background",
                     )
-                with gr.Accordion("Alert Parameters", open=False):
-                    notification_top_p = gr.Slider(
-                        minimum=0,
-                        maximum=1,
-                        value=get_tool_llm_param(ca_rag_config, "notification", "top_p", 0.7),
-                        interactive=True,
-                        label="Notification Top P",
-                        step=0.05,
-                        info=(
-                            "The top-p sampling mass used for notifications."
-                            " Determines the probability mass that is sampled."
-                        ),
-                        elem_classes="white-background",
-                    )
-                    notification_temperature = gr.Slider(
-                        minimum=0,
-                        maximum=1,
-                        value=get_tool_llm_param(ca_rag_config, "notification", "temperature", 0.5),
-                        interactive=True,
-                        label="Notification Temperature",
-                        step=0.05,
-                        info=(
-                            "The sampling temperature to use for notifications."
-                            " Higher values make the output less deterministic."
-                        ),
-                        elem_classes="white-background",
-                    )
-                    notification_max_tokens = gr.Slider(
-                        minimum=1,
-                        maximum=10240,
-                        value=get_tool_llm_param(ca_rag_config, "notification", "max_tokens", 2048),
-                        interactive=True,
-                        label="Notification Max Tokens",
-                        step=1,
-                        info=("The maximum number of tokens to generate for notifications."),
-                        elem_classes="white-background",
-                    )
                 with gr.Row():
                     summarize_batch_size = gr.Number(
                         label="Summarize Batch Size",
@@ -1721,9 +1675,6 @@ def build_summarization(args, app_cfg, logger_):
             chat_top_p,
             chat_temperature,
             chat_max_tokens,
-            notification_top_p,
-            notification_temperature,
-            notification_max_tokens,
             summarize_batch_size,
             rag_batch_size,
             rag_top_k,
@@ -1754,9 +1705,6 @@ def build_summarization(args, app_cfg, logger_):
             chat_top_p,
             chat_temperature,
             chat_max_tokens,
-            notification_top_p,
-            notification_temperature,
-            notification_max_tokens,
             summarize_batch_size,
             rag_batch_size,
             rag_top_k,
@@ -1798,9 +1746,6 @@ def build_summarization(args, app_cfg, logger_):
             chat_top_p,
             chat_temperature,
             chat_max_tokens,
-            notification_top_p,
-            notification_temperature,
-            notification_max_tokens,
             summarize_batch_size,
             rag_batch_size,
             rag_top_k,
@@ -1859,9 +1804,6 @@ def build_summarization(args, app_cfg, logger_):
             chat_top_p,
             chat_temperature,
             chat_max_tokens,
-            notification_top_p,
-            notification_temperature,
-            notification_max_tokens,
             summarize_batch_size,
             rag_batch_size,
             rag_top_k,
@@ -1942,9 +1884,6 @@ def build_summarization(args, app_cfg, logger_):
             chat_top_p,
             chat_temperature,
             chat_max_tokens,
-            notification_top_p,
-            notification_temperature,
-            notification_max_tokens,
             summarize_batch_size,
             rag_batch_size,
             rag_top_k,
