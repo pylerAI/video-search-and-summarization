@@ -24,7 +24,6 @@ import gradio as gr
 import pkg_resources
 from gradio_videotimeline import VideoTimeline
 from pyaml_env import parse_config
-
 from utils import MediaFileInfo
 
 from .ui_utils import validate_camera_id, validate_question
@@ -277,8 +276,6 @@ async def close_asset(chatbot, question_textbox, video, media_ids, image_mode):
         gr.update(interactive=True, value=1),  # seed
         gr.update(value=None),  # timeline
         gr.update(open=False),  # timeline_accordion
-        gr.update(interactive=False),  # generate_highlight
-        gr.update(interactive=False),  # generate_scenario_highlight
         gr.update(interactive=True, value=0.7),  # summarize_top_p
         gr.update(interactive=True, value=0.2),  # summarize_temperature
         gr.update(interactive=True, value=2048),  # summarize_max_tokens
@@ -339,7 +336,6 @@ async def ask_question(
     num_frames_per_chunk,
     vlm_input_width,
     vlm_input_height,
-    highlight=False,  # Add new parameter with default False
 ):
     logger.debug(f"Question: {question_textbox}")
     session: aiohttp.ClientSession = appConfig["session"]
@@ -382,7 +378,6 @@ async def ask_question(
         "top_k": top_k,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "highlight": highlight,
     }
     # Not passing VLM specific params like num_frames_per_chunk, vlm_input_width
     req_json["messages"] = [{"content": str(question), "role": "user"}]
@@ -414,10 +409,6 @@ async def ask_question(
             if len(response_str) > 0 and response_str[0] == "{":
                 try:
                     json_resp = json.loads(response_str)
-                    if json_resp.get("type") == "highlight":
-                        returned_json = json.dumps(json_resp["highlightResponse"])
-                        ribbon_value = json.loads(returned_json)
-                        response_str = "Find the Highlights Below"
                 except json.JSONDecodeError:
                     # If JSON parsing fails, proceed with original behavior
                     pass
@@ -1293,19 +1284,6 @@ def build_summarization(args, app_cfg, logger_):
                         )
                         with gr.Column(scale=1):
                             ask_button = gr.Button("Ask", interactive=False)
-                            with gr.Row():
-                                generate_scenario_highlight = gr.Button(
-                                    "Generate Scenario Highlight",
-                                    interactive=False,
-                                    scale=1,
-                                    visible=not args.image_mode,
-                                )
-                                generate_highlight = gr.Button(
-                                    "Generate Highlight",
-                                    interactive=False,
-                                    scale=1,
-                                    visible=not args.image_mode,
-                                )
                             reset_chat_button = gr.Button("Reset Chat", interactive=False)
                 with gr.Tab("ALERTS"):
                     output_alerts = gr.TextArea(
@@ -1598,8 +1576,6 @@ def build_summarization(args, app_cfg, logger_):
                     )
 
     with gr.Column(visible=False, scale=1, elem_classes="scenario-popup") as scenario_container:
-        with gr.Row(equal_height=True, elem_classes="align-right-row"):
-            gr.Markdown("Enter only keywords that you want to highlight:")
         with gr.Row(equal_height=True):
             keywords_input = gr.Textbox(
                 label="Keywords",
@@ -1607,8 +1583,6 @@ def build_summarization(args, app_cfg, logger_):
                 lines=2,
                 elem_classes="keyword-input",
             )
-        with gr.Row(equal_height=True):
-            submit_keywords = gr.Button("Generate Scenario Highlights", variant="primary")
         with gr.Row(equal_height=True):
             close_scenario_popup = gr.Button("Close")
 
@@ -1887,8 +1861,6 @@ def build_summarization(args, app_cfg, logger_):
             top_k,
             max_new_tokens,
             seed,
-            generate_scenario_highlight,
-            generate_highlight,
             summarize_top_p,
             summarize_temperature,
             summarize_max_tokens,
@@ -1911,8 +1883,6 @@ def build_summarization(args, app_cfg, logger_):
             ask_button,
             reset_chat_button,
             question_textbox,
-            generate_highlight,
-            generate_scenario_highlight,
             chat_history_checkbox,
         ],
     )
@@ -1975,8 +1945,6 @@ def build_summarization(args, app_cfg, logger_):
             seed,
             timeline,
             timeline_accordion,
-            generate_highlight,
-            generate_scenario_highlight,
             summarize_top_p,
             summarize_temperature,
             summarize_max_tokens,
@@ -1991,74 +1959,5 @@ def build_summarization(args, app_cfg, logger_):
             rag_top_k,
             display_image,
             table_state,
-        ],
-    )
-
-    generate_highlight.click(
-        ask_question,
-        inputs=[
-            gr.State("Generate Video Highlight"),
-            ask_button,
-            reset_chat_button,
-            video,
-            chatbot,
-            media_ids,
-            chunk_size,
-            temperature,
-            seed,
-            max_new_tokens,
-            top_p,
-            top_k,
-            num_frames_per_chunk,
-            vlm_input_width,
-            vlm_input_height,
-            gr.State(True),  # highlight=True
-        ],
-        outputs=[
-            chatbot,
-            ask_button,
-            reset_chat_button,
-            question_textbox,
-            timeline,
-            timeline_accordion,
-        ],
-    )
-
-    generate_scenario_highlight.click(
-        fn=show_container, outputs=[scenario_container, keywords_input]
-    )
-
-    submit_keywords.click(
-        fn=hide_container,
-        outputs=[
-            scenario_container,
-        ],
-    ).then(
-        ask_question,
-        inputs=[
-            keywords_input,  # Use the actual question from textbox
-            ask_button,
-            reset_chat_button,
-            video,
-            chatbot,
-            media_ids,
-            chunk_size,
-            temperature,
-            seed,
-            max_new_tokens,
-            top_p,
-            top_k,
-            num_frames_per_chunk,
-            vlm_input_width,
-            vlm_input_height,
-            gr.State(True),  # highlight=True
-        ],
-        outputs=[
-            chatbot,
-            ask_button,
-            reset_chat_button,
-            question_textbox,
-            timeline,
-            timeline_accordion,
         ],
     )

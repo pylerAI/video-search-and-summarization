@@ -1423,7 +1423,6 @@ class ViaServer:
                 {},
                 media_info_start,
                 media_info_end,
-                query.highlight,
             )
 
             chat_end_time = time.time()
@@ -1441,13 +1440,6 @@ class ViaServer:
             if len(answer_resp) > 0 and answer_resp[0] == "{":
                 try:
                     json_resp = json.loads(answer_resp)
-                    if json_resp.get("type") == "highlight":
-                        video_path = self._asset_manager.get_asset(videoId).path
-                        highlight_resp_with_path = adding_video_path(
-                            json_resp["highlightResponse"], video_path
-                        )
-                        json_resp["highlightResponse"] = json.loads(highlight_resp_with_path)
-                        answer_resp = json.dumps(json_resp)
                 except json.JSONDecodeError:
                     # If JSON parsing fails, proceed with original behavior
                     pass

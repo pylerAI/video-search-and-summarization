@@ -38,7 +38,7 @@ from chunk_info import ChunkInfo
 from minio import Minio
 from otel_helper import create_historical_span, get_tracer, is_tracing_enabled
 from pyaml_env import parse_config
-from utils import MediaFileInfo, process_highlight_request
+from utils import MediaFileInfo
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
@@ -131,7 +131,6 @@ class RequestInfo:
         self.notification_top_p = None
         self.notification_temperature = None
         self.notification_max_tokens = None
-        self.highlight = False
         self.graph_db = None
         self.enable_cot = False
         self.enable_image = False
@@ -1100,7 +1099,6 @@ class ViaStreamHandler:
         generation_config=None,
         start_timestamp=None,
         end_timestamp=None,
-        highlight=False,
     ):
         try:
             request_infos = self.get_request_infos(assets)
@@ -1116,63 +1114,26 @@ class ViaStreamHandler:
                         + request_infos[-1].request_id
                     )
 
-                if highlight:
-                    highlight_query = process_highlight_request(messages)
-                    result = request_infos[-1]._ctx_mgr.call(
-                        {
-                            "retriever_function": {
-                                "question": highlight_query,
-                                "is_last": False,
-                            }
+                result = request_infos[-1]._ctx_mgr.call(
+                    {
+                        "retriever_function": {
+                            "question": messages,
+                            "is_last": False,
                         }
-                    )
-                    logger.debug(f"Q&A: result object is {result}")
+                    }
+                )
+                logger.debug(f"Q&A: result object is {result}")
 
-                    # Handle the response
-                    retriever_result = result["retriever_function"]
+                retriever_result = result["retriever_function"]
 
-                    # Check if there's an error in the result
-                    if "error" in retriever_result:
-                        logger.error(f"Error in retriever function: {retriever_result['error']}")
-                        return retriever_result["error"]
+                if "error" in result and result["error"]:
+                    return result["error"]
 
-                    # Get the response if no error
-                    if "response" not in retriever_result:
-                        logger.error("No response found in retriever result")
-                        return "Couldn't Produce Highlights. Please try again."
+                if "response" not in retriever_result:
+                    logger.error("No response found in retriever result")
+                    return "An internal error occurred"
 
-                    response = retriever_result["response"]
-                    if response == "No matching scenarios found":
-                        return response
-                    try:
-                        # Validate that the response is valid JSON
-                        json.loads(response)
-                        return response
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Error decoding JSON: {str(e)}")
-                        return "Couldn't Produce Highlights. Please try again."
-
-                else:
-                    result = request_infos[-1]._ctx_mgr.call(
-                        {
-                            "retriever_function": {
-                                "question": messages,
-                                "is_last": False,
-                            }
-                        }
-                    )
-                    logger.debug(f"Q&A: result object is {result}")
-
-                    retriever_result = result["retriever_function"]
-
-                    if "error" in result and result["error"]:
-                        return result["error"]
-
-                    if "response" not in retriever_result:
-                        logger.error("No response found in retriever result")
-                        return "An internal error occurred"
-
-                    return retriever_result["response"]
+                return retriever_result["response"]
             else:
                 return (
                     "Chat functionality disabled; "
