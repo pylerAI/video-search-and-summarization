@@ -410,8 +410,8 @@ class CompOpenAIModel:
                     # Add default token usage for error case
                     token_usages.append({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                     raise ex from None
-
-                responses.append(response)
+                finally:
+                    responses.append(response)
         return responses, token_usages
 
 
