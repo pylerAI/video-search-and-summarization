@@ -687,35 +687,6 @@ class SummarizationQuery(ViaBaseModel):
             " The top-p value determines the probability mass that is sampled at sampling time."
         ),
     )
-
-    notification_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    notification_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    notification_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
     graph_db: str = Field(
         default=None,
         examples=["neo4j", "arango"],
@@ -962,12 +933,6 @@ class ChatCompletionQuery(ViaBaseModel):
             " Not applicable for live-streaming."
         ),
     )
-    highlight: bool = Field(
-        default=False,
-        description="If true, generate a highlight for the video",
-        examples=[True, False],
-    )
-
     user: str = Field(
         default="",
         examples=["user-123"],
