@@ -37,7 +37,6 @@ CAMERA_ID_PATTERN = r"^(?:camera_(\d+)|video_(\d+)|default)?$"
 UUID_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
-LIVE_STREAM_URL_PATTERN = r"^rtsp://"
 KEY_PATTERN = r"^[A-Za-z0-9]*$"
 ANY_CHAR_PATTERN = r"^(.|\n)*$"
 CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
@@ -548,13 +547,6 @@ class SummarizationQuery(ViaBaseModel):
         description="Enable chat Question & Answers on the input media",
         examples=[True, False],
     )
-
-    enable_chat_history: bool = Field(
-        default=True,
-        description="Enable chat history during QnA for the input media",
-        examples=[True, False],
-    )
-
     enable_cv_metadata: bool = Field(
         default=False, description="Enable CV metadata", examples=[True, False]
     )
