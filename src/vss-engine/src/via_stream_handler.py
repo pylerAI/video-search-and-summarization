@@ -38,7 +38,7 @@ from chunk_info import ChunkInfo
 from minio import Minio
 from otel_helper import create_historical_span, get_tracer, is_tracing_enabled
 from pyaml_env import parse_config
-from utils import MediaFileInfo, process_highlight_request
+from utils import MediaFileInfo
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
@@ -87,7 +87,6 @@ class RequestInfo:
         self.vlm_request_params = VlmRequestParams()
         self.progress = 0
         self.response: list[RequestInfo.Response] = []
-        self.is_live = False
         self.start_timestamp = None
         self.end_timestamp = None
         self.queue_time = None
@@ -110,7 +109,6 @@ class RequestInfo:
         self.nvtx_summarization_start = None
         self.summarize = None
         self.enable_chat = True
-        self.enable_chat_history = True
         self.enable_cv_pipeline = False
         self.cv_metadata_json_file = ""
         self.pending_add_doc_start_time = 0
@@ -129,10 +127,6 @@ class RequestInfo:
         self.chat_top_p = None
         self.chat_temperature = None
         self.chat_max_tokens = None
-        self.notification_top_p = None
-        self.notification_temperature = None
-        self.notification_max_tokens = None
-        self.highlight = False
         self.graph_db = None
         self.enable_cot = False
         self.enable_image = False
@@ -504,16 +498,13 @@ class ViaStreamHandler:
                 new_response = self._get_aggregated_summary(req_info, chunk_responses)
             except Exception as ex:
                 logger.error("".join(traceback.format_exception(ex)))
-                if not req_info.is_live:
-                    req_info.status = RequestInfo.Status.FAILED
-                else:
-                    req_info.response += [
-                        RequestInfo.Response(
-                            chunk_responses[0].chunk.start_ntp,
-                            chunk_responses[-1].chunk.end_ntp,
-                            "Summarization failed",
-                        )
-                    ]
+                req_info.response += [
+                    RequestInfo.Response(
+                        chunk_responses[0].chunk.start_ntp,
+                        chunk_responses[-1].chunk.end_ntp,
+                        "Summarization failed",
+                    )
+                ]
             req_info.response += new_response
 
         if req_info.status == RequestInfo.Status.FAILED:
@@ -733,13 +724,12 @@ class ViaStreamHandler:
             transcript = None
 
         if response.error:
-            if not req_info.is_live:
-                # Error was encountered while processing a chunk,
-                # mark the request as failed for files
-                # For live streams, continue processing new chunks
-                req_info.status = RequestInfo.Status.FAILED
-                req_info.error_message = response.error
-                self._vlm_pipeline.abort_chunks(req_info.assets[0].asset_id)
+            # Error was encountered while processing a chunk,
+            # mark the request as failed for files
+            # For live streams, continue processing new chunks
+            req_info.status = RequestInfo.Status.FAILED
+            req_info.error_message = response.error
+            self._vlm_pipeline.abort_chunks(req_info.assets[0].asset_id)
             logger.error(
                 "Encountered error while processing chunk %r of query %s - %s",
                 chunk,
@@ -902,12 +892,10 @@ class ViaStreamHandler:
                 req_info._e2e_span = tracer.start_span("VIA Pipeline End-to-End")
                 req_info._e2e_span.set_attribute("request_id", req_info.request_id)
                 req_info._e2e_span.set_attribute("stream_id", req_info.stream_id)
-                req_info._e2e_span.set_attribute("is_live", req_info.is_live)
 
                 req_info.vlm_pipeline_span = tracer.start_span("VLM Pipeline Latency")
                 req_info.vlm_pipeline_span.set_attribute("request_id", req_info.request_id)
                 req_info.vlm_pipeline_span.set_attribute("stream_id", req_info.stream_id)
-                req_info.vlm_pipeline_span.set_attribute("is_live", req_info.is_live)
 
         # Start FPS tracking for this stream
         self._start_stream_fps_tracking(req_info)
@@ -1107,7 +1095,6 @@ class ViaStreamHandler:
         generation_config=None,
         start_timestamp=None,
         end_timestamp=None,
-        highlight=False,
     ):
         try:
             request_infos = self.get_request_infos(assets)
@@ -1123,65 +1110,26 @@ class ViaStreamHandler:
                         + request_infos[-1].request_id
                     )
 
-                if highlight:
-                    highlight_query = process_highlight_request(messages)
-                    result = request_infos[-1]._ctx_mgr.call(
-                        {
-                            "retriever_function": {
-                                "question": highlight_query,
-                                "is_live": request_infos[-1].is_live,
-                                "is_last": False,
-                            }
+                result = request_infos[-1]._ctx_mgr.call(
+                    {
+                        "retriever_function": {
+                            "question": messages,
+                            "is_last": False,
                         }
-                    )
-                    logger.debug(f"Q&A: result object is {result}")
+                    }
+                )
+                logger.debug(f"Q&A: result object is {result}")
 
-                    # Handle the response
-                    retriever_result = result["retriever_function"]
+                retriever_result = result["retriever_function"]
 
-                    # Check if there's an error in the result
-                    if "error" in retriever_result:
-                        logger.error(f"Error in retriever function: {retriever_result['error']}")
-                        return retriever_result["error"]
+                if "error" in result and result["error"]:
+                    return result["error"]
 
-                    # Get the response if no error
-                    if "response" not in retriever_result:
-                        logger.error("No response found in retriever result")
-                        return "Couldn't Produce Highlights. Please try again."
+                if "response" not in retriever_result:
+                    logger.error("No response found in retriever result")
+                    return "An internal error occurred"
 
-                    response = retriever_result["response"]
-                    if response == "No matching scenarios found":
-                        return response
-                    try:
-                        # Validate that the response is valid JSON
-                        json.loads(response)
-                        return response
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Error decoding JSON: {str(e)}")
-                        return "Couldn't Produce Highlights. Please try again."
-
-                else:
-                    result = request_infos[-1]._ctx_mgr.call(
-                        {
-                            "retriever_function": {
-                                "question": messages,
-                                "is_live": request_infos[-1].is_live,
-                                "is_last": False,
-                            }
-                        }
-                    )
-                    logger.debug(f"Q&A: result object is {result}")
-
-                    retriever_result = result["retriever_function"]
-
-                    if "error" in result and result["error"]:
-                        return result["error"]
-
-                    if "response" not in retriever_result:
-                        logger.error("No response found in retriever result")
-                        return "An internal error occurred"
-
-                    return retriever_result["response"]
+                return retriever_result["response"]
             else:
                 return (
                     "Chat functionality disabled; "
@@ -1316,7 +1264,6 @@ class ViaStreamHandler:
         req_info.enable_image = query.enable_image
         req_info.summarize = query.summarize
         req_info.enable_chat = query.enable_chat
-        req_info.enable_chat_history = query.enable_chat_history
         req_info.num_frames_per_chunk = query.num_frames_per_chunk
         req_info.summarize_batch_size = query.summarize_batch_size
         req_info.rag_top_k = query.rag_top_k
@@ -1712,10 +1659,7 @@ class ViaStreamHandler:
                 return
             if not req_info.enable_chat:
                 # If request for file summarization has completed
-                if (not req_info.is_live and req_info.progress == 100) or (
-                    req_info.is_live
-                    and len(req_info.response) == 0
-                ):
+                if (req_info.progress == 100):
                     # If live stream ended
                     self.remove_request_ids(req_info.assets)
                     if req_info._ctx_mgr:
@@ -1802,23 +1746,22 @@ class ViaStreamHandler:
                     ):
                         # Summarize indivudual chunk VLM responses using CA-RAG
                         # TODO: Handle the last chunk id, should be -1
-                        if not req_info.is_live:
-                            last_meta = vars(chunk_responses[-1].chunk)
-                            last_meta["is_last"] = True
-                            last_meta["uuid"] = req_info.stream_id
-                            last_meta["cv_meta"] = ""
-                            last_meta["asset_dir"] = self._args.asset_dir
-                            last_meta["camera_id"] = req_info.camera_id
-                            with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
-                                req_info._ctx_mgr.add_doc(
-                                    ".",
-                                    doc_i=(
-                                        2 * chunk_responses[-1].chunk.chunkIdx + 2
-                                        if req_info.enable_audio
-                                        else chunk_responses[-1].chunk.chunkIdx + 1
-                                    ),
-                                    doc_meta=last_meta,
-                                )
+                        last_meta = vars(chunk_responses[-1].chunk)
+                        last_meta["is_last"] = True
+                        last_meta["uuid"] = req_info.stream_id
+                        last_meta["cv_meta"] = ""
+                        last_meta["asset_dir"] = self._args.asset_dir
+                        last_meta["camera_id"] = req_info.camera_id
+                        with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
+                            req_info._ctx_mgr.add_doc(
+                                ".",
+                                doc_i=(
+                                    2 * chunk_responses[-1].chunk.chunkIdx + 2
+                                    if req_info.enable_audio
+                                    else chunk_responses[-1].chunk.chunkIdx + 1
+                                ),
+                                doc_meta=last_meta,
+                            )
 
                         if req_info.summarize:
                             if req_info.enable_chat:
@@ -1926,14 +1869,10 @@ class ViaStreamHandler:
             return [
                 RequestInfo.Response(
                     (
-                        chunk_responses[0].chunk.start_ntp
-                        if req_info.is_live
-                        else chunk_responses[0].chunk.start_pts / 1e9
+                        chunk_responses[0].chunk.start_pts / 1e9
                     ),
                     (
-                        chunk_responses[-1].chunk.end_ntp
-                        if req_info.is_live
-                        else chunk_responses[-1].chunk.end_pts / 1e9
+                        chunk_responses[-1].chunk.end_pts / 1e9
                     ),
                     agg_response,
                     combined_reasoning,
@@ -1951,14 +1890,10 @@ class ViaStreamHandler:
             responses.append(
                 RequestInfo.Response(
                     (
-                        processed_chunk.chunk.start_ntp
-                        if req_info.is_live
-                        else processed_chunk.chunk.start_pts / 1e9
+                        processed_chunk.chunk.start_pts / 1e9
                     ),
                     (
-                        processed_chunk.chunk.end_ntp
-                        if req_info.is_live
-                        else processed_chunk.chunk.end_pts / 1e9
+                        processed_chunk.chunk.end_pts / 1e9
                     ),
                     processed_chunk.vlm_response,
                     reasoning_description,
@@ -2202,27 +2137,11 @@ class ViaStreamHandler:
                 ca_rag_config, "ingestion_function", "max_tokens", req_info.chat_max_tokens
             )
 
-            # Configure chat history
-            logger.info(f"enable_chat_history | STREAM_HANDLER: {req_info.enable_chat_history}")
-            ca_rag_config["functions"]["retriever_function"]["params"][
-                "chat_history"
-            ] = req_info.enable_chat_history
         else:
             if "retriever_function" in ca_rag_config["context_manager"]["functions"]:
                 ca_rag_config["context_manager"]["functions"].remove("retriever_function")
             if "ingestion_function" in ca_rag_config["context_manager"]["functions"]:
                 ca_rag_config["context_manager"]["functions"].remove("ingestion_function")
-
-        # #Update notification LLM tool parameters
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "top_p"
-        # )
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "temperature"
-        # )
-        # self._update_llm_tool_param(
-        #     ca_rag_config, "max_tokens"
-        # )
 
         self._update_db_tool_param(
             ca_rag_config,

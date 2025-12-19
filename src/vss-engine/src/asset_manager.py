@@ -157,11 +157,6 @@ class Asset:
         return self._use_count
 
     @property
-    def is_live(self):
-        """Boolean indicating if the asset is a live stream."""
-        return self.path.startswith("rtsp://")
-
-    @property
     def video_fps(self):
         """Cached video FPS."""
         return self._video_fps

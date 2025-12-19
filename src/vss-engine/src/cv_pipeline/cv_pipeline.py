@@ -60,7 +60,6 @@ class RequestInfo:
         self.response = None
         self.live_stream_chunk_thread = None
         self.live_stream_splitter: FileSplitter = None
-        self.is_live = False
         self.live_stream_chunk_files = []
         self.live_stream_ended = False
         self.num_gpus = 1

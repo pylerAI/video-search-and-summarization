@@ -37,7 +37,6 @@ CAMERA_ID_PATTERN = r"^(?:camera_(\d+)|video_(\d+)|default)?$"
 UUID_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
-LIVE_STREAM_URL_PATTERN = r"^rtsp://"
 KEY_PATTERN = r"^[A-Za-z0-9]*$"
 ANY_CHAR_PATTERN = r"^(.|\n)*$"
 CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
@@ -548,13 +547,6 @@ class SummarizationQuery(ViaBaseModel):
         description="Enable chat Question & Answers on the input media",
         examples=[True, False],
     )
-
-    enable_chat_history: bool = Field(
-        default=True,
-        description="Enable chat history during QnA for the input media",
-        examples=[True, False],
-    )
-
     enable_cv_metadata: bool = Field(
         default=False, description="Enable CV metadata", examples=[True, False]
     )
@@ -684,35 +676,6 @@ class SummarizationQuery(ViaBaseModel):
         le=1,
         description=(
             "The top-p sampling mass used for QnA text generation."
-            " The top-p value determines the probability mass that is sampled at sampling time."
-        ),
-    )
-
-    notification_max_tokens: int = Field(
-        default=None,
-        examples=[512],
-        ge=1,
-        le=10240,
-        description="The maximum number of tokens to generate in any given call.",
-        json_schema_extra={"format": "int32"},
-    )
-    notification_temperature: float = Field(
-        default=None,
-        examples=[0.2],
-        ge=0,
-        le=1,
-        description=(
-            "The sampling temperature to use for text generation."
-            " The higher the temperature value is, the less deterministic the output text will be."
-        ),
-    )
-    notification_top_p: float = Field(
-        default=None,
-        examples=[1],
-        ge=0,
-        le=1,
-        description=(
-            "The top-p sampling mass used for text generation."
             " The top-p value determines the probability mass that is sampled at sampling time."
         ),
     )
@@ -962,12 +925,6 @@ class ChatCompletionQuery(ViaBaseModel):
             " Not applicable for live-streaming."
         ),
     )
-    highlight: bool = Field(
-        default=False,
-        description="If true, generate a highlight for the video",
-        examples=[True, False],
-    )
-
     user: str = Field(
         default="",
         examples=["user-123"],
