@@ -770,6 +770,8 @@ class VlmProcess(ViaProcessBase):
         error_msg = kwargs.pop("error", None)
 
         if isinstance(vlm_response_stats, concurrent.futures.Future):
+            logger.debug("VLM response stats: %s", vlm_response_stats)
+
             return self._handle_future_result(
                 process_vlm_response,
                 chunk,
@@ -783,6 +785,7 @@ class VlmProcess(ViaProcessBase):
                 nvtx_vlm_process_start,
             )
         else:
+            logger.debug("VLM response stats: %s", vlm_response_stats)
             return process_vlm_response(
                 chunk,
                 request_params,
@@ -794,7 +797,7 @@ class VlmProcess(ViaProcessBase):
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
-
+      
 
 class AsrProcess(ViaProcessBase):
     """ASR Process"""
