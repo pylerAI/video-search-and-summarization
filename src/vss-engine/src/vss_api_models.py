@@ -1008,6 +1008,30 @@ class CompletionUsage(ViaBaseModel):
         examples=[10],
         json_schema_extra={"format": "int32"},
     )
+    prompt_tokens: int | None = Field(
+        default=None,
+        description="Number of tokens in the prompt across all chunks.",
+        ge=0,
+        le=100000000,
+        examples=[150],
+        json_schema_extra={"format": "int32"},
+    )
+    completion_tokens: int | None = Field(
+        default=None,
+        description="Number of tokens in the generated completion across all chunks.",
+        ge=0,
+        le=100000000,
+        examples=[97],
+        json_schema_extra={"format": "int32"},
+    )
+    total_tokens: int | None = Field(
+        default=None,
+        description="Total number of tokens used in the request (prompt + completion).",
+        ge=0,
+        le=100000000,
+        examples=[247],
+        json_schema_extra={"format": "int32"},
+    )
 
 
 class CompletionResponse(ViaBaseModel):

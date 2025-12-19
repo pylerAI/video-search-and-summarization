@@ -1726,6 +1726,62 @@ class ViaStreamHandler:
             logger.info(f"No chunks with vlm responses for request {req_info.request_id}")
             return []
 
+        # Aggregate token usage across all chunks for this video
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_tokens = 0
+        chunks_with_stats = 0
+        
+        # Detailed breakdown for verification
+        chunk_token_details = []
+        for i, chunk_response in enumerate(chunk_responses):
+            if hasattr(chunk_response, 'vlm_stats') and chunk_response.vlm_stats:
+                chunk_input = chunk_response.vlm_stats.get('input_tokens', 0)
+                chunk_output = chunk_response.vlm_stats.get('output_tokens', 0)
+                chunk_total = chunk_response.vlm_stats.get('total_tokens', 0)
+                
+                total_input_tokens += chunk_input
+                total_output_tokens += chunk_output
+                total_tokens += chunk_total
+                chunks_with_stats += 1
+                
+                # Store details for verification
+                chunk_token_details.append({
+                    'chunk_idx': chunk_response.chunk.chunkIdx if hasattr(chunk_response, 'chunk') else i,
+                    'input': chunk_input,
+                    'output': chunk_output,
+                    'total': chunk_total
+                })
+        
+        # Verification: Check if sum of input + output equals total
+        calculated_total = total_input_tokens + total_output_tokens
+        total_mismatch = abs(calculated_total - total_tokens) if total_tokens > 0 else 0
+        
+        # Log aggregated token statistics with verification details
+        logger.debug(
+            f"Token usage summary for video {req_info.request_id}: "
+            f"chunks_processed={len(chunk_responses)}, chunks_with_stats={chunks_with_stats}, "
+            f"total_input_tokens={total_input_tokens}, "
+            f"total_output_tokens={total_output_tokens}, "
+            f"total_tokens={total_tokens}, "
+            f"calculated_total={calculated_total}, "
+            f"verification={'PASS' if total_mismatch <= 1 else 'FAIL'}"
+        )
+        
+        # Log per-chunk breakdown for verification (only if there are issues or debug logging enabled)
+        if total_mismatch > 1 or logger.isEnabledFor(10):  # DEBUG level
+            logger.debug(f"Per-chunk token breakdown for {req_info.request_id}: {chunk_token_details}")
+        
+        # Store aggregated token stats in request info for later use
+        if not hasattr(req_info, 'aggregated_token_stats'):
+            req_info.aggregated_token_stats = {}
+        req_info.aggregated_token_stats = {
+            'input_tokens': total_input_tokens,
+            'output_tokens': total_output_tokens,
+            'total_tokens': total_tokens,
+            'chunk_count': len(chunk_responses)
+        }
+
         if self._via_health_eval is True:
             with TimeMeasure("VLM Test Data - Write Chunk Responses"):
                 with open(

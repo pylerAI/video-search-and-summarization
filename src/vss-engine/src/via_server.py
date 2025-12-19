@@ -726,6 +726,21 @@ class ViaServer:
                     500,
                 )
 
+            # Build usage dict based on stream_options.include_usage setting
+            usage_dict = {
+                "total_chunks_processed": req_info.chunk_count,
+                "query_processing_time": int(req_info.end_time - req_info.start_time),
+            }
+            
+            # Include token stats only if requested via stream_options.include_usage
+            if query.stream_options and query.stream_options.include_usage:
+                if hasattr(req_info, 'aggregated_token_stats'):
+                    usage_dict.update({
+                        "prompt_tokens": req_info.aggregated_token_stats.get('input_tokens', 0),
+                        "completion_tokens": req_info.aggregated_token_stats.get('output_tokens', 0),
+                        "total_tokens": req_info.aggregated_token_stats.get('total_tokens', 0),
+                    })
+
             # Create response json and return it
             return {
                 "id": request_id,
@@ -748,10 +763,7 @@ class ViaServer:
                     if resp_list
                     else []
                 ),
-                "usage": {
-                    "total_chunks_processed": req_info.chunk_count,
-                    "query_processing_time": int(req_info.end_time - req_info.start_time),
-                },
+                "usage": usage_dict,
             }
 
         # ======================= Summarize API

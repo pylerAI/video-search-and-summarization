@@ -237,6 +237,7 @@ class CompOpenAIModel:
         self, prompt, video_embeds, video_frames_times, generation_config=None, chunk=None
     ):
         responses = []
+        token_usages = []
 
         if not generation_config:
             generation_config = {}
@@ -321,6 +322,12 @@ class CompOpenAIModel:
                     ],
                 }
             ]
+            # Override system prompt in environment variable with reasoning prompt if enable_reasoning is True
+            if generation_config.get("enable_reasoning") and "<think>" not in generation_config.get("system_prompt", ""):
+                generation_config["system_prompt"] += (
+                    " Answer the question in the following format: "
+                    "<think>\nyour reasoning\n</think>\n\n<answer>\nyour answer\n</answer>.\n"
+                )
             if "system_prompt" in generation_config and generation_config["system_prompt"]:
                 messages.insert(
                     0, {"role": "system", "content": generation_config["system_prompt"]}
@@ -340,6 +347,8 @@ class CompOpenAIModel:
             with TimeMeasure("OpenAI model inference"):
                 logger.debug("Invoke call")
                 try:
+                    token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                    
                     if self._model:
                         response_obj = self._model.invoke(
                             messages,
@@ -349,6 +358,22 @@ class CompOpenAIModel:
                             top_p=generation_config["top_p"],
                         )
                         content = response_obj.content
+                        
+                        # Extract token usage information from AzureChatOpenAI response
+                        if hasattr(response_obj, 'usage_metadata') and response_obj.usage_metadata:
+                            token_usage = {
+                                "input_tokens": response_obj.usage_metadata.get('input_tokens', 0),
+                                "output_tokens": response_obj.usage_metadata.get('output_tokens', 0),
+                                "total_tokens": response_obj.usage_metadata.get('total_tokens', 0),
+                            }
+                        elif hasattr(response_obj, 'response_metadata') and 'token_usage' in response_obj.response_metadata:
+                            usage = response_obj.response_metadata['token_usage']
+                            token_usage = {
+                                "input_tokens": usage.get('prompt_tokens', 0),
+                                "output_tokens": usage.get('completion_tokens', 0),
+                                "total_tokens": usage.get('total_tokens', 0),
+                            }
+                        logger.debug(f"Token usage from AzureChatOpenAI: {token_usage}")
                     elif self._client:
                         resp = self._client.chat.completions.create(
                             model=self._model_name,
@@ -361,9 +386,18 @@ class CompOpenAIModel:
                         content = ""
                         for choice in resp.choices:
                             content += str(choice.message.content)
+                        
+                        # Extract token usage information
+                        token_usage = {
+                            "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+                            "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
+                            "total_tokens": resp.usage.total_tokens if resp.usage else 0,
+                        }
+                        logger.debug(f"Token usage from OpenAI API: {token_usage}")
                     logger.debug("Invoke call done")
                     logger.debug(f"content is {str(content)}")
                     response = content
+                    token_usages.append(token_usage)
                 except Exception as ex:
                     import traceback
 
@@ -373,12 +407,12 @@ class CompOpenAIModel:
                     )
                     logger.info(error_string)
                     response = error_string
+                    # Add default token usage for error case
+                    token_usages.append({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                     raise ex from None
-
-                responses.append(response)
-        return responses, [
-            {"input_tokens": 0, "output_tokens": 0},
-        ] * len(responses)
+                finally:
+                    responses.append(response)
+        return responses, token_usages
 
 
 if __name__ == "__main__":
