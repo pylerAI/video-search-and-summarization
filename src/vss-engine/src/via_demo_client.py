@@ -24,7 +24,6 @@ import pkg_resources
 import uvicorn
 from fastapi import FastAPI
 
-from client.rtsp_stream import build_rtsp_stream
 from client.summarization import build_summarization
 
 LOGDIR = "/tmp/via-logs/"
@@ -157,8 +156,6 @@ def build_demo(args):
             with gr.Tab("VIDEO FILE SUMMARIZATION & Q&A"):
                 args.image_mode = False
                 build_summarization(args, appConfig, logger)
-            with gr.Tab("LIVE STREAM SUMMARIZATION"):
-                build_rtsp_stream(args, appConfig, logger)
             with gr.Tab("IMAGE FILE SUMMARIZATION & Q&A"):
                 args.image_mode = True
                 build_summarization(args, appConfig, logger)

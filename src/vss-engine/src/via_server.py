@@ -589,7 +589,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received summarize query, id - %s (live-stream=%d), "
+                "Received summarize query, id - %s, "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, "
@@ -831,7 +831,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received generate_vlm_captions query, id - %s (live-stream=%d), "
+                "Received generate_vlm_captions query, id - %s, "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, "
@@ -1071,7 +1071,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received QA query, id - %s (live-stream=%d), "
+                "Received QA query, id - %s, "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, summary_duration=%d, stream=%r",
