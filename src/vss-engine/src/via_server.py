@@ -46,7 +46,6 @@ from prometheus_client import (
     REGISTRY,
     generate_latest,
 )
-from sse_starlette.sse import EventSourceResponse
 from utils import (
     MediaFileInfo,
     StreamSettingsCache,
@@ -714,190 +713,46 @@ class ViaServer:
 
             logger.info("Waiting for results of query %s", request_id)
 
-            if query.stream:
-                # Allow only a single client for streaming output per live stream
-                if time.time() - self._sse_active_clients.get(videoId, 0) < 3:
-                    raise ViaException(
-                        "Another client is already connected to live stream", "Conflict", 409
-                    )
-
-                # Server side events generator
-                async def message_generator():
-                    last_status_report_time = 0
-                    last_status = None
-                    while True:
-                        self._sse_active_clients[videoId] = time.time()
-                        try:
-                            message = await asyncio.wait_for(request._receive(), timeout=0.01)
-                            if message.get("type") == "http.disconnect":
-                                self._sse_active_clients.pop(videoId, None)
-                                logger.info(
-                                    "Client %s disconnected for live-stream %s",
-                                    request.client.host,
-                                    videoId,
-                                )
-                                return
-                        except Exception:
-                            pass
-
-                        # Get current response status from the pipeline
-                        try:
-                            req_info, resp_list = self._stream_handler.get_response(request_id, 1)
-                        except ViaException:
-                            break
-                        if (
-                            time.time() - last_status_report_time >= 10
-                            or resp_list
-                            or last_status != req_info.status
-                        ):
-                            last_status_report_time = time.time()
-                            last_status = req_info.status
-                            logger.info(
-                                "Status for query %s is %s, percent complete is %.2f,"
-                                " size of response list is %d",
-                                req_info.request_id,
-                                req_info.status.value,
-                                req_info.progress,
-                                len(resp_list),
-                            )
-
-                        # Response list is empty. Stop generation if request is completed or failed.
-                        if not resp_list:
-                            if req_info.status in [
-                                RequestInfo.Status.SUCCESSFUL,
-                                RequestInfo.Status.FAILED,
-                            ]:
-                                if req_info.status == RequestInfo.Status.FAILED:
-                                    # Create the response json
-                                    response = {
-                                        "id": request_id,
-                                        "model": model_info.id,
-                                        "created": int(req_info.queue_time),
-                                        "object": "summarization.progressing",
-                                        "choices": [
-                                            {
-                                                "finish_reason": CompletionFinishReason.STOP.value,
-                                                "index": 0,
-                                                "message": {
-                                                    "content": "Summarization failed."
-                                                    + " "
-                                                    + req_info.error_message,
-                                                    "role": "assistant",
-                                                },
-                                            }
-                                        ],
-                                        "usage": None,
-                                    }
-                                    yield json.dumps(response)
-                                break
-                            await asyncio.sleep(1)
-                            continue
-
-                        # Set the start/end time info for current response.
-                        while resp_list:
-
-                            media_info = {
-                                "type": "offset",
-                                "start_offset": int(resp_list[0].start_timestamp),
-                                "end_offset": int(resp_list[0].end_timestamp),
-                            }
-
-                            # Create the response json
-                            response = {
-                                "id": request_id,
-                                "model": model_info.id,
-                                "created": int(req_info.queue_time),
-                                "object": "summarization.progressing",
-                                "media_info": media_info,
-                                "choices": [
-                                    {
-                                        "finish_reason": CompletionFinishReason.STOP.value,
-                                        "index": 0,
-                                        "message": {
-                                            "content": resp_list[0].response,
-                                            "role": "assistant",
-                                        },
-                                    }
-                                ],
-                                "usage": None,
-                            }
-                            # Yield to generate a server-sent event
-                            yield json.dumps(response)
-                            try:
-                                req_info, resp_list = self._stream_handler.get_response(
-                                    request_id, 1
-                                )
-                            except ViaException:
-                                break
-
-                    # Generate usage data and send as server-sent event if requested
-                    if query.stream_options and query.stream_options.include_usage:
-                        try:
-                            req_info, resp_list = self._stream_handler.get_response(request_id, 0)
-                            end_time = (
-                                req_info.end_time if req_info.end_time is not None else time.time()
-                            )
-                            response = {
-                                "id": request_id,
-                                "model": model_info.id,
-                                "created": int(req_info.queue_time),
-                                "object": "summarization.completion",
-                                "media_info": None,
-                                "choices": [],
-                                "usage": {
-                                    "total_chunks_processed": req_info.chunk_count,
-                                    "query_processing_time": int(end_time - req_info.start_time),
-                                },
-                            }
-                            yield json.dumps(response)
-                        except ViaException:
-                            pass
-                    yield "[DONE]"
-                    self._sse_active_clients.pop(videoId, None)
-                    self._stream_handler.check_status_remove_req_id(request_id)
-
-                return EventSourceResponse(message_generator(), send_timeout=5, ping=1)
-            else:
-                # Non-streaming output. Wait for request to be completed.
-                await loop.run_in_executor(
-                    self._async_executor, self._stream_handler.wait_for_request_done, request_id
+            # Non-streaming output. Wait for request to be completed.
+            await loop.run_in_executor(
+                self._async_executor, self._stream_handler.wait_for_request_done, request_id
+            )
+            req_info, resp_list = self._stream_handler.get_response(request_id)
+            self._stream_handler.check_status_remove_req_id(request_id)
+            if req_info.status == RequestInfo.Status.FAILED:
+                raise ViaException(
+                    f"Failed to generate summary: {req_info.error_message}",
+                    "InternalServerError",
+                    500,
                 )
-                req_info, resp_list = self._stream_handler.get_response(request_id)
-                self._stream_handler.check_status_remove_req_id(request_id)
-                if req_info.status == RequestInfo.Status.FAILED:
-                    raise ViaException(
-                        f"Failed to generate summary: {req_info.error_message}",
-                        "InternalServerError",
-                        500,
-                    )
 
-                # Create response json and return it
-                return {
-                    "id": request_id,
-                    "model": model_info.id,
-                    "created": int(req_info.queue_time),
-                    "object": "summarization.completion",
-                    "media_info": {
-                        "type": "offset",
-                        "start_offset": int(req_info.start_timestamp),
-                        "end_offset": int(req_info.end_timestamp),
-                    },
-                    "choices": (
-                        [
-                            {
-                                "finish_reason": CompletionFinishReason.STOP.value,
-                                "index": 0,
-                                "message": {"content": resp_list[0].response, "role": "assistant"},
-                            }
-                        ]
-                        if resp_list
-                        else []
-                    ),
-                    "usage": {
-                        "total_chunks_processed": req_info.chunk_count,
-                        "query_processing_time": int(req_info.end_time - req_info.start_time),
-                    },
-                }
+            # Create response json and return it
+            return {
+                "id": request_id,
+                "model": model_info.id,
+                "created": int(req_info.queue_time),
+                "object": "summarization.completion",
+                "media_info": {
+                    "type": "offset",
+                    "start_offset": int(req_info.start_timestamp),
+                    "end_offset": int(req_info.end_timestamp),
+                },
+                "choices": (
+                    [
+                        {
+                            "finish_reason": CompletionFinishReason.STOP.value,
+                            "index": 0,
+                            "message": {"content": resp_list[0].response, "role": "assistant"},
+                        }
+                    ]
+                    if resp_list
+                    else []
+                ),
+                "usage": {
+                    "total_chunks_processed": req_info.chunk_count,
+                    "query_processing_time": int(req_info.end_time - req_info.start_time),
+                },
+            }
 
         # ======================= Summarize API
 
@@ -1080,190 +935,50 @@ class ViaServer:
             logger.info("Created video file query %s for videoId %s", request_id, videoId)
             logger.info("Waiting for results of query %s", request_id)
 
-            if query.stream:
-                # Allow only a single client for streaming output per live stream
-                if time.time() - self._sse_active_clients.get(videoId, 0) < 3:
-                    raise ViaException(
-                        "Another client is already connected to live stream", "Conflict", 409
-                    )
-
-                # Server side events generator
-                async def message_generator():
-                    last_status_report_time = 0
-                    last_status = None
-                    while True:
-                        self._sse_active_clients[videoId] = time.time()
-                        try:
-                            message = await asyncio.wait_for(request._receive(), timeout=0.01)
-                            if message.get("type") == "http.disconnect":
-                                self._sse_active_clients.pop(videoId, None)
-                                logger.info(
-                                    "Client %s disconnected for live-stream %s",
-                                    request.client.host,
-                                    videoId,
-                                )
-                                return
-                        except Exception:
-                            pass
-
-                        # Get current response status from the pipeline
-                        try:
-                            req_info, resp_list = self._stream_handler.get_response(request_id, 1)
-                        except ViaException:
-                            break
-                        if (
-                            time.time() - last_status_report_time >= 10
-                            or resp_list
-                            or last_status != req_info.status
-                        ):
-                            last_status_report_time = time.time()
-                            last_status = req_info.status
-                            logger.info(
-                                "Status for query %s is %s, percent complete is %.2f,"
-                                " size of response list is %d",
-                                req_info.request_id,
-                                req_info.status.value,
-                                req_info.progress,
-                                len(resp_list),
-                            )
-
-                        # Response list is empty. Stop generation if request is completed or failed.
-                        if not resp_list:
-                            if req_info.status in [
-                                RequestInfo.Status.SUCCESSFUL,
-                                RequestInfo.Status.FAILED,
-                            ]:
-                                if req_info.status == RequestInfo.Status.FAILED:
-                                    # Create the response json
-                                    response = {
-                                        "id": request_id,
-                                        "model": model_info.id,
-                                        "created": int(req_info.queue_time),
-                                        "usage": None,
-                                    }
-                                    yield json.dumps(response)
-                                break
-                            await asyncio.sleep(1)
-                            continue
-
-                        # Set the start/end time info for current response.
-                        while resp_list:
-
-                            media_info = {
-                                "type": "offset",
-                                "start_offset": int(resp_list[0].start_timestamp),
-                                "end_offset": int(resp_list[0].end_timestamp),
-                            }
-
-                            # Build chunk responses for VLM captions
-                            chunk_responses = []
-                            for resp in resp_list:
-                                chunk_response = {
-                                    "start_time": (
-                                        str(resp.start_timestamp)
-                                    ),
-                                    "end_time": (
-                                        str(resp.end_timestamp)
-                                    ),
-                                    "content": resp.response,
-                                }
-                                # Add reasoning description if available
-                                if (
-                                    hasattr(resp, "reasoning_description")
-                                    and resp.reasoning_description
-                                ):
-                                    chunk_response["reasoning_description"] = (
-                                        resp.reasoning_description
-                                    )
-                                chunk_responses.append(chunk_response)
-
-                            # Create the response json
-                            response = {
-                                "id": request_id,
-                                "model": model_info.id,
-                                "created": int(req_info.queue_time),
-                                "media_info": media_info,
-                                "chunk_responses": chunk_responses,
-                                "usage": None,
-                            }
-                            # Yield to generate a server-sent event
-                            yield json.dumps(response)
-                            try:
-                                req_info, resp_list = self._stream_handler.get_response(
-                                    request_id, 1
-                                )
-                            except ViaException:
-                                break
-
-                    # Generate usage data and send as server-sent event if requested
-                    if query.stream_options and query.stream_options.include_usage:
-                        try:
-                            req_info, resp_list = self._stream_handler.get_response(request_id, 0)
-                            end_time = (
-                                req_info.end_time if req_info.end_time is not None else time.time()
-                            )
-                            response = {
-                                "id": request_id,
-                                "model": model_info.id,
-                                "created": int(req_info.queue_time),
-                                "media_info": None,
-                                "usage": {
-                                    "total_chunks_processed": req_info.chunk_count,
-                                    "query_processing_time": int(end_time - req_info.start_time),
-                                },
-                            }
-                            yield json.dumps(response)
-                        except ViaException:
-                            pass
-                    yield "[DONE]"
-                    self._sse_active_clients.pop(videoId, None)
-                    self._stream_handler.check_status_remove_req_id(request_id)
-
-                return EventSourceResponse(message_generator(), send_timeout=5, ping=1)
-            else:
-                # Non-streaming output. Wait for request to be completed.
-                await loop.run_in_executor(
-                    self._async_executor, self._stream_handler.wait_for_request_done, request_id
+        
+            # Non-streaming output. Wait for request to be completed.
+            await loop.run_in_executor(
+                self._async_executor, self._stream_handler.wait_for_request_done, request_id
+            )
+            req_info, resp_list = self._stream_handler.get_response(request_id)
+            self._stream_handler.check_status_remove_req_id(request_id)
+            if req_info.status == RequestInfo.Status.FAILED:
+                raise ViaException(
+                    "Failed to generate VLM captions", "InternalServerError", 500
                 )
-                req_info, resp_list = self._stream_handler.get_response(request_id)
-                self._stream_handler.check_status_remove_req_id(request_id)
-                if req_info.status == RequestInfo.Status.FAILED:
-                    raise ViaException(
-                        "Failed to generate VLM captions", "InternalServerError", 500
-                    )
 
-                # Create response json and return it
-                return VlmCaptionsCompletionResponse(
-                    id=request_id,
-                    model=model_info.id,
-                    created=int(req_info.queue_time),
-                    media_info=MediaInfoOffset(
-                        type="offset",
-                        start_offset=int(req_info.start_timestamp),
-                        end_offset=int(req_info.end_timestamp),
-                    ),
-                    chunk_responses=(
-                        [
-                            VlmCaptionResponse(
-                                start_time=(
-                                    str(resp.start_timestamp)
-                                ),
-                                end_time=(
-                                    str(resp.end_timestamp)
-                                ),
-                                content=resp.response,
-                                reasoning_description=getattr(resp, "reasoning_description", ""),
-                            )
-                            for resp in resp_list
-                        ]
-                        if resp_list
-                        else []
-                    ),
-                    usage=CompletionUsage(
-                        total_chunks_processed=req_info.chunk_count,
-                        query_processing_time=int(req_info.end_time - req_info.start_time),
-                    ),
-                )
+            # Create response json and return it
+            return VlmCaptionsCompletionResponse(
+                id=request_id,
+                model=model_info.id,
+                created=int(req_info.queue_time),
+                media_info=MediaInfoOffset(
+                    type="offset",
+                    start_offset=int(req_info.start_timestamp),
+                    end_offset=int(req_info.end_timestamp),
+                ),
+                chunk_responses=(
+                    [
+                        VlmCaptionResponse(
+                            start_time=(
+                                str(resp.start_timestamp)
+                            ),
+                            end_time=(
+                                str(resp.end_timestamp)
+                            ),
+                            content=resp.response,
+                            reasoning_description=getattr(resp, "reasoning_description", ""),
+                        )
+                        for resp in resp_list
+                    ]
+                    if resp_list
+                    else []
+                ),
+                usage=CompletionUsage(
+                    total_chunks_processed=req_info.chunk_count,
+                    query_processing_time=int(req_info.end_time - req_info.start_time),
+                ),
+            )
 
         # ======================= Summarize API
 
