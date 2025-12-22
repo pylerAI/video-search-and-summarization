@@ -442,7 +442,14 @@ class EmbeddingProcess(ViaProcessBase):
                 FrameJPEGTensorGenerator,
             )
 
-            self._emb_generator = FrameJPEGTensorGenerator()
+            # Check for debug mode environment variables
+            debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
+            debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames')
+            
+            self._emb_generator = FrameJPEGTensorGenerator(
+                debug_save_frames=debug_save_frames,
+                debug_output_dir=debug_output_dir
+            )
         elif self._vlm_model_type is None:
             model = CustomModuleLoader(self._model_path).load_model()
             self._emb_generator = model.get_embedding_generator()
@@ -491,7 +498,17 @@ class EmbeddingProcess(ViaProcessBase):
         nvtx_embedding_start = nvtx.start_range(
             message="Embedding Process-" + str(chunk[0]), color="blue"
         )
-        embeddings = self._emb_generator.get_embeddings(frames)
+        # Pass frame_times to embedding generator for OpenAI compatible models
+        if hasattr(self._emb_generator, 'get_embeddings') and len(frame_times) > 0:
+            try:
+                # Try to pass frame_times parameter for overlay functionality
+                embeddings = self._emb_generator.get_embeddings(frames, frame_times)
+            except TypeError:
+                # Fallback for embedding generators that don't support frame_times parameter
+                logger.debug("Embedding generator doesn't support frame_times parameter, using fallback")
+                embeddings = self._emb_generator.get_embeddings(frames)
+        else:
+            embeddings = self._emb_generator.get_embeddings(frames)
 
         def on_embeddings_done(
             chunk,
