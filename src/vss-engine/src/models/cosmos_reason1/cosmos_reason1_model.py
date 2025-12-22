@@ -12,7 +12,6 @@
 
 import asyncio
 import concurrent.futures
-import io
 import json
 import math
 import os
