@@ -55,8 +55,6 @@ from vss_api_models import (
     UUID_LENGTH,
     AddFileInfoResponse,
     ChatCompletionQuery,
-    ChatCompletionToolType,
-    CompletionFinishReason,
     CompletionResponse,
     CompletionUsage,
     DeleteFileResponse,
@@ -558,7 +556,6 @@ class ViaServer:
         # ======================= Models API
 
         # ======================= Summarize API
-
         @self._app.post(
             f"{API_PREFIX}/summarize",
             summary="Summarize a video",
@@ -577,133 +574,79 @@ class ViaServer:
             tags=["Summarization"],
         )
         async def summarize(query: SummarizationQuery, request: Request) -> CompletionResponse:
-
-            videoIdListUUID = query.id_list
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            # 1. asset_id 리스트 처리
+            assetIdList = [str(uuid_obj) for uuid_obj in query.id_list]
             assetList = []
 
-            if len(videoIdList) > 1:
-                for videoId in videoIdList:
-                    asset = self._asset_manager.get_asset(videoId)
-                    assetList.append(asset)
-                    if asset.media_type != "image":
-                        raise ViaException(
-                            "Multi-file summarize: Only image files supported."
-                            f" {asset._filename} is a not an image",
-                            "BadParameters",
-                            400,
-                        )
+            for asset_id in assetIdList:
+                # AssetManager에서 해당 asset_id 폴더 정보를 가져옴
+                asset = self._asset_manager.get_asset(asset_id)
+                
+                # [핵심] 요약은 비디오 파일을 필요로 하므로 폴더 내 video.mp4 경로를 강제 지정
+                video_file_path = os.path.join(self._asset_manager._asset_dir, asset_id, "video.mp4")
+                
+                if not os.path.exists(video_file_path):
+                    raise ViaException(
+                        f"Video file (video.mp4) not found in asset folder: {asset_id}",
+                        "ResourceNotFound",
+                        404
+                    )
+                
+                # 엔진이 분석할 수 있도록 asset 객체의 path를 video.mp4로 설정
+                asset._path = video_file_path
+                assetList.append(asset)
 
+            # 2. 오디오 지원 여부 및 미디어 타입 검증
             if query.enable_audio:
-                for videoId in videoIdList:
-                    asset = self._asset_manager.get_asset(videoId)
+                for asset in assetList:
                     if asset.media_type == "image":
                         raise ViaException(
-                            "Audio transcription is not supported for image files."
-                            f" {asset._filename} is an image",
+                            f"Audio transcription is not supported for image assets. Asset {asset.asset_id} is an image",
                             "BadParameters",
                             400,
                         )
 
-            videoId = videoIdList[
-                0
-            ]  # Note: Other files processed only for multi-image summarize() below
-            asset = self._asset_manager.get_asset(videoId)
+            # 3. 메인 자산 정보 설정 (첫 번째 자산 기준)
+            main_asset = assetList[0]
+            main_asset_id = assetIdList[0]
 
             media_info_start = None
             media_info_end = None
 
             if query.media_info:
-                # Extract user specified start/end time filter.
-                # For files, it is in terms of "offset" - start/end time in seconds
-                # For live stream, it is in terms of "timetamp" - start/end NTP timestamp.
                 if query.media_info.type == "offset":
                     media_info_start = query.media_info.start_offset
                     media_info_end = query.media_info.end_offset
-                if query.media_info.type == "timetamp":
+                elif query.media_info.type == "timetamp":
                     media_info_start = query.media_info.start_timestamp
                     media_info_end = query.media_info.end_timestamp
 
+            # 4. 로깅 (videoId 대신 assetIdList 사용)
             logger.info(
-                "Received summarize query, id - %s (live-stream=%d), "
+                "Received summarize query, ids - %s (live-stream=%d), "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
-                "media-end-time=%r, modelParams=%s, "
-                "summary_duration=%d, stream=%r num_frames_per_chunk=%d "
-                "vlm_input_width = %d, "
-                "vlm_input_height = %d, "
-                "summarize_batch_size = %s, "
-                "summarize_max_tokens = %s, "
-                "summarize_temperature = %s, "
-                "summarize_top_p = %s, "
-                "rag_top_k = %s, "
-                "rag_batch_size = %s, "
-                "chat_max_tokens = %s, "
-                "chat_temperature = %s, "
-                "chat_top_p = %s, "
-
-                "summarization enabled = %s, "
-                "chat enabled = %s, "
-                "collection_name = %s, "
-                "custom_metadata = %s, "
-                "delete_external_collection = %s, "
-                "camera_id = %s, "
-                "enable_audio = %d",
-                ", ".join(videoIdList),
+                "media-end-time=%r, camera_id = %s, enable_audio = %d",
+                ", ".join(assetIdList),
+                query.stream,
                 query.chunk_duration,
                 query.chunk_overlap_duration,
                 query.media_info and query.media_info.type,
                 media_info_start,
                 media_info_end,
-                json.dumps(
-                    {
-                        "max_tokens": query.max_tokens,
-                        "temperature": query.temperature,
-                        "top_p": query.top_p,
-                        "top_k": query.top_k,
-                    }
-                ),
-                query.summary_duration,
-                query.stream,
-                query.num_frames_per_chunk,
-                query.vlm_input_width,
-                query.vlm_input_height,
-                query.summarize_batch_size,
-                query.summarize_max_tokens,
-                query.summarize_temperature,
-                query.summarize_top_p,
-                query.rag_top_k,
-                query.rag_batch_size,
-                query.chat_max_tokens,
-                query.chat_temperature,
-                query.chat_top_p,
-                query.summarize,
-                query.enable_chat,
-                query.collection_name,
-                str(query.custom_metadata),
-                query.delete_external_collection,
                 query.camera_id,
                 query.enable_audio,
             )
 
-            # Save stream settings to json file
+            # 5. 스트림 설정 캐시 업데이트
             filtered_query_json = self._stream_settings_cache.transform_query(query.get_query_json)
-            logger.debug(f"Filtered Query JSON: {filtered_query_json}")
-            self._stream_settings_cache.update_stream_settings(videoId, filtered_query_json)
+            self._stream_settings_cache.update_stream_settings(main_asset_id, filtered_query_json)
 
-            # Check if user has specified the model that is initialized
+            # 6. 모델 및 프롬프트 검증
             model_info = self._stream_handler.get_models_info()
             if query.model != model_info.id:
                 raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
 
-            if query.api_type and query.api_type != model_info.api_type:
-                raise ViaException(
-                    f"api_type {query.api_type} not supported by model '{query.model}'",
-                    "BadParameters",
-                    400,
-                )
-
-            # Validate required prompts based on CA-RAG configuration
             validation_errors = validate_required_prompts(
                 query.prompt,
                 query.caption_summarization_prompt,
@@ -711,58 +654,29 @@ class ViaServer:
                 self._args,
             )
             if validation_errors:
-                error_message = "; ".join(validation_errors)
-                raise ViaException(error_message, "BadParameters", 400)
+                raise ViaException("; ".join(validation_errors), "BadParameters", 400)
 
-
-            # For non-CA RAG usecase, only streaming output is supported
-            if self._stream_handler._ctx_mgr is None and not query.stream:
-                raise ViaException(
-                    "Only streaming output is supported for files when CA-RAG is disabled",
-                    "BadParameters",
-                    400,
-                )
-
+            # 7. 비동기 엔진 실행
             loop = asyncio.get_event_loop()
-
-        
-            if len(videoIdList) == 1:
-                assetList = [asset]
-            # Summarize on a file or multiple files
             request_id = await loop.run_in_executor(
                 self._async_executor,
                 self._stream_handler.summarize,
                 assetList,
                 query,
             )
-            logger.info("Created video file query %s for videoId %s", request_id, videoId)
+            logger.info("Created video file query %s for main asset %s", request_id, main_asset_id)
 
-            if query.tools:
-                for tool in query.tools:
-                    if tool.type == ChatCompletionToolType.ALERT:
-                        if not query.stream:
-                            raise ViaException(
-                                "Only streaming output is supported for alerts",
-                                "BadParameters",
-                                400,
-                            )
-
-            logger.info("Waiting for results of query %s", request_id)
-
-            # Non-streaming output. Wait for request to be completed.
+            # 8. 결과 대기 (Non-streaming)
             await loop.run_in_executor(
                 self._async_executor, self._stream_handler.wait_for_request_done, request_id
             )
             req_info, resp_list = self._stream_handler.get_response(request_id)
             self._stream_handler.check_status_remove_req_id(request_id)
+            
             if req_info.status == RequestInfo.Status.FAILED:
-                raise ViaException(
-                    f"Failed to generate summary: {req_info.error_message}",
-                    "InternalServerError",
-                    500,
-                )
+                raise ViaException(f"Failed to generate summary: {req_info.error_message}", "InternalServerError", 500)
 
-            # Create response json and return it
+            # 9. 응답 반환
             return {
                 "id": request_id,
                 "model": model_info.id,
@@ -773,17 +687,13 @@ class ViaServer:
                     "start_offset": int(req_info.start_timestamp),
                     "end_offset": int(req_info.end_timestamp),
                 },
-                "choices": (
-                    [
-                        {
-                            "finish_reason": CompletionFinishReason.STOP.value,
-                            "index": 0,
-                            "message": {"content": resp_list[0].response, "role": "assistant"},
-                        }
-                    ]
-                    if resp_list
-                    else []
-                ),
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "index": 0,
+                        "message": {"content": resp_list[0].response, "role": "assistant"},
+                    }
+                ] if resp_list else [],
                 "usage": {
                     "total_chunks_processed": req_info.chunk_count,
                     "query_processing_time": int(req_info.end_time - req_info.start_time),
@@ -1048,7 +958,7 @@ class ViaServer:
         @self._app.post(
             f"{API_PREFIX}/chat/completions",
             summary="VIA Chat or Q&A",
-            description="Run video interactive question and answer.",
+            description="Run video interactive question and answer using asset_id.",
             responses={
                 200: {"description": "Successful Response."},
                 **add_common_error_responses(),
@@ -1063,32 +973,41 @@ class ViaServer:
             tags=["Summarization"],
         )
         async def qa(query: ChatCompletionQuery, request: Request) -> CompletionResponse:
-
-            videoIdListUUID = query.id_list
-            logger.debug(f"{videoIdListUUID}")
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            # 1. asset_id 리스트 처리
+            assetIdList = [str(uuid_obj) for uuid_obj in query.id_list]
             assetList = []
 
-            def json_to_string(input):
-                try:
-                    return json.dumps(input)
-                except TypeError:
-                    return input
+            for asset_id in assetIdList:
+                # AssetManager에서 해당 asset_id 폴더 정보를 가져옴
+                asset = self._asset_manager.get_asset(asset_id)
+                
+                # [핵심] QA/Chat 분석을 위해 폴더 내 video.mp4 경로를 강제 지정
+                video_file_path = os.path.join(self._asset_manager._asset_dir, asset_id, "video.mp4")
+                
+                if not os.path.exists(video_file_path):
+                    raise ViaException(
+                        f"Video file (video.mp4) not found in asset folder: {asset_id}",
+                        "ResourceNotFound",
+                        404
+                    )
+                
+                # AttributeError 방지: property 'path' 대신 내부 변수 '_path'에 할당
+                asset._path = video_file_path 
+                assetList.append(asset)
 
-            if len(videoIdList) > 1:
-                for videoId in videoIdList:
-                    asset = self._asset_manager.get_asset(videoId)
-                    assetList.append(asset)
+            # 2. 다중 이미지 Q&A 체크 (기존 로직 유지)
+            if len(assetIdList) > 1:
+                for asset in assetList:
                     if asset.media_type != "image":
                         raise ViaException(
-                            "Multi-file Q&A: Only image files supported."
-                            f" {asset._filename} is a not an image",
+                            "Multi-file Q&A: Only image files supported. "
+                            f"Asset {asset.asset_id} is not an image.",
                             "BadParameters",
                             400,
                         )
 
-            videoId = videoIdList[0]  # Note: Other files processed only for multi-image qa() below
-            asset = self._asset_manager.get_asset(videoId)
+            # 메인 자산 ID 설정 (첫 번째 자산 기준)
+            main_asset_id = assetIdList[0]
 
             logger.debug(f"Q&A; messages={query.messages}")
 
@@ -1096,66 +1015,41 @@ class ViaServer:
             media_info_end = 0
 
             if query.media_info:
-                # Extract user specified start/end time filter.
-                # For files, it is in terms of "offset" - start/end time in seconds
-                # For live stream, it is in terms of "timetamp" - start/end NTP timestamp.
                 if query.media_info.type == "offset":
                     media_info_start = query.media_info.start_offset
                     media_info_end = query.media_info.end_offset
-                if query.media_info.type == "timetamp":
+                elif query.media_info.type == "timetamp":
                     media_info_start = query.media_info.start_timestamp
                     media_info_end = query.media_info.end_timestamp
 
+            # 3. 로깅
             logger.info(
-                "Received QA query, id - %s (live-stream=%d), "
-                "chunk_duration=%d, chunk_overlap_duration=%d, "
-                "media-offset-type=%s, media-start-time=%r, "
-                "media-end-time=%r, modelParams=%s, summary_duration=%d, stream=%r",
-                ", ".join(videoIdList),
-                query.chunk_duration,
-                query.chunk_overlap_duration,
+                "Received QA query, id - %s, media-offset-type=%s, "
+                "media-start-time=%r, media-end-time=%r, modelParams=%s, stream=%r",
+                ", ".join(assetIdList),
                 query.media_info and query.media_info.type,
                 media_info_start,
                 media_info_end,
-                json.dumps(
-                    {
-                        "max_tokens": query.max_tokens,
-                        "temperature": query.temperature,
-                        "top_p": query.top_p,
-                        "top_k": query.top_k,
-                    }
-                ),
-                query.summary_duration,
+                json.dumps({
+                    "max_tokens": query.max_tokens,
+                    "temperature": query.temperature,
+                    "top_p": query.top_p,
+                    "top_k": query.top_k,
+                }),
                 query.stream,
             )
 
-            # Check if user has specified the model that is initialized
+            # 4. 모델 정보 확인
             model_info = self._stream_handler.get_models_info()
             if query.model != model_info.id:
                 raise ViaException(f"No such model '{query.model}'", "BadParameters", 400)
 
-            if query.api_type and query.api_type != model_info.api_type:
-                raise ViaException(
-                    f"api_type {query.api_type} not supported by model '{query.model}'",
-                    "BadParameters",
-                    400,
-                )
-
-            # For non-CA RAG usecase, only streaming output is supported
             if self._stream_handler._ctx_mgr is None:
-                raise ViaException(
-                    "Chat functionality disabled",
-                    "BadParameters",
-                    400,
-                )
+                raise ViaException("Chat functionality disabled", "BadParameters", 400)
 
+            # 5. 비동기 엔진(QA) 실행
             loop = asyncio.get_event_loop()
             request_id = str(uuid.uuid4())
-
-            if len(videoIdList) == 1:
-                assetList = [asset]
-
-            # Measure chat completions latency
             chat_start_time = time.time()
 
             answer_resp = await loop.run_in_executor(
@@ -1168,28 +1062,19 @@ class ViaServer:
                 media_info_end,
             )
 
-            chat_end_time = time.time()
-            chat_latency = chat_end_time - chat_start_time
+            chat_latency = time.time() - chat_start_time
 
-            # Record the chat completions latency metrics
+            # 6. 메트릭 및 로그 기록
             self._stream_handler._metrics.chat_completions_latency.observe(chat_latency)
             self._stream_handler._metrics.chat_completions_latency_latest.set(chat_latency)
-
-            logger.info("Created query %s for id %s", request_id, videoId)
-            logger.info("Waiting for results of query %s", request_id)
+            logger.info("Created query %s for asset_id %s", request_id, main_asset_id)
             logger.info("Chat completions latency: %.3f seconds", chat_latency)
 
-            logger.debug(f"Q&A answer:{answer_resp}")
-            if len(answer_resp) > 0 and answer_resp[0] == "{":
-                try:
-                    json_resp = json.loads(answer_resp)
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, proceed with original behavior
-                    pass
-            response = {
+            # 7. 응답 반환
+            return {
                 "id": str(request_id),
                 "model": model_info.id,
-                "created": int(0),
+                "created": int(time.time()),
                 "object": "summarization.completion",
                 "media_info": {
                     "type": "offset",
@@ -1198,7 +1083,7 @@ class ViaServer:
                 },
                 "choices": [
                     {
-                        "finish_reason": CompletionFinishReason.STOP.value,
+                        "finish_reason": "stop",
                         "index": 0,
                         "message": {
                             "content": answer_resp,
@@ -1208,10 +1093,9 @@ class ViaServer:
                 ],
                 "usage": {
                     "total_chunks_processed": 0,
-                    "query_processing_time": int(0),
+                    "query_processing_time": int(chat_latency),
                 },
             }
-            return response
 
         # ======================= Q&A API
 

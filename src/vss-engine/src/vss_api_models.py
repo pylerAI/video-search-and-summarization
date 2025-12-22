@@ -142,7 +142,7 @@ class FileInfo(ViaBaseModel):
         ),
         examples=["vision"],
     )
-    
+
 
 
 
@@ -346,26 +346,28 @@ class ChatCompletionTool(ViaBaseModel):
 class SummarizationQuery(ViaBaseModel):
     """Summarization Query Request Fields."""
 
-    id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize",
+    asset_id: Union[str, List[str]] = Field(
+        description="Asset ID or list of Asset IDs to summarize",
         examples=[
-            "123e4567-e89b-12d3-a456-426614174000",
-            ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d1-b567-537725285111"],
+            "asset_id_string",
+            ["asset_id_string_1", "asset_id_string_2"],
         ],
     )
 
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
+    @field_validator("asset_id", mode="after")
+    @classmethod # Pydantic V2에서는 classmethod 권장
+    def check_ids(cls, v: any):
         if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
+            raise ValueError("List of asset_ids must not exceed 50 items")
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        # self.asset_id가 문자열이면 리스트로 감싸고, 리스트면 그대로 반환
+        return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
 
     @property
-    def get_query_json(self: ViaBaseModel) -> dict:
+    def get_query_json(self) -> dict:
         return self.model_dump(mode="json")
 
     system_prompt: str = Field(
@@ -793,19 +795,20 @@ class ChatMessage(ViaBaseModel):
 class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
 
-    id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize"
+    asset_id: Union[str, List[str]] = Field(
+        description="Asset ID or list of Asset IDs of the file(s)/live-stream(s) to query"
     )
 
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
+    @field_validator("asset_id", mode="after")
+    @classmethod
+    def check_ids(cls, v: any):
         if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
+            raise ValueError("List of asset_ids must not exceed 50 items")
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
 
     messages: List[ChatMessage] = Field(
         description="The list of chat messages.", max_length=1000000
