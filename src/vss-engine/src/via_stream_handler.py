@@ -220,8 +220,7 @@ def ntp_to_unix_timestamp(ntp_ts):
 def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
     if req_info.chunk_type != "segment":
         raise ViaException("Invalid chunk type", "BadParameter", 400)
-        
-    path = req_info.segment 
+    path = req_info.chunk_type
     with open(path, "r") as f:
         data = json.load(f)
 
@@ -552,17 +551,6 @@ class ViaStreamHandler:
         req_info.status_event.set()
 
 
-    # @staticmethod
-    # def _remove_segmasks_from_cv_meta(cv_meta_):
-    #     cv_meta = deepcopy(cv_meta_)
-    #     for data in cv_meta:
-    #         for obj in data["objects"]:
-    #             if "misc" not in obj:
-    #                 continue
-    #             for misc in obj["misc"]:
-    #                 misc["seg"] = {}
-    #     return cv_meta
-
     def _create_video_from_cached_frames(self, req_info):
         def check_ffmpeg():
             """Check if FFmpeg is installed."""
@@ -753,23 +741,7 @@ class ViaStreamHandler:
             response.vlm_response = vlm_response
             # Add the chunk VLM response to the milvus DB
             if req_info._ctx_mgr:
-                # Along with chunk, add cv metadata for the chunk
-                # get cv metadata present in file chunk.cv_metadata_json_file
-                # for duration chunk.start_pts to chunk.end_pts
-                # cv_meta = chunk.cached_frames_cv_meta
-                # cv_meta_str = json.dumps(self._remove_segmasks_from_cv_meta(cv_meta))
-                # if len(cv_meta_str) > MAX_MILVUS_STRING_LEN:
-                #     cv_meta_str = cv_meta_str[:MAX_MILVUS_STRING_LEN]
-                #     logger.warning(
-                #         "CV metadata length exceeds max milvus string length, " "truncating to %d",
-                #         MAX_MILVUS_STRING_LEN,
-                #     )
-                # print(
-                #     f"chunkIdx = {chunk.chunkIdx}  chunk.start_pts = {chunk.start_pts} \
-                #       chunk.end_pts = {chunk.end_pts} CV metadata length = {len(cv_meta)}"
-                # )
-                # Since cv metadata is getting  attached seperately to the context manager,
-                # set cached_frames_cv_meta to empty string in chunk
+               
                 with TimeMeasure("Context Manager - Add Doc"):
                     add_doc_start_time = time.time()
 
@@ -788,25 +760,24 @@ class ViaStreamHandler:
                                 f"Summary till now: {output.result()}"
                             ),
                         )
-                    # else:
-                    #     data = segment_to_meta(req_info, self.coarse_idx)
-                    #         req_info._ctx_mgr.add_doc(
-                    #         transcript,
-                    #         doc_i=chunk.chunkIdx * 2 + 1,
-                    #         doc_meta=(
-                    #             vars(chunk)
-                    #             | {
-                    #                 "uuid": req_info.stream_id,
-                    #                 "cv_meta": cv_meta_str,
-                    #                 "source": "segment",
-                    #                 "coarse_grained_scene_id": self.coarse_idx,
-                    #                 "coarse_grained_scene_length": data["coarse_grained_scene_length"],
-                    #             }
-                    #         ),
-                    #         callback=lambda output: logger.debug(
-                    #             f"Summary till now: {output.result()}"
-                    #         ),
-                    #     )
+                    else:
+                        data = segment_to_meta(req_info, self.coarse_idx)
+                        req_info._ctx_mgr.add_doc(
+                            transcript,
+                            doc_i=chunk.chunkIdx * 2 + 1,
+                            doc_meta=(
+                                vars(chunk)
+                                | {
+                                    "uuid": req_info.stream_id,
+                                    "source": "segment",
+                                    "coarse_grained_scene_id": self.coarse_idx,
+                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                                }
+                            ),
+                            callback=lambda output: logger.debug(
+                                f"Summary till now: {output.result()}"
+                            ),
+                        )
 
 
                     if transcript is not None:  # enable audio
@@ -1958,12 +1929,6 @@ class ViaStreamHandler:
             action="store_true",
             default=False,
             help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
-            "--disable-cv-pipeline",
-            action="store_true",
-            default=False,
-            help="Disable CV Pipeline",
         )
         parser.add_argument(
             "--guardrails-config",
