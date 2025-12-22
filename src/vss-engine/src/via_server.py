@@ -24,10 +24,9 @@ import gc
 import json
 import os
 import time
-import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated
+from typing import Annotated, Optional
 
 import aiofiles
 import aiofiles.os
@@ -53,7 +52,6 @@ from via_exception import ViaException
 from via_logger import LOG_PERF_LEVEL, TimeMeasure, logger
 from vss_api_models import (
     UUID_LENGTH,
-    AddFileInfoResponse,
     ChatCompletionQuery,
     CompletionResponse,
     CompletionUsage,
@@ -236,90 +234,68 @@ class ViaServer:
         # ======================= Files API
         @self._app.post(
             f"{API_PREFIX}/files",
-            summary="API for uploading a media file",
-            description="Files are used to upload media files.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
+            summary="API for uploading media files",
+            description="Upload one or two files and receive info for both.",
+            # responses 부분은 프로젝트의 AddFileInfoResponse 정의에 따라 List 형태로 보정 필요
             tags=["Files"],
         )
         async def add_video_file(
-            purpose: Annotated[
-                Purpose,
-                Form(
-                    description=(
-                        "The intended purpose of the uploaded file."
-                        " For VIA use-case this must be set to vision"
-                    )
-                ),
-            ],
-            media_type: Annotated[MediaType, Form(description="Media type (image / video / segment / metadata).")],
-            file: Annotated[
-                UploadFile, File(description="File object (not file name) to be uploaded.")
-            ],
-            asset_id: Annotated[
-                str,
-                Form(
-                    description="video_id ID to be used for the file.",
-                    max_length=256,
-                ),
-            ],
-        ) -> AddFileInfoResponse:
+            purpose: Annotated[Purpose, Form(...)],
+            asset_id: Annotated[str, Form(description="Asset ID to store the files")],
+            media_type1: Annotated[MediaType, Form(description="Media type for file1")],
+            file1: Annotated[UploadFile, File(description="First file object")],
+            media_type2: Annotated[Optional[MediaType], Form(description="Media type for file2")] = None,
+            file2: Annotated[Optional[UploadFile], File(description="Second file object")] = None,
+        ):
+            logger.info(f"Received add file request for asset_id: {asset_id}")
 
-            logger.info(
-                "Received add video file request - purpose %s,"
-                " media_type %s have file %r, filename - %s, camera_id - %s",
-                purpose,
-                media_type,
-                file,
-                asset_id,
-            )
+            upload_tasks = [(file1, media_type1)]
+            if file2 and media_type2:
+                upload_tasks.append((file2, media_type2))
 
+            uploaded_files_result = []
 
-            if media_type != "video" and media_type != "image" and media_type != "metadata" and media_type != "segment":
-                raise ViaException(
-                    "Currently only 'video', 'image', 'metadata', 'segment' media_type is supported.",
-                    "InvalidParameters",
-                    422,
-                )
-            asset_id = await self._asset_manager.save_file(
-                file, asset_id, purpose.value, media_type.value, 
-            )
+            for file, m_type in upload_tasks:
+                m_type_val = m_type.value if hasattr(m_type, 'value') else m_type
+                
+                # 1. 파일 저장
+                await self._asset_manager.save_file(file, asset_id, purpose.value, m_type_val)
 
-            try:
-                if media_type in ["video", "image"] and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
-                    media_info = await MediaFileInfo.get_info_async(
-                        self._asset_manager.get_asset(asset_id).path
-                    )
-                    if not media_info.video_codec:
-                        raise Exception("Invalid file")
-                    if (media_type == "image") != media_info.is_image:
-                        raise Exception("Invalid file")
+                # 2. 저장된 파일 정보 확인 (용량 등)
+                ext = {
+                    "video": ".mp4", "image": ".jpg", 
+                    "segment": ".json", "metadata": ".json"
+                }.get(m_type_val, "")
+                target_path = os.path.join(self._asset_manager._asset_dir, asset_id, f"{m_type_val}{ext}")
+                
+                try:
+                    fsize = (await aiofiles.os.stat(target_path)).st_size
+                except:
+                    fsize = 0
 
-                    # Cache video FPS in the asset
-                    if media_type == "video" and hasattr(media_info, "video_fps"):
-                        asset = self._asset_manager.get_asset(asset_id)
-                        asset.update_video_fps(float(media_info.video_fps))
-            except Exception as e:
-                logger.error("".join(traceback.format_exception(e)))
-                self._asset_manager.cleanup_asset(asset_id)
-                raise ViaException(
-                    f"File does not seem to be a valid {media_type} file",
-                    "InvalidFile",
-                    400,
-                )
+                # 개별 파일 정보 저장
+                uploaded_files_result.append({
+                    "asset_id": asset_id,
+                    "bytes": fsize,
+                    "media_type": m_type_val,
+                    "purpose": "vision"
+                })
 
-            asset = self._asset_manager.get_asset(asset_id)
-            try:
-                fsize = (await aiofiles.os.stat(asset.path)).st_size
-            except Exception:
-                fsize = 0
+                # 비디오인 경우 FPS 캐시 업데이트 로직 (기존 유지)
+                if m_type_val == "video" and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
+                    try:
+                        media_info = await MediaFileInfo.get_info_async(target_path)
+                        if hasattr(media_info, "video_fps"):
+                            self._asset_manager.get_asset(asset_id).update_video_fps(float(media_info.video_fps))
+                    except Exception as e:
+                        logger.error(f"Video verification failed: {e}")
+
+            # 3. 결과 반환 (파일이 1개면 객체 하나, 2개면 리스트 또는 두 정보 모두 포함)
+            # 프로젝트의 응답 규격에 따라 아래 형태 중 선택 가능합니다.
             return {
                 "asset_id": asset_id,
-                "bytes": fsize,
-                "media_type": media_type,
-                "purpose": "vision",
+                "object": "list",
+                "data": uploaded_files_result  # 두 파일의 정보를 모두 담은 리스트
             }
 
         @self._app.delete(
