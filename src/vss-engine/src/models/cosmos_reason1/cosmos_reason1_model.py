@@ -49,13 +49,27 @@ def start_loop(loop):
 
 
 class CosmosReason1:
-    def __init__(self, model_path, max_batch_size=None, use_trt=False, **kwargs) -> None:
+    def __init__(self, model_path, max_batch_size=None, use_trt=False, debug_save_frames=None, debug_output_dir=None, **kwargs) -> None:
         self._model = None
         self._max_batch_size = max_batch_size or 1
         self._inflight_req_ids = []
         self._use_trt = use_trt
         self.model_path = model_path
         self.model_dir_name = os.path.basename(os.path.normpath(model_path))
+        
+        # Debug configuration for frame saving
+        if debug_save_frames is None:
+            self._debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
+        else:
+            self._debug_save_frames = debug_save_frames
+            
+        if debug_output_dir is None:
+            self._debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames_cosmos')
+        else:
+            self._debug_output_dir = debug_output_dir
+            
+        if self._debug_save_frames:
+            logger.info(f"CosmosReason1 debug mode enabled: will save frames to {self._debug_output_dir}")
 
         # Set resize parameters
         self._max_pixels = MAX_PIXELS
@@ -464,7 +478,10 @@ class CosmosReason1:
             )
 
         images = [Image.fromarray(image.cpu().numpy()) for image in images]
-        images = self.overlay_frame_number(images, video_frames_times)
+        
+        # Get chunk information for debug saving (happens inline in overlay_frame_number)
+        chunk_idx = generation_config.get('chunk_idx', None) if generation_config else None
+        images = self.overlay_frame_number(images, video_frames_times, chunk_idx)
 
         # convert PIL Images to tensors
         images = torch.stack([TF.pil_to_tensor(image) for image in images])
@@ -603,6 +620,7 @@ class CosmosReason1:
         self,
         images: List[Image.Image],
         video_frames_times: List[float],
+        chunk_idx: int = None,
         border_height: int = 28,  # this is due to patch size of 28
         temporal_path_size: int = 2,  # Number of positions to cycle through
         font_size: int = 20,
@@ -632,6 +650,21 @@ class CosmosReason1:
         processed_images = []
 
         for i, image in enumerate(images):
+            # Debug mode: Save select frames (1st, 5th, last) per chunk for visual verification
+            # Enable with VSS_DEBUG_FRAME_OVERLAY=true environment variable
+            if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
+                import os
+                os.makedirs(self._debug_output_dir, exist_ok=True)
+                
+                # Create filename with chunk info if available
+                if chunk_idx is not None:
+                    orig_path = os.path.join(self._debug_output_dir, f"cosmos_c{chunk_idx:02d}_frame_{i:02d}_original.jpg")
+                else:
+                    orig_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_original.jpg")
+                    
+                # Only save if file doesn't exist (avoid duplicates from multiple calls)
+                if not os.path.exists(orig_path):
+                    image.save(orig_path, quality=95)
             # Get original dimensions
             width, height = image.size
 
@@ -676,6 +709,21 @@ class CosmosReason1:
             draw.text((text_x, text_y), text, fill=font_color, font=font)
 
             processed_images.append(new_image)
+            
+            # Debug mode: Save overlaid frame for visual verification
+            if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
+                relative_timestamp = float(video_frames_times[i])-float(video_frames_times[0]) if video_frames_times else 0.0
+                timestamp_str = f"{relative_timestamp:.2f}s".replace('.', 'p')
+                
+                if chunk_idx is not None:
+                    overlaid_path = os.path.join(self._debug_output_dir, f"cosmos_c{chunk_idx:02d}_frame_{i:02d}_overlaid_{timestamp_str}.jpg")
+                else:
+                    overlaid_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_overlaid_{timestamp_str}.jpg")
+                
+                # Only save if file doesn't exist (avoid duplicates from multiple calls)
+                if not os.path.exists(overlaid_path):
+                    new_image.save(overlaid_path, quality=95)
+                    logger.debug(f"Debug: Saved CosmosReason1 chunk {chunk_idx} frame {i} at {relative_timestamp:.2f}s")
 
         return processed_images
 
