@@ -23,13 +23,11 @@ import asyncio
 import gc
 import json
 import os
-import re
 import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, Optional
-from uuid import UUID
+from typing import Annotated
 
 import aiofiles
 import aiofiles.os
@@ -54,9 +52,6 @@ from utils import (
 from via_exception import ViaException
 from via_logger import LOG_PERF_LEVEL, TimeMeasure, logger
 from vss_api_models import (
-    CAMERA_ID_PATTERN,
-    FILE_NAME_PATTERN,
-    PATH_PATTERN,
     UUID_LENGTH,
     AddFileInfoResponse,
     ChatCompletionQuery,
@@ -261,27 +256,17 @@ class ViaServer:
                     )
                 ),
             ],
-            media_type: Annotated[MediaType, Form(description="Media type (image / video).")],
+            media_type: Annotated[MediaType, Form(description="Media type (image / video / segment / metadata).")],
             file: Annotated[
                 UploadFile, File(description="File object (not file name) to be uploaded.")
-            ] = None,
-            filename: Annotated[
+            ],
+            asset_id: Annotated[
                 str,
                 Form(
-                    description="Filename along with path to be used.",
+                    description="video_id ID to be used for the file.",
                     max_length=256,
-                    examples=["/home/ubuntu/myfile.mp4"],
-                    pattern=PATH_PATTERN,
                 ),
-            ] = "",
-            camera_id: Annotated[
-                Optional[str],
-                Form(
-                    description="Camera ID to be used for the file.",
-                    max_length=256,
-                    pattern=CAMERA_ID_PATTERN,
-                ),
-            ] = "default",
+            ],
         ) -> AddFileInfoResponse:
 
             logger.info(
@@ -290,48 +275,24 @@ class ViaServer:
                 purpose,
                 media_type,
                 file,
-                filename,
-                camera_id,
+                asset_id,
             )
 
-            if not file and not filename:
-                raise ViaException(
-                    "At least one of 'file' or 'filename' must be specified",
-                    "InvalidParameters",
-                    422,
-                )
-            if file and filename:
-                raise ViaException(
-                    "Only one of 'file' or 'filename' must be specified. Both are not allowed.",
-                    "InvalidParameters",
-                    422,
-                )
 
-            if media_type != "video" and media_type != "image":
+            if media_type != "video" and media_type != "image" and media_type != "metadata" and media_type != "segment":
                 raise ViaException(
-                    "Currently only 'video', 'image' media_type is supported.",
+                    "Currently only 'video', 'image', 'metadata', 'segment' media_type is supported.",
                     "InvalidParameters",
                     422,
                 )
-            if file:
-                if not re.compile(FILE_NAME_PATTERN).match(file.filename):
-                    raise ViaException(
-                        f"filename should match pattern '{FILE_NAME_PATTERN}'", "BadParameters", 400
-                    )
-                # File uploaded by user
-                video_id = await self._asset_manager.save_file(
-                    file, file.filename, purpose, media_type, camera_id
-                )
-            else:
-                # File added as path
-                video_id = self._asset_manager.add_file(
-                    filename, purpose, media_type, camera_id, reuse_asset=False
-                )
+            asset_id = await self._asset_manager.save_file(
+                file, asset_id, purpose.value, media_type.value, 
+            )
 
             try:
-                if not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
+                if media_type in ["video", "image"] and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
                     media_info = await MediaFileInfo.get_info_async(
-                        self._asset_manager.get_asset(video_id).path
+                        self._asset_manager.get_asset(asset_id).path
                     )
                     if not media_info.video_codec:
                         raise Exception("Invalid file")
@@ -340,32 +301,31 @@ class ViaServer:
 
                     # Cache video FPS in the asset
                     if media_type == "video" and hasattr(media_info, "video_fps"):
-                        asset = self._asset_manager.get_asset(video_id)
+                        asset = self._asset_manager.get_asset(asset_id)
                         asset.update_video_fps(float(media_info.video_fps))
             except Exception as e:
                 logger.error("".join(traceback.format_exception(e)))
-                self._asset_manager.cleanup_asset(video_id)
+                self._asset_manager.cleanup_asset(asset_id)
                 raise ViaException(
                     f"File does not seem to be a valid {media_type} file",
                     "InvalidFile",
                     400,
                 )
 
-            asset = self._asset_manager.get_asset(video_id)
+            asset = self._asset_manager.get_asset(asset_id)
             try:
                 fsize = (await aiofiles.os.stat(asset.path)).st_size
             except Exception:
                 fsize = 0
             return {
-                "id": video_id,
+                "asset_id": asset_id,
                 "bytes": fsize,
-                "filename": asset.filename,
                 "media_type": media_type,
                 "purpose": "vision",
             }
 
         @self._app.delete(
-            f"{API_PREFIX}/files/{{file_id}}",
+            f"{API_PREFIX}/files/{{asset_id}}",
             summary="Delete a file",
             description="The ID of the file to use for this request.",
             responses={
@@ -376,30 +336,28 @@ class ViaServer:
             tags=["Files"],
         )
         async def delete_video_file(
-            file_id: Annotated[UUID, Path(description="File having 'file_id' to be deleted.")],
+            asset_id: Annotated[str, Path(description="File having 'asset_id' to be deleted.")],
         ) -> DeleteFileResponse:
-            file_id = str(file_id)
-            logger.info("Received delete video file request for %s", file_id)
-            asset = self._asset_manager.get_asset(file_id)
+            logger.info("Received delete video file request for %s", asset_id)
+            asset = self._asset_manager.get_asset(asset_id)
 
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 self._async_executor, self._stream_handler.remove_video_file, asset
             )
             await loop.run_in_executor(
-                self._async_executor, self._asset_manager.cleanup_asset, file_id
+                self._async_executor, self._asset_manager.cleanup_asset, asset_id
             )
 
-            # Force Garbage Collect for tests
             if os.environ.get("VSS_FORCE_GC"):
                 print("Force Garbage Collect in VIA Server")
                 gc.collect()
 
-            return {"id": file_id, "object": "file", "deleted": True}
+            return {"asset_id": asset_id, "object": "file", "deleted": True}
 
         @self._app.get(
             f"{API_PREFIX}/files",
-            description="Returns a list of files.",
+            description="Returns a list of all files within assets.",
             summary="Returns list of files",
             responses={
                 200: {"description": "Successful Response."},
@@ -420,27 +378,48 @@ class ViaServer:
         ) -> ListFilesResponse:
             if purpose != "vision":
                 return {"data": [], "object": "list"}
-            video_file_list = [
-                {
-                    "id": asset.asset_id,
-                    "filename": asset.filename,
-                    "purpose": "vision",
-                    "bytes": (
-                        (await aiofiles.os.stat(asset.path)).st_size
-                        if (await aiofiles.os.path.isfile(asset.path))
-                        else 0
-                    ),
-                    "media_type": asset.media_type,
-                }
-                for asset in self._asset_manager.list_assets()
-            ]
+
+            all_files_info = []
+            
+            # 지원하는 미디어 타입 정의 (save_file의 EXTENSIONS와 일치시킴)
+            EXTENSIONS = {
+                "video": ".mp4",
+                "image": ".jpg",
+                "segment": ".json",
+                "metadata": ".json"
+            }
+
+            # 모든 자산(폴더)을 순회
+            for asset in self._asset_manager.list_assets():
+                asset_dir = os.path.join(self._asset_manager._asset_dir, asset.asset_id)
+                
+                # 각 asset_id 폴더 내에서 지원하는 미디어 타입 파일이 있는지 확인
+                for m_type, ext in EXTENSIONS.items():
+                    file_path = os.path.join(asset_dir, f"{m_type}{ext}")
+                    
+                    if os.path.isfile(file_path):
+                        try:
+                            stats = await aiofiles.os.stat(file_path)
+                            fsize = stats.st_size
+                        except Exception:
+                            fsize = 0
+
+                        all_files_info.append({
+                            "asset_id": asset.asset_id,
+                            "purpose": "vision",
+                            "bytes": fsize,
+                            "media_type": m_type,
+                        })
+
             logger.info(
-                "Received list files request. Responding with %d files info", len(video_file_list)
+                "Received list files request. Responding with %d individual files from %d assets", 
+                len(all_files_info), len(self._asset_manager.list_assets())
             )
-            return {"data": video_file_list, "object": "list"}
+            
+            return {"data": all_files_info, "object": "list"}
 
         @self._app.get(
-            f"{API_PREFIX}/files/{{file_id}}",
+            f"{API_PREFIX}/files/{{asset_id}}/{{media_type}}",
             summary="Returns information about a specific file",
             description="Returns information about a specific file.",
             responses={
@@ -450,20 +429,51 @@ class ViaServer:
             tags=["Files"],
         )
         async def get_file_info(
-            file_id: Annotated[
-                UUID, Path(description="The ID of the file to use for this request.")
+            asset_id: Annotated[
+                str, Path(description="The ID of the asset.")
+            ],
+            media_type: Annotated[
+                str, Path(description="Media type (video, image, metadata, segment)")
             ],
         ) -> FileInfo:
-            file_id = str(file_id)
-            asset = self._asset_manager.get_asset(file_id)
+            # Asset 존재 여부 확인
+            asset = self._asset_manager.get_asset(asset_id)
+            
+            # 해당 asset_id 폴더 내의 특정 media_type 파일 경로 계산
+            EXTENSIONS = {
+                "video": ".mp4",
+                "image": ".jpg",
+                "segment": ".json",
+                "metadata": ".json"
+            }
+            
+            asset_dir = os.path.join(self._asset_manager._asset_dir, asset_id)
+            target_file_path = os.path.join(asset_dir, f"{media_type}{EXTENSIONS[media_type]}")
+
+            # 실제 파일이 존재하는지 확인
+            if not os.path.exists(target_file_path):
+                raise ViaException(
+                    f"No {media_type} file found for asset {asset_id}", 
+                    "ResourceNotFound", 
+                    404
+                )
+
             try:
-                fsize = (await aiofiles.os.stat(asset.path)).st_size
+                stats = await aiofiles.os.stat(target_file_path)
+                fsize = stats.st_size
             except Exception:
                 fsize = 0
-            return {"id": file_id, "bytes": fsize, "filename": asset.filename, "purpose": "vision"}
+
+            #규격에 맞게 응답 (filename 대신 media_type 활용)
+            return {
+                "asset_id": asset_id, 
+                "bytes": fsize, 
+                "media_type": media_type,
+                "purpose": "vision"
+            }
 
         @self._app.get(
-            f"{API_PREFIX}/files/{{file_id}}/content",
+            f"{API_PREFIX}/files/{{asset_id}}/{{media_type}}/content",
             summary="Returns the contents of the specified file",
             description="Returns the contents of the specified file.",
             responses={
@@ -473,14 +483,40 @@ class ViaServer:
             tags=["Files"],
         )
         async def get_file_content(
-            file_id: Annotated[
-                UUID, Path(description="The ID of the file to use for this request.")
-            ],
+            asset_id: Annotated[str, Path(description="The ID of the file.")],
+            media_type: Annotated[str, Path(description="video, image, metadata, segment.")],
         ):
-            asset = self._asset_manager.get_asset(str(file_id))
+            self._asset_manager.get_asset(asset_id)
 
-            return FileResponse(asset.path)
+            EXTENSIONS = {
+                "video": ".mp4",
+                "image": ".jpg",
+                "segment": ".json",
+                "metadata": ".json"
+            }
 
+            if media_type not in EXTENSIONS:
+                raise ViaException("Unsupported media type", "InvalidParameters", 422)
+
+            asset_dir = os.path.join(self._asset_manager._asset_dir, asset_id)
+            extension = EXTENSIONS[media_type]
+            target_file_path = os.path.join(asset_dir, f"{media_type}{extension}")
+
+            if not os.path.exists(target_file_path):
+                raise ViaException("File not found", "ResourceNotFound", 404)
+
+            media_types_map = {
+                "video": "video/mp4",
+                "image": "image/jpeg",
+                "segment": "application/json",
+                "metadata": "application/json"
+            }
+            
+            return FileResponse(
+                path=target_file_path, 
+                media_type=media_types_map.get(media_type, "application/octet-stream"),
+                filename=f"{media_type}{extension}"
+            )
         # ======================= Files API
 
         # ======================= Models API
@@ -589,7 +625,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received summarize query, id - %s, "
+                "Received summarize query, id - %s (live-stream=%d), "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, "
@@ -726,21 +762,6 @@ class ViaServer:
                     500,
                 )
 
-            # Build usage dict based on stream_options.include_usage setting
-            usage_dict = {
-                "total_chunks_processed": req_info.chunk_count,
-                "query_processing_time": int(req_info.end_time - req_info.start_time),
-            }
-            
-            # Include token stats only if requested via stream_options.include_usage
-            if query.stream_options and query.stream_options.include_usage:
-                if hasattr(req_info, 'aggregated_token_stats'):
-                    usage_dict.update({
-                        "prompt_tokens": req_info.aggregated_token_stats.get('input_tokens', 0),
-                        "completion_tokens": req_info.aggregated_token_stats.get('output_tokens', 0),
-                        "total_tokens": req_info.aggregated_token_stats.get('total_tokens', 0),
-                    })
-
             # Create response json and return it
             return {
                 "id": request_id,
@@ -763,7 +784,10 @@ class ViaServer:
                     if resp_list
                     else []
                 ),
-                "usage": usage_dict,
+                "usage": {
+                    "total_chunks_processed": req_info.chunk_count,
+                    "query_processing_time": int(req_info.end_time - req_info.start_time),
+                },
             }
 
         # ======================= Summarize API
@@ -843,7 +867,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received generate_vlm_captions query, id - %s, "
+                "Received generate_vlm_captions query, id - %s (live-stream=%d), "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, "
@@ -1083,7 +1107,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received QA query, id - %s, "
+                "Received QA query, id - %s (live-stream=%d), "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, summary_duration=%d, stream=%r",

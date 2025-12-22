@@ -106,6 +106,8 @@ class MediaType(str, Enum):
 
     VIDEO = "video"
     IMAGE = "image"
+    METADATA = "metadata"
+    SEGMENT = "segment"
 
 
 class Purpose(str, Enum):
@@ -117,7 +119,7 @@ class Purpose(str, Enum):
 class FileInfo(ViaBaseModel):
     """Information about an uploaded file."""
 
-    id: UUID = Field(
+    asset_id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     bytes: int = Field(
@@ -127,13 +129,12 @@ class FileInfo(ViaBaseModel):
         ge=0,
         le=100e9,
     )
-    filename: str = Field(
-        description="Filename along with path to be used.",
+    media_type: str = Field(
+        description="Media type of the uploaded file.",
         max_length=256,
-        examples=["myfile.mp4"],
+        examples=["video", "image", "metadata", "segment"],
         pattern=FILE_NAME_PATTERN,
     )
-
     purpose: Purpose = Field(
         description=(
             "The intended purpose of the uploaded file."
@@ -141,25 +142,20 @@ class FileInfo(ViaBaseModel):
         ),
         examples=["vision"],
     )
-    camera_id: Optional[str] = Field(
-        default=None,
-        description="Camera ID to be used for the file.",
-        max_length=256,
-        examples=["camera_1", "video_1", "default"],
-        pattern=CAMERA_ID_PATTERN,
-    )
+    
+
 
 
 class AddFileInfoResponse(FileInfo):
     """Response schema for the add file request."""
 
-    media_type: MediaType = Field(description="Media type (image / video).")
+    media_type: MediaType = Field(description="Media type (image / video / metadata / segment).")
 
 
 class DeleteFileResponse(ViaBaseModel):
     """Response schema for delete file request."""
 
-    id: UUID = Field(
+    asset_id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     object: Literal["file"] = Field(description="Type of response object.")
@@ -1006,30 +1002,6 @@ class CompletionUsage(ViaBaseModel):
         ge=0,
         le=1000000,
         examples=[10],
-        json_schema_extra={"format": "int32"},
-    )
-    prompt_tokens: int | None = Field(
-        default=None,
-        description="Number of tokens in the prompt across all chunks.",
-        ge=0,
-        le=100000000,
-        examples=[150],
-        json_schema_extra={"format": "int32"},
-    )
-    completion_tokens: int | None = Field(
-        default=None,
-        description="Number of tokens in the generated completion across all chunks.",
-        ge=0,
-        le=100000000,
-        examples=[97],
-        json_schema_extra={"format": "int32"},
-    )
-    total_tokens: int | None = Field(
-        default=None,
-        description="Total number of tokens used in the request (prompt + completion).",
-        ge=0,
-        le=100000000,
-        examples=[247],
         json_schema_extra={"format": "int32"},
     )
 

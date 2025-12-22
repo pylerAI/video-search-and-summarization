@@ -81,13 +81,13 @@ class Asset:
 
             return Asset(
                 asset_id=info["assetId"],
-                path=info["path"],
-                fileName=info["fileName"],
-                purpose=info["purpose"],
+                path=info.get("path", ""),
+                fileName=info.get("fileName", ""),
+                purpose=info.get("purpose", "vision"),
                 media_type=info.get("media_type", "video"),
-                username=info["username"],
-                password=info["password"],
-                description=info["description"],
+                username=info.get("username", ""),
+                password=info.get("password", ""),
+                description=info.get("description", ""),
                 asset_dir=asset_dir,
                 video_fps=info.get("video_fps", None),
                 camera_id=info.get("camera_id", ""),
@@ -216,92 +216,91 @@ class AssetManager:
             self._age_out_thread = Thread(target=self._age_out_thread_func, daemon=True)
             self._age_out_thread.start()
 
-    async def save_file(self, file, file_name, purpose: str, media_type: str, camera_id: str):
-        """Save the uploaded as a file.
-
-        Args:
-            file: File object to save file.
-            file_name: Name of the file.
-            purpose: Purpose of the file.
-            media_type: Media type (video/image) of the file.
-            camera_id: Camera ID to be used for the file.
-        Returns:
-            A unique id for the asset.
+    async def save_file(
+        self, 
+        file, 
+        asset_id: str,  # 1. asset_id를 인자로 받음
+        purpose: str, 
+        media_type: str, # video, image, segment, metadata 등
+    ):
+        """Save the uploaded file into a specific asset directory.
+        If the file for the same media_type exists, it will be overwritten.
         """
-        # Generate a unique id for the asset.
-        asset_id = str(uuid.uuid4())
-        while asset_id in self._asset_map:
-            asset_id = str(uuid.uuid4())
-
+        
+        # 자산 디렉토리 경로 설정 및 생성 (이미 있으면 통과)
         asset_dir = os.path.join(self._asset_dir, asset_id)
-        try:
-            os.makedirs(asset_dir)
-        except Exception:
-            raise ViaException("Could not create directory for asset")
+        os.makedirs(asset_dir, exist_ok=True)
+
+        EXTENSIONS = {
+            "video": ".mp4",
+            "image": ".jpg",
+            "segment": ".json",
+            "metadata": ".json"
+        }
+
+        target_file_path = os.path.join(asset_dir, f"{media_type}{EXTENSIONS[media_type]}")
 
         current_storage_size = await self._get_storage_usage()
-        current_file_size = 0
+        written_bytes = 0
 
-        # Write the uploaded file to assets directory
-        async with aiofiles.open(os.path.join(asset_dir, file_name), "wb") as f:
-            while chunk := await file.read(1024 * 1024 * 10):
-                current_file_size += len(chunk)
+        # 2. 파일 쓰기 (기존 파일이 있으면 'wb' 모드에 의해 덮어씌워짐)
+        try:
+            async with aiofiles.open(target_file_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024 * 10):
+                    chunk_len = len(chunk)
+                    
+                    # 용량 체크 로직 (기존 로직 유지)
+                    if self._max_storage_usage_gb:
+                        projected_size_gb = current_storage_size + (written_bytes + chunk_len) / (1024.0**3)
+                        
+                        if projected_size_gb > AGE_OUT_THRESHOLD * self._max_storage_usage_gb:
+                            await self._age_out_assets()
+                            current_storage_size = await self._get_storage_usage()
 
-                # Check if writing the current chunk will cross threshold
-                if self._max_storage_usage_gb and (
-                    current_storage_size + current_file_size / (1024.0**3)
-                    > AGE_OUT_THRESHOLD * self._max_storage_usage_gb
-                ):
-                    # Try to clean assets
-                    await self._age_out_assets()
-                    current_storage_size = await self._get_storage_usage()
-                    current_file_size = 0
+                        if projected_size_gb > self._max_storage_usage_gb:
+                            # 용량 초과 시 방금 쓰던 파일만 삭제 시도
+                            await f.close()
+                            if os.path.exists(target_file_path):
+                                os.remove(target_file_path)
+                            raise ViaException("Storage Full", "ServerBusy", 503)
 
-                # Check if writing the current chunk will cross max size
-                if self._max_storage_usage_gb and (
-                    current_storage_size + current_file_size / (1024.0**3)
-                    > self._max_storage_usage_gb
-                ):
-                    #
-                    f.close()
-                    try:
-                        shutil.rmtree(asset_dir)
-                    except Exception:
-                        pass
-                    raise ViaException(
-                        "Asset storage full. Could not remove existing older assets"
-                        " because they are in use",
-                        "ServerBusy",
-                        503,
-                    )
-                await f.write(chunk)
+                    await f.write(chunk)
+                    written_bytes += chunk_len
 
-        # Save asset info as json
-        with open(os.path.join(asset_dir, "info.json"), "w") as f:
-            json.dump(
-                {
-                    "assetId": asset_id,
-                    "path": os.path.join(asset_dir, file_name),
-                    "fileName": file_name,
-                    "purpose": purpose,
-                    "media_type": media_type,
-                    "username": "",
-                    "password": "",
-                    "description": "",
-                    "video_fps": None,
-                    "camera_id": camera_id,
-                },
-                f,
-            )
+            # 3. info.json 업데이트 (기존 데이터가 있으면 로드 후 병합)
+            info_path = os.path.join(asset_dir, "info.json")
+            asset_info = {}
+            
+            if os.path.exists(info_path):
+                async with aiofiles.open(info_path, "r") as f:
+                    content = await f.read()
+                    asset_info = json.loads(content)
 
-        # add an entry in the asset map
-        self._asset_map[asset_id] = Asset.fromdir(asset_dir)
+            # 새로운 정보 업데이트 (파일 경로 등을 media_type별로 관리하도록 구조 개선 가능)
+            # 여기서는 요청받은 필드들을 최신화합니다.
+            asset_info.update({
+                "assetId": asset_id,
+                "path": target_file_path,
+                f"{media_type}_path": target_file_path, # 타입별 경로 저장
+                "last_updated_media": media_type,
+                "purpose": purpose,
+                "asset_id": asset_id,
+            })
 
-        logger.info(f"[AssetManager] Saved file - asset-id: {asset_id} name: {file_name}")
+            async with aiofiles.open(info_path, "w") as f:
+                await f.write(json.dumps(asset_info, indent=4))
 
-        await self._age_out_assets()
+            # 4. 자산 맵 업데이트
+            self._asset_map[asset_id] = Asset.fromdir(asset_dir)
+            
+            logger.info(f"[AssetManager] Saved {media_type} - asset-id: {asset_id}")
+            return asset_id
 
-        return asset_id
+        except Exception as e:
+            logger.error(f"Error saving file for asset {asset_id}: {e}")
+            if isinstance(e, ViaException):
+                raise e
+            raise ViaException("Could not save asset file")
 
     def add_file(self, file_path, purpose, media_type, camera_id="", reuse_asset=False):
         """Add a file already on the file system as a path.
