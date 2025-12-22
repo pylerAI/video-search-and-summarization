@@ -76,6 +76,7 @@ class RequestInfo:
 
     def __init__(self) -> None:
         self.request_id = str(uuid.uuid4())
+        self.chunk_type = None
         self.stream_id = ""
         self.chunk_count = 0
         self.chunk_size = 0
@@ -217,6 +218,19 @@ def ntp_to_unix_timestamp(ntp_ts):
     return (
         datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
     )
+
+def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
+    if req_info.chunk_type != "segment":
+        raise ViaException("Invalid chunk type", "BadParameter", 400)
+        
+    path = req_info.segment 
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    return {
+        "coarse_grained_scene_id": data["coarse_scenes"][coarse_idx]["id"],
+        "coarse_grained_scene_length": data["coarse_scenes"][coarse_idx]["num_finegrained_scenes"],
+    }
 
 
 class ViaStreamHandler:
@@ -419,6 +433,8 @@ class ViaStreamHandler:
         self._via_health_eval = False
         self.first_init = True
 
+        self.coarse_idx = None
+
         self.default_caption_prompt = self._args.summarization_query
         self._ctx_mgr_pool = []
         self.NUM_CA_RAG_PROCESSES_LAUNCH = 10
@@ -601,9 +617,10 @@ class ViaStreamHandler:
         else:
             return None
 
-    def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo):
+    def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo, coarse_idx: int = None):
         """Gather chunks processed by the pipeline and run any further post-processing"""
         # Per-chunk decode latency and OTEL tracing
+        self.coarse_idx = coarse_idx
         if hasattr(response, "decode_start_time") and hasattr(response, "decode_end_time"):
             if (
                 response.decode_start_time
@@ -765,21 +782,43 @@ class ViaStreamHandler:
                 chunk.cached_frames_cv_meta = ""
                 with TimeMeasure("Context Manager - Add Doc"):
                     add_doc_start_time = time.time()
-                    req_info._ctx_mgr.add_doc(
-                        vlm_response,
-                        doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
-                        doc_meta=(
-                            vars(chunk)
-                            | {
-                                "uuid": req_info.stream_id,
-                                "cv_meta": cv_meta_str,
-                                "camera_id": req_info.camera_id,
-                            }
-                        ),
-                        callback=lambda output: logger.debug(
-                            f"Summary till now: {output.result()}"
-                        ),
-                    )
+
+                    if not req_info.chunk_type:
+                        req_info._ctx_mgr.add_doc(
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
+                            doc_meta=(
+                                vars(chunk)
+                                | {
+                                    "uuid": req_info.stream_id,
+                                    "cv_meta": cv_meta_str,
+                                    "camera_id": req_info.camera_id,
+                                }
+                            ),
+                            callback=lambda output: logger.debug(
+                                f"Summary till now: {output.result()}"
+                            ),
+                        )
+                    # else:
+                    #     data = segment_to_meta(req_info, self.coarse_idx)
+                    #         req_info._ctx_mgr.add_doc(
+                    #         transcript,
+                    #         doc_i=chunk.chunkIdx * 2 + 1,
+                    #         doc_meta=(
+                    #             vars(chunk)
+                    #             | {
+                    #                 "uuid": req_info.stream_id,
+                    #                 "cv_meta": cv_meta_str,
+                    #                 "source": "segment",
+                    #                 "coarse_grained_scene_id": self.coarse_idx,
+                    #                 "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                    #             }
+                    #         ),
+                    #         callback=lambda output: logger.debug(
+                    #             f"Summary till now: {output.result()}"
+                    #         ),
+                    #     )
+
 
                     if transcript is not None:  # enable audio
 
@@ -880,6 +919,7 @@ class ViaStreamHandler:
     def _trigger_query(self, req_info: RequestInfo, start_time: float = None):
         """Trigger a query on a file"""
         from file_splitter import FileSplitter
+        from file_splitter_segment import FileSplitterSegment
 
         logger.info("Triggering oldest queued query %s", req_info.request_id)
         req_info.status = RequestInfo.Status.PROCESSING
@@ -951,8 +991,9 @@ class ViaStreamHandler:
                     vlm_response.chunk.streamId = req_info.stream_id
                     saved_responses[vlm_response.chunk.chunkIdx] = vlm_response
 
-        def _on_new_chunk(chunk: ChunkInfo, saved_responses=None):
+        def _on_new_chunk(chunk: ChunkInfo, coarse_idx: int = None, saved_responses=None):
             """Callback for when a new chunk is created"""
+
             if chunk is None:
                 return
             chunk.streamId = req_info.stream_id
@@ -969,7 +1010,7 @@ class ViaStreamHandler:
                 self._vlm_pipeline.enqueue_chunk(
                     chunk,
                     lambda _, req_info=req_info: self._on_vlm_chunk_response(
-                        saved_response, req_info
+                        saved_response, req_info, coarse_idx=coarse_idx
                     ),
                     req_info.vlm_request_params,
                     req_info.num_frames_per_chunk,
@@ -1000,15 +1041,26 @@ class ViaStreamHandler:
             message="File Splitting-" + str(req_info.request_id), color="blue"
         )
         # Create virtual file chunks
-        FileSplitter(
-            paths_string,
-            FileSplitter.SplitMode.SEEK,
-            req_info.chunk_size,
-            start_pts=int(req_info.start_timestamp * 1e9),
-            end_pts=int(req_info.end_timestamp * 1e9),
-            sliding_window_overlap_sec=req_info.chunk_overlap_duration,
-            on_new_chunk=lambda chunk: _on_new_chunk(chunk, saved_responses),
-        ).split()
+        
+        # chunk type이 uniform인 경우
+        if not req_info.chunk_type:
+            FileSplitter(
+                paths_string,
+                FileSplitter.SplitMode.SEEK,
+                req_info.chunk_size,
+                start_pts=int(req_info.start_timestamp * 1e9),
+                end_pts=int(req_info.end_timestamp * 1e9),
+                sliding_window_overlap_sec=req_info.chunk_overlap_duration,
+                on_new_chunk=lambda chunk: _on_new_chunk(chunk, saved_responses),
+            ).split()
+        else:
+            FileSplitterSegment(
+                paths_string,
+                FileSplitterSegment.SplitMode.SEEK,
+                req_info.chunk_type,
+                on_new_chunk=lambda chunk, coarse_idx: _on_new_chunk(chunk, coarse_idx),
+            ).split()
+        
         nvtx.end_range(nvtx_file_split_start)
 
         # No chunks were created. Mark the request completed and trigger next query if queued
@@ -1144,6 +1196,7 @@ class ViaStreamHandler:
         self,
         assets: list[Asset],
         query: SummarizationQuery,
+        segment: str = None,
     ):
         """Run a summarization query on a file"""
         # Enable summarization if summarization config is enabled  OR API passes enable flag
@@ -1162,6 +1215,7 @@ class ViaStreamHandler:
             assets=assets,
             query=query,
             is_summarization=True,
+            segment=segment,
         )
 
     def query(
@@ -1172,6 +1226,7 @@ class ViaStreamHandler:
         pregenerated_cv_metadata_json_file="",
         skip_guardrails=False,
         skip_ca_rag=False,
+        segment: str = None,
     ):
         """Run a query on a file"""
 
@@ -1237,6 +1292,7 @@ class ViaStreamHandler:
         # Create a RequestInfo object and populate it
         req_info = RequestInfo()
         req_info.file = assets[0].path
+        req_info.chunk_type = segment
         req_info.chunk_size = query.chunk_duration
         req_info.is_summarization = is_summarization
         req_info.vlm_request_params.vlm_prompt = query.prompt
@@ -1725,62 +1781,6 @@ class ViaStreamHandler:
             # Return empty response if there are no chunks / chunks with vlm responses
             logger.info(f"No chunks with vlm responses for request {req_info.request_id}")
             return []
-
-        # Aggregate token usage across all chunks for this video
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_tokens = 0
-        chunks_with_stats = 0
-        
-        # Detailed breakdown for verification
-        chunk_token_details = []
-        for i, chunk_response in enumerate(chunk_responses):
-            if hasattr(chunk_response, 'vlm_stats') and chunk_response.vlm_stats:
-                chunk_input = chunk_response.vlm_stats.get('input_tokens', 0)
-                chunk_output = chunk_response.vlm_stats.get('output_tokens', 0)
-                chunk_total = chunk_response.vlm_stats.get('total_tokens', 0)
-                
-                total_input_tokens += chunk_input
-                total_output_tokens += chunk_output
-                total_tokens += chunk_total
-                chunks_with_stats += 1
-                
-                # Store details for verification
-                chunk_token_details.append({
-                    'chunk_idx': chunk_response.chunk.chunkIdx if hasattr(chunk_response, 'chunk') else i,
-                    'input': chunk_input,
-                    'output': chunk_output,
-                    'total': chunk_total
-                })
-        
-        # Verification: Check if sum of input + output equals total
-        calculated_total = total_input_tokens + total_output_tokens
-        total_mismatch = abs(calculated_total - total_tokens) if total_tokens > 0 else 0
-        
-        # Log aggregated token statistics with verification details
-        logger.debug(
-            f"Token usage summary for video {req_info.request_id}: "
-            f"chunks_processed={len(chunk_responses)}, chunks_with_stats={chunks_with_stats}, "
-            f"total_input_tokens={total_input_tokens}, "
-            f"total_output_tokens={total_output_tokens}, "
-            f"total_tokens={total_tokens}, "
-            f"calculated_total={calculated_total}, "
-            f"verification={'PASS' if total_mismatch <= 1 else 'FAIL'}"
-        )
-        
-        # Log per-chunk breakdown for verification (only if there are issues or debug logging enabled)
-        if total_mismatch > 1 or logger.isEnabledFor(10):  # DEBUG level
-            logger.debug(f"Per-chunk token breakdown for {req_info.request_id}: {chunk_token_details}")
-        
-        # Store aggregated token stats in request info for later use
-        if not hasattr(req_info, 'aggregated_token_stats'):
-            req_info.aggregated_token_stats = {}
-        req_info.aggregated_token_stats = {
-            'input_tokens': total_input_tokens,
-            'output_tokens': total_output_tokens,
-            'total_tokens': total_tokens,
-            'chunk_count': len(chunk_responses)
-        }
 
         if self._via_health_eval is True:
             with TimeMeasure("VLM Test Data - Write Chunk Responses"):

@@ -354,6 +354,12 @@ class SummarizationQuery(ViaBaseModel):
         ],
     )
 
+    chunk_type: Literal["uniform", "segment"] = Field(
+        default="uniform",
+        description="Chunk type (uniform, segment).",
+        examples=["uniform", "segment"],
+    )
+
     @field_validator("asset_id", mode="after")
     @classmethod # Pydantic V2에서는 classmethod 권장
     def check_ids(cls, v: any):

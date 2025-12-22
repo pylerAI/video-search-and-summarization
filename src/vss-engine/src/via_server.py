@@ -593,8 +593,9 @@ class ViaServer:
         )
         async def summarize(query: SummarizationQuery, request: Request) -> CompletionResponse:
             # 1. asset_id 리스트 처리
-            assetIdList = [str(uuid_obj) for uuid_obj in query.id_list]
+            assetIdList = [str(obj) for obj in query.id_list]
             assetList = []
+            sampling_source = None
 
             for asset_id in assetIdList:
                 # AssetManager에서 해당 asset_id 폴더 정보를 가져옴
@@ -613,6 +614,25 @@ class ViaServer:
                 # 엔진이 분석할 수 있도록 asset 객체의 path를 video.mp4로 설정
                 asset._path = video_file_path
                 assetList.append(asset)
+            
+            if query.chunk_type == "segment":
+                main_asset_id = assetIdList[0]
+                segment_file_path = os.path.join(self._asset_manager._asset_dir, main_asset_id, "segment.json")
+
+                if os.path.exists(segment_file_path):
+                    sampling_source = segment_file_path
+                    logger.info(f"Using segment-based sampling with file: {sampling_source}")
+                else:
+                    # segment 타입인데 파일이 없으면 에러 처리 또는 uniform 강제 전환 (여기선 에러 처리)
+                    raise ViaException(
+                        f"Segment file (segment.json) not found for asset: {main_asset_id}",
+                        "ResourceNotFound", 404
+                    )
+            else:
+                sampling_source = None
+                logger.info("Using uniform sampling")
+            
+            logger.info(f"Sampling source: {sampling_source}")
 
             # 2. 오디오 지원 여부 및 미디어 타입 검증
             if query.enable_audio:
@@ -681,6 +701,7 @@ class ViaServer:
                 self._stream_handler.summarize,
                 assetList,
                 query,
+                sampling_source,
             )
             logger.info("Created video file query %s for main asset %s", request_id, main_asset_id)
 
@@ -718,7 +739,6 @@ class ViaServer:
                 },
             }
 
-        # ======================= Summarize API
 
         # ======================= Summarize API
 
