@@ -487,7 +487,7 @@ class CosmosReason1:
             chunk_idx = generation_config.get('chunk_idx', None) if generation_config else None
             self.save_debug_frames(images, video_frames_times, chunk_idx)
             
-        images = self.overlay_frame_number(images, video_frames_times)
+        images = self.overlay_frame_number(images, video_frames_times, chunk_idx)
 
         # convert PIL Images to tensors
         images = torch.stack([TF.pil_to_tensor(image) for image in images])
@@ -626,6 +626,7 @@ class CosmosReason1:
         self,
         images: List[Image.Image],
         video_frames_times: List[float],
+        chunk_idx: int = None,
         border_height: int = 28,  # this is due to patch size of 28
         temporal_path_size: int = 2,  # Number of positions to cycle through
         font_size: int = 20,
@@ -655,13 +656,20 @@ class CosmosReason1:
         processed_images = []
 
         for i, image in enumerate(images):
-            # DEBUG: Save select frames (1st, 5th, last) for verification
+            # DEBUG: Save select frames (1st, 5th, last) per chunk for verification
             if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
                 import os
                 os.makedirs(self._debug_output_dir, exist_ok=True)
-                # Save original
-                orig_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_original.jpg")
-                image.save(orig_path, quality=95)
+                
+                # Create filename with chunk info if available
+                if chunk_idx is not None:
+                    orig_path = os.path.join(self._debug_output_dir, f"cosmos_c{chunk_idx:02d}_frame_{i:02d}_original.jpg")
+                else:
+                    orig_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_original.jpg")
+                    
+                # Only save if file doesn't exist (avoid duplicates from multiple calls)
+                if not os.path.exists(orig_path):
+                    image.save(orig_path, quality=95)
             # Get original dimensions
             width, height = image.size
 
@@ -709,15 +717,25 @@ class CosmosReason1:
             
             # DEBUG: Save overlaid frame if this is a debug frame
             if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
-                overlaid_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_overlaid_{text.replace('.', 'p')}.jpg")
-                new_image.save(overlaid_path, quality=95)
+                relative_timestamp = float(video_frames_times[i])-float(video_frames_times[0]) if video_frames_times else 0.0
+                timestamp_str = f"{relative_timestamp:.2f}s".replace('.', 'p')
+                
+                if chunk_idx is not None:
+                    overlaid_path = os.path.join(self._debug_output_dir, f"cosmos_c{chunk_idx:02d}_frame_{i:02d}_overlaid_{timestamp_str}.jpg")
+                else:
+                    overlaid_path = os.path.join(self._debug_output_dir, f"cosmos_frame_{i:02d}_overlaid_{timestamp_str}.jpg")
+                
+                # Only save if file doesn't exist (avoid duplicates from multiple calls)
+                if not os.path.exists(overlaid_path):
+                    new_image.save(overlaid_path, quality=95)
+                    logger.debug(f"Debug: Saved CosmosReason1 chunk {chunk_idx} frame {i} at {relative_timestamp:.2f}s")
 
         return processed_images
 
     def save_debug_frames(self, images, video_frames_times, chunk_idx=None):
         """Debug frames now saved directly in overlay_frame_number - no separate logic needed"""
         pass  # Debug saving now happens automatically in overlay_frame_number
-            
+
     @staticmethod
     def get_model_info():
         return "cosmos-reason1", "internal", "NVIDIA"

@@ -222,11 +222,8 @@ class FrameJPEGTensorGenerator:
         self._initialized = True
         self._debug_save_frames = debug_save_frames
         self._debug_output_dir = debug_output_dir
-        self._frame_counter = 0  # Global counter to prevent overwrites
         if debug_save_frames:
-            import time
-            self._debug_session_id = int(time.time() * 1000) % 100000
-            logger.info(f"Debug mode enabled: will save frames to {debug_output_dir} (session: {self._debug_session_id})")
+            logger.info(f"Debug mode enabled: will save frames to {debug_output_dir}")
 
     def get_embeddings(self, frames_: list, video_frames_times: List[List[float]] = None):
         embeds = []
@@ -258,21 +255,21 @@ class FrameJPEGTensorGenerator:
                                 import os
                                 os.makedirs(self._debug_output_dir, exist_ok=True)
                                 
-                                # Create unique filename
-                                timestamp_suffix = f"_t{relative_timestamp:.3f}s".replace('.', 'p')
-                                base_name = f"openai_s{self._debug_session_id:05d}_c{i:02d}_f{j:02d}_g{self._frame_counter:06d}"
+                                # Create simple filename with chunk info for consistency
+                                timestamp_str = f"{relative_timestamp:.2f}s".replace('.', 'p')
                                 
                                 # Save original and overlaid versions
-                                original_path = os.path.join(self._debug_output_dir, f"{base_name}{timestamp_suffix}_original.jpg")
-                                overlaid_path = os.path.join(self._debug_output_dir, f"{base_name}{timestamp_suffix}_overlaid.jpg")
+                                original_path = os.path.join(self._debug_output_dir, f"openai_c{i:02d}_frame_{j:02d}_original.jpg")
+                                overlaid_path = os.path.join(self._debug_output_dir, f"openai_c{i:02d}_frame_{j:02d}_overlaid_{timestamp_str}.jpg")
                                 
-                                with open(original_path, 'wb') as f:
-                                    f.write(frame_buffer.tobytes())
-                                with open(overlaid_path, 'wb') as f:
-                                    f.write(overlaid_frame.tobytes())
-                                
-                                logger.debug(f"Debug: Saved OpenAI key frame {j} at {relative_timestamp:.2f}s")
-                                self._frame_counter += 1
+                                # Only save if file doesn't exist (avoid duplicates from multiple calls)
+                                if not os.path.exists(original_path):
+                                    with open(original_path, 'wb') as f:
+                                        f.write(frame_buffer.tobytes())
+                                if not os.path.exists(overlaid_path):
+                                    with open(overlaid_path, 'wb') as f:
+                                        f.write(overlaid_frame.tobytes())
+                                    logger.debug(f"Debug: Saved OpenAI key frame {j} at {relative_timestamp:.2f}s")
                         else:
                             overlaid_frames.append(frame_buffer)
                     logger.debug(f"len of frames after overlay  {len(overlaid_frames)}")
