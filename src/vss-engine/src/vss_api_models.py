@@ -106,6 +106,8 @@ class MediaType(str, Enum):
 
     VIDEO = "video"
     IMAGE = "image"
+    METADATA = "metadata"
+    SEGMENT = "segment"
 
 
 class Purpose(str, Enum):
@@ -117,7 +119,7 @@ class Purpose(str, Enum):
 class FileInfo(ViaBaseModel):
     """Information about an uploaded file."""
 
-    id: UUID = Field(
+    asset_id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     bytes: int = Field(
@@ -127,13 +129,12 @@ class FileInfo(ViaBaseModel):
         ge=0,
         le=100e9,
     )
-    filename: str = Field(
-        description="Filename along with path to be used.",
+    media_type: str = Field(
+        description="Media type of the uploaded file.",
         max_length=256,
-        examples=["myfile.mp4"],
+        examples=["video", "image", "metadata", "segment"],
         pattern=FILE_NAME_PATTERN,
     )
-
     purpose: Purpose = Field(
         description=(
             "The intended purpose of the uploaded file."
@@ -141,25 +142,20 @@ class FileInfo(ViaBaseModel):
         ),
         examples=["vision"],
     )
-    camera_id: Optional[str] = Field(
-        default=None,
-        description="Camera ID to be used for the file.",
-        max_length=256,
-        examples=["camera_1", "video_1", "default"],
-        pattern=CAMERA_ID_PATTERN,
-    )
+
+
 
 
 class AddFileInfoResponse(FileInfo):
     """Response schema for the add file request."""
 
-    media_type: MediaType = Field(description="Media type (image / video).")
+    media_type: MediaType = Field(description="Media type (image / video / metadata / segment).")
 
 
 class DeleteFileResponse(ViaBaseModel):
     """Response schema for delete file request."""
 
-    id: UUID = Field(
+    asset_id: str = Field(
         description="The file identifier, which can be referenced in the API endpoints."
     )
     object: Literal["file"] = Field(description="Type of response object.")
@@ -350,26 +346,28 @@ class ChatCompletionTool(ViaBaseModel):
 class SummarizationQuery(ViaBaseModel):
     """Summarization Query Request Fields."""
 
-    id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize",
+    asset_id: Union[str, List[str]] = Field(
+        description="Asset ID or list of Asset IDs to summarize",
         examples=[
-            "123e4567-e89b-12d3-a456-426614174000",
-            ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d1-b567-537725285111"],
+            "asset_id_string",
+            ["asset_id_string_1", "asset_id_string_2"],
         ],
     )
 
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
+    @field_validator("asset_id", mode="after")
+    @classmethod # Pydantic V2에서는 classmethod 권장
+    def check_ids(cls, v: any):
         if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
+            raise ValueError("List of asset_ids must not exceed 50 items")
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        # self.asset_id가 문자열이면 리스트로 감싸고, 리스트면 그대로 반환
+        return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
 
     @property
-    def get_query_json(self: ViaBaseModel) -> dict:
+    def get_query_json(self) -> dict:
         return self.model_dump(mode="json")
 
     system_prompt: str = Field(
@@ -797,19 +795,20 @@ class ChatMessage(ViaBaseModel):
 class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
 
-    id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to summarize"
+    asset_id: Union[str, List[str]] = Field(
+        description="Asset ID or list of Asset IDs of the file(s)/live-stream(s) to query"
     )
 
-    @field_validator("id", mode="after")
-    def check_ids(cls, v, info):
+    @field_validator("asset_id", mode="after")
+    @classmethod
+    def check_ids(cls, v: any):
         if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
+            raise ValueError("List of asset_ids must not exceed 50 items")
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
 
     messages: List[ChatMessage] = Field(
         description="The list of chat messages.", max_length=1000000
@@ -1006,30 +1005,6 @@ class CompletionUsage(ViaBaseModel):
         ge=0,
         le=1000000,
         examples=[10],
-        json_schema_extra={"format": "int32"},
-    )
-    prompt_tokens: int | None = Field(
-        default=None,
-        description="Number of tokens in the prompt across all chunks.",
-        ge=0,
-        le=100000000,
-        examples=[150],
-        json_schema_extra={"format": "int32"},
-    )
-    completion_tokens: int | None = Field(
-        default=None,
-        description="Number of tokens in the generated completion across all chunks.",
-        ge=0,
-        le=100000000,
-        examples=[97],
-        json_schema_extra={"format": "int32"},
-    )
-    total_tokens: int | None = Field(
-        default=None,
-        description="Total number of tokens used in the request (prompt + completion).",
-        ge=0,
-        le=100000000,
-        examples=[247],
         json_schema_extra={"format": "int32"},
     )
 
