@@ -499,7 +499,7 @@ class EmbeddingProcess(ViaProcessBase):
             message="Embedding Process-" + str(chunk[0]), color="blue"
         )
         # Pass frame_times to embedding generator for OpenAI compatible models
-        if hasattr(self._emb_generator, 'get_embeddings') and len(frame_times) > 0:
+        if len(frame_times) > 0:
             try:
                 # Try to pass frame_times parameter for overlay functionality
                 embeddings = self._emb_generator.get_embeddings(frames, frame_times)
