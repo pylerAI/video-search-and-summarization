@@ -62,28 +62,78 @@ def pil_image_to_jpeg_buffer(pil_image: Image.Image, quality: int = 95) -> np.nd
 
 def overlay_frame_number_on_jpeg_buffer(
     jpeg_buffer: np.ndarray,
-    timestamp: float,
+    relative_timestamp: float,  # This is already the relative timestamp
     position_idx: int,
     border_height: int = 28,
     temporal_path_size: int = 2,
     font_size: int = 20,
     font_color: str = "white",
 ) -> np.ndarray:
-    """Apply frame number overlay directly on JPEG buffer with minimal overhead"""
+    """Apply frame number overlay directly on JPEG buffer with pre-calculated relative timestamp"""
     try:
         # Convert JPEG buffer to PIL Image
         pil_image = jpeg_buffer_to_pil_image(jpeg_buffer)
         
-        # Apply overlay using the existing logic
-        overlaid_image = overlay_frame_number(
-            [pil_image], [timestamp], border_height, temporal_path_size, font_size, font_color
-        )[0]
+        # Apply overlay directly with the relative timestamp (don't calculate it again)
+        overlaid_image = _apply_single_frame_overlay_pil(
+            pil_image, relative_timestamp, position_idx, border_height, temporal_path_size, font_size, font_color
+        )
         
         # Convert back to JPEG buffer
         return pil_image_to_jpeg_buffer(overlaid_image)
     except Exception as e:
         logger.warning(f"Failed to apply overlay on frame: {e}")
         return jpeg_buffer  # Return original buffer if overlay fails
+
+
+def _apply_single_frame_overlay_pil(image, relative_timestamp, position_idx, border_height=28, temporal_path_size=2, font_size=20, font_color="white"):
+    """Apply overlay to a single PIL image with pre-calculated relative timestamp"""
+    # Try to use DejaVu Sans Mono font for better readability
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
+
+    # Get original dimensions
+    width, height = image.size
+
+    # Create new image with black border at the bottom
+    new_height = height + border_height
+    new_image = Image.new("RGB", (width, new_height), color="black")
+
+    # Paste original image at the top
+    new_image.paste(image, (0, 0))
+
+    # Draw text on the black border
+    draw = ImageDraw.Draw(new_image)
+
+    # Use the pre-calculated relative timestamp
+    text = f"{relative_timestamp:.2f}s"
+
+    # Get text dimensions
+    try:
+        # Get text bounding box
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except AttributeError:
+        # Fallback for older PIL versions
+        text_width, text_height = draw.textsize(text, font=font)
+
+    # Use the provided position index
+    section_width = width // temporal_path_size
+
+    # Calculate x position based on position index
+    section_center_x = position_idx * section_width + section_width // 2
+    text_x = section_center_x - text_width // 2
+
+    # Ensure text doesn't go outside bounds
+    text_x = max(0, min(text_x, width - text_width))
+
+    # Center vertically in the border
+    text_y = height + (border_height - text_height) // 2
+
+    # Draw the timestamp
+    draw.text((text_x, text_y), text, fill=font_color, font=font)
+
+    return new_image
 
 
 def overlay_frame_number(
@@ -172,15 +222,14 @@ class FrameJPEGTensorGenerator:
         self._initialized = True
         self._debug_save_frames = debug_save_frames
         self._debug_output_dir = debug_output_dir
+        self._frame_counter = 0  # Global counter to prevent overwrites
         if debug_save_frames:
-            logger.info(f"Debug mode enabled: will save frames to {debug_output_dir}")
+            import time
+            self._debug_session_id = int(time.time() * 1000) % 100000
+            logger.info(f"Debug mode enabled: will save frames to {debug_output_dir} (session: {self._debug_session_id})")
 
     def get_embeddings(self, frames_: list, video_frames_times: List[List[float]] = None):
         embeds = []
-        
-        # Debug: Save frames for visualization if debug mode is enabled
-        if self._debug_save_frames:
-            save_overlaid_frames_for_debugging(frames_, video_frames_times, self._debug_output_dir)
             
         with TimeMeasure("Frame JPEG to tensor with overlay"):
             for i, frames in enumerate(frames_):
@@ -203,6 +252,27 @@ class FrameJPEGTensorGenerator:
                                 j % 2  # Cycle through 2 positions
                             )
                             overlaid_frames.append(overlaid_frame)
+                            
+                            # Debug: Save only key frames (1st, 5th, last) for verification
+                            if self._debug_save_frames and (j == 0 or j == 4 or j == len(frames) - 1):
+                                import os
+                                os.makedirs(self._debug_output_dir, exist_ok=True)
+                                
+                                # Create unique filename
+                                timestamp_suffix = f"_t{relative_timestamp:.3f}s".replace('.', 'p')
+                                base_name = f"openai_s{self._debug_session_id:05d}_c{i:02d}_f{j:02d}_g{self._frame_counter:06d}"
+                                
+                                # Save original and overlaid versions
+                                original_path = os.path.join(self._debug_output_dir, f"{base_name}{timestamp_suffix}_original.jpg")
+                                overlaid_path = os.path.join(self._debug_output_dir, f"{base_name}{timestamp_suffix}_overlaid.jpg")
+                                
+                                with open(original_path, 'wb') as f:
+                                    f.write(frame_buffer.tobytes())
+                                with open(overlaid_path, 'wb') as f:
+                                    f.write(overlaid_frame.tobytes())
+                                
+                                logger.debug(f"Debug: Saved OpenAI key frame {j} at {relative_timestamp:.2f}s")
+                                self._frame_counter += 1
                         else:
                             overlaid_frames.append(frame_buffer)
                     logger.debug(f"len of frames after overlay  {len(overlaid_frames)}")
@@ -213,45 +283,10 @@ class FrameJPEGTensorGenerator:
         return embeds
 
 
-def save_overlaid_frames_for_debugging(frames_: list, video_frames_times: List[List[float]] = None, output_dir: str = "/tmp/vss_debug_frames"):
-    """Save overlaid frames as images for visual debugging"""
-    import os
-    os.makedirs(output_dir, exist_ok=True)
-    
-    logger.info(f"Saving debug frames to {output_dir}")
-    
-    for i, frames in enumerate(frames_):
-        chunk_dir = os.path.join(output_dir, f"chunk_{i}")
-        os.makedirs(chunk_dir, exist_ok=True)
-        
-        for j, frame_buffer in enumerate(frames):
-            # Save original frame
-            original_path = os.path.join(chunk_dir, f"frame_{j:03d}_original.jpg")
-            with open(original_path, 'wb') as f:
-                f.write(frame_buffer.tobytes())
-            
-            # Apply overlay if frame times provided
-            if video_frames_times and i < len(video_frames_times) and j < len(video_frames_times[i]):
-                relative_timestamp = (
-                    float(video_frames_times[i][j]) - float(video_frames_times[i][0])
-                    if len(video_frames_times[i]) > 0
-                    else float(video_frames_times[i][j])
-                )
-                
-                overlaid_frame = overlay_frame_number_on_jpeg_buffer(
-                    frame_buffer,
-                    relative_timestamp,
-                    j % 2  # Cycle through 2 positions
-                )
-                
-                # Save overlaid frame
-                overlaid_path = os.path.join(chunk_dir, f"frame_{j:03d}_overlaid.jpg")
-                with open(overlaid_path, 'wb') as f:
-                    f.write(overlaid_frame.tobytes())
-                    
-                logger.info(f"Saved frame {j} for chunk {i}: original and overlaid (timestamp: {relative_timestamp:.2f}s)")
-            else:
-                logger.info(f"Saved frame {j} for chunk {i}: original only (no frame times provided)")
+def save_overlaid_frames_for_debugging(frames_: list, video_frames_times: List[List[float]] = None, output_dir: str = "/tmp/vss_debug_frames", start_counter: int = 0):
+    """Legacy function - debug saving now happens inline in get_embeddings for key frames only"""
+    # Debug saving now happens automatically in get_embeddings() for key frames (1st, 5th, last)
+    return start_counter
 
 
 def test_overlay_functionality():
@@ -269,7 +304,7 @@ def test_overlay_functionality():
     sample_frame_times = [[0.0, 2.5, 5.0]]   # timestamps in seconds
     
     # Save for visual inspection
-    save_overlaid_frames_for_debugging(sample_frames, sample_frame_times)
+    save_overlaid_frames_for_debugging(sample_frames, sample_frame_times, "/tmp/vss_test_overlay", 0)
     
     # Test the embedding generation with overlay
     generator = FrameJPEGTensorGenerator()
