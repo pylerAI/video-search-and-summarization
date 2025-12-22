@@ -627,12 +627,18 @@ class VlmProcess(ViaProcessBase):
         elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
             from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
 
+            # Check for debug mode environment variables
+            debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
+            debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames_cosmos')
+
             self._model = CosmosReason1(
                 self._model_path,
                 use_trt=self._use_trt,
                 trt_engine_dir=self._trt_engine_dir,
                 max_batch_size=self._batch_size,
                 async_output=True,
+                debug_save_frames=debug_save_frames,
+                debug_output_dir=debug_output_dir,
             )
             self._batch_size = 1
 

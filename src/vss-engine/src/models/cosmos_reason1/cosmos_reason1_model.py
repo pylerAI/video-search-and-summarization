@@ -12,6 +12,7 @@
 
 import asyncio
 import concurrent.futures
+import io
 import json
 import math
 import os
@@ -49,13 +50,27 @@ def start_loop(loop):
 
 
 class CosmosReason1:
-    def __init__(self, model_path, max_batch_size=None, use_trt=False, **kwargs) -> None:
+    def __init__(self, model_path, max_batch_size=None, use_trt=False, debug_save_frames=None, debug_output_dir=None, **kwargs) -> None:
         self._model = None
         self._max_batch_size = max_batch_size or 1
         self._inflight_req_ids = []
         self._use_trt = use_trt
         self.model_path = model_path
         self.model_dir_name = os.path.basename(os.path.normpath(model_path))
+        
+        # Debug configuration for frame saving
+        if debug_save_frames is None:
+            self._debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
+        else:
+            self._debug_save_frames = debug_save_frames
+            
+        if debug_output_dir is None:
+            self._debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames_cosmos')
+        else:
+            self._debug_output_dir = debug_output_dir
+            
+        if self._debug_save_frames:
+            logger.info(f"CosmosReason1 debug mode enabled: will save frames to {self._debug_output_dir}")
 
         # Set resize parameters
         self._max_pixels = MAX_PIXELS
@@ -464,6 +479,11 @@ class CosmosReason1:
             )
 
         images = [Image.fromarray(image.cpu().numpy()) for image in images]
+        
+        # Debug: Save frames before overlay for comparison
+        if self._debug_save_frames:
+            self.save_debug_frames(images, video_frames_times)
+            
         images = self.overlay_frame_number(images, video_frames_times)
 
         # convert PIL Images to tensors
@@ -678,6 +698,36 @@ class CosmosReason1:
             processed_images.append(new_image)
 
         return processed_images
+
+    def save_debug_frames(self, images, video_frames_times, chunk_idx=0):
+        """Save original and overlaid frames for debugging comparison"""
+        if not self._debug_save_frames:
+            return
+            
+        import os
+        chunk_dir = os.path.join(self._debug_output_dir, f"cosmos_chunk_{chunk_idx}")
+        os.makedirs(chunk_dir, exist_ok=True)
+        
+        logger.info(f"Saving CosmosReason1 debug frames to {chunk_dir}")
+        
+        for i, image in enumerate(images):
+            # Save original frame
+            original_path = os.path.join(chunk_dir, f"frame_{i:03d}_original.jpg")
+            image.save(original_path, quality=95)
+            
+            # Apply overlay and save
+            overlaid_images = self.overlay_frame_number([image], [video_frames_times[i]])
+            overlaid_path = os.path.join(chunk_dir, f"frame_{i:03d}_overlaid.jpg")
+            overlaid_images[0].save(overlaid_path, quality=95)
+            
+            # Calculate relative timestamp for logging
+            relative_timestamp = (
+                float(video_frames_times[i]) - float(video_frames_times[0])
+                if len(video_frames_times) > 0 and i < len(video_frames_times)
+                else float(video_frames_times[i]) if i < len(video_frames_times) else 0.0
+            )
+            
+            logger.info(f"Saved CosmosReason1 frame {i}: original and overlaid (timestamp: {relative_timestamp:.2f}s)")
 
     @staticmethod
     def get_model_info():
