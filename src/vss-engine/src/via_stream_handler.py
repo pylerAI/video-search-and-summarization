@@ -110,8 +110,6 @@ class RequestInfo:
         self.nvtx_summarization_start = None
         self.summarize = None
         self.enable_chat = True
-        self.enable_cv_pipeline = False
-        self.cv_metadata_json_file = ""
         self.pending_add_doc_start_time = 0
         self.pending_add_doc_end_time = 0
         self.num_frames_per_chunk = None
@@ -352,11 +350,6 @@ class ViaStreamHandler:
                 "Latest chat completions API processing latency in seconds",
             )
 
-            self.cv_pipeline_latency_latest = prom.Gauge(
-                "cv_pipeline_latency_seconds_latest",
-                "Latest CV pipeline processing latency in seconds",
-            )
-
             self.asr_pipeline_latency = prom.Histogram(
                 "asr_pipeline_latency_seconds",
                 "ASR pipeline processing latency in seconds",
@@ -397,7 +390,6 @@ class ViaStreamHandler:
             prom.REGISTRY.unregister(self.vlm_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.chat_completions_latency)
             prom.REGISTRY.unregister(self.chat_completions_latency_latest)
-            prom.REGISTRY.unregister(self.cv_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.asr_pipeline_latency)
             prom.REGISTRY.unregister(self.asr_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.stream_fps_histogram)
@@ -428,7 +420,6 @@ class ViaStreamHandler:
         self._args = args
         if os.environ.get("VSS_LOG_LEVEL"):
             self._args.log_level = os.environ.get("VSS_LOG_LEVEL").upper()
-        self._args.cv_pipeline_configs = {"gdino_engine": "", "tracker_config": ""}
 
         self._via_health_eval = False
         self.first_init = True
@@ -561,16 +552,16 @@ class ViaStreamHandler:
         req_info.status_event.set()
 
 
-    @staticmethod
-    def _remove_segmasks_from_cv_meta(cv_meta_):
-        cv_meta = deepcopy(cv_meta_)
-        for data in cv_meta:
-            for obj in data["objects"]:
-                if "misc" not in obj:
-                    continue
-                for misc in obj["misc"]:
-                    misc["seg"] = {}
-        return cv_meta
+    # @staticmethod
+    # def _remove_segmasks_from_cv_meta(cv_meta_):
+    #     cv_meta = deepcopy(cv_meta_)
+    #     for data in cv_meta:
+    #         for obj in data["objects"]:
+    #             if "misc" not in obj:
+    #                 continue
+    #             for misc in obj["misc"]:
+    #                 misc["seg"] = {}
+    #     return cv_meta
 
     def _create_video_from_cached_frames(self, req_info):
         def check_ffmpeg():
@@ -765,21 +756,20 @@ class ViaStreamHandler:
                 # Along with chunk, add cv metadata for the chunk
                 # get cv metadata present in file chunk.cv_metadata_json_file
                 # for duration chunk.start_pts to chunk.end_pts
-                cv_meta = chunk.cached_frames_cv_meta
-                cv_meta_str = json.dumps(self._remove_segmasks_from_cv_meta(cv_meta))
-                if len(cv_meta_str) > MAX_MILVUS_STRING_LEN:
-                    cv_meta_str = cv_meta_str[:MAX_MILVUS_STRING_LEN]
-                    logger.warning(
-                        "CV metadata length exceeds max milvus string length, " "truncating to %d",
-                        MAX_MILVUS_STRING_LEN,
-                    )
-                print(
-                    f"chunkIdx = {chunk.chunkIdx}  chunk.start_pts = {chunk.start_pts} \
-                      chunk.end_pts = {chunk.end_pts} CV metadata length = {len(cv_meta)}"
-                )
+                # cv_meta = chunk.cached_frames_cv_meta
+                # cv_meta_str = json.dumps(self._remove_segmasks_from_cv_meta(cv_meta))
+                # if len(cv_meta_str) > MAX_MILVUS_STRING_LEN:
+                #     cv_meta_str = cv_meta_str[:MAX_MILVUS_STRING_LEN]
+                #     logger.warning(
+                #         "CV metadata length exceeds max milvus string length, " "truncating to %d",
+                #         MAX_MILVUS_STRING_LEN,
+                #     )
+                # print(
+                #     f"chunkIdx = {chunk.chunkIdx}  chunk.start_pts = {chunk.start_pts} \
+                #       chunk.end_pts = {chunk.end_pts} CV metadata length = {len(cv_meta)}"
+                # )
                 # Since cv metadata is getting  attached seperately to the context manager,
                 # set cached_frames_cv_meta to empty string in chunk
-                chunk.cached_frames_cv_meta = ""
                 with TimeMeasure("Context Manager - Add Doc"):
                     add_doc_start_time = time.time()
 
@@ -791,7 +781,6 @@ class ViaStreamHandler:
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
-                                    "cv_meta": cv_meta_str,
                                     "camera_id": req_info.camera_id,
                                 }
                             ),
@@ -832,7 +821,6 @@ class ViaStreamHandler:
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
-                                    "cv_meta": cv_meta_str,
                                     "camera_id": req_info.camera_id,
                                 }
                             ),
@@ -997,7 +985,6 @@ class ViaStreamHandler:
             if chunk is None:
                 return
             chunk.streamId = req_info.stream_id
-            chunk.cv_metadata_json_file = req_info.cv_metadata_json_file
             req_info.chunk_count += 1
 
             saved_response = (
@@ -1223,7 +1210,6 @@ class ViaStreamHandler:
         assets: list[Asset],
         query: SummarizationQuery,
         is_summarization=False,
-        pregenerated_cv_metadata_json_file="",
         skip_guardrails=False,
         skip_ca_rag=False,
         segment: str = None,
@@ -1382,7 +1368,6 @@ class ViaStreamHandler:
         # Add the request to the pending queue
         self._metrics.queries_pending.inc()
 
-        req_info.cv_metadata_json_file = pregenerated_cv_metadata_json_file
 
         self._trigger_query(req_info, None)
 
@@ -1805,7 +1790,6 @@ class ViaStreamHandler:
                         last_meta = vars(chunk_responses[-1].chunk)
                         last_meta["is_last"] = True
                         last_meta["uuid"] = req_info.stream_id
-                        last_meta["cv_meta"] = ""
                         last_meta["asset_dir"] = self._args.asset_dir
                         last_meta["camera_id"] = req_info.camera_id
                         with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):

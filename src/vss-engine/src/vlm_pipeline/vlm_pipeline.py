@@ -109,7 +109,6 @@ class DecoderProcess(ViaProcessBase):
         self._module_loader = None
         self._max_live_streams = max(1, -(-args.max_live_streams // args.num_gpus))
         self._enable_audio = args.enable_audio
-        self._cv_pipeline_configs = args.cv_pipeline_configs
 
     def _initialize(self):
         from .video_file_frame_getter import DefaultFrameSelector, VideoFileFrameGetter
@@ -770,8 +769,6 @@ class VlmProcess(ViaProcessBase):
         error_msg = kwargs.pop("error", None)
 
         if isinstance(vlm_response_stats, concurrent.futures.Future):
-            logger.debug("VLM response stats: %s", vlm_response_stats)
-
             return self._handle_future_result(
                 process_vlm_response,
                 chunk,
@@ -785,7 +782,6 @@ class VlmProcess(ViaProcessBase):
                 nvtx_vlm_process_start,
             )
         else:
-            logger.debug("VLM response stats: %s", vlm_response_stats)
             return process_vlm_response(
                 chunk,
                 request_params,
@@ -797,7 +793,7 @@ class VlmProcess(ViaProcessBase):
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
-      
+
 
 class AsrProcess(ViaProcessBase):
     """ASR Process"""

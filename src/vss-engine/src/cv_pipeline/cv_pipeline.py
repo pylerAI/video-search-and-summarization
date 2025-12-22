@@ -58,10 +58,6 @@ class RequestInfo:
         self.progress = 0
         self.do_aggregation = False
         self.response = None
-        self.live_stream_chunk_thread = None
-        self.live_stream_splitter: FileSplitter = None
-        self.live_stream_chunk_files = []
-        self.live_stream_ended = False
         self.num_gpus = 1
 
 
