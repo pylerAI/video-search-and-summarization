@@ -150,7 +150,7 @@ def overlay_frame_number(
 
         Args:
             images: List of PIL images to process
-            fps: Frames per second
+            video_frames_times: List of frame timestamps (e.g., in seconds) used to compute relative time for each frame
             border_height: Height of the black border in pixels (default: 28)
             temporal_path_size: Number of positions to cycle through (default: 2)
             font_size: Font size for the text (default: 20)
