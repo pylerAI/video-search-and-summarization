@@ -481,12 +481,8 @@ class CosmosReason1:
 
         images = [Image.fromarray(image.cpu().numpy()) for image in images]
         
-        # Debug: Save frames before overlay for comparison
-        if self._debug_save_frames:
-            # Try to get chunk information from generation_config if available
-            chunk_idx = generation_config.get('chunk_idx', None) if generation_config else None
-            self.save_debug_frames(images, video_frames_times, chunk_idx)
-            
+        # Get chunk information for debug saving (happens inline in overlay_frame_number)
+        chunk_idx = generation_config.get('chunk_idx', None) if generation_config else None
         images = self.overlay_frame_number(images, video_frames_times, chunk_idx)
 
         # convert PIL Images to tensors
@@ -656,7 +652,8 @@ class CosmosReason1:
         processed_images = []
 
         for i, image in enumerate(images):
-            # DEBUG: Save select frames (1st, 5th, last) per chunk for verification
+            # Debug mode: Save select frames (1st, 5th, last) per chunk for visual verification
+            # Enable with VSS_DEBUG_FRAME_OVERLAY=true environment variable
             if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
                 import os
                 os.makedirs(self._debug_output_dir, exist_ok=True)
@@ -715,7 +712,7 @@ class CosmosReason1:
 
             processed_images.append(new_image)
             
-            # DEBUG: Save overlaid frame if this is a debug frame
+            # Debug mode: Save overlaid frame for visual verification
             if hasattr(self, '_debug_save_frames') and self._debug_save_frames and (i == 0 or i == 4 or i == len(images) - 1):
                 relative_timestamp = float(video_frames_times[i])-float(video_frames_times[0]) if video_frames_times else 0.0
                 timestamp_str = f"{relative_timestamp:.2f}s".replace('.', 'p')
@@ -731,10 +728,6 @@ class CosmosReason1:
                     logger.debug(f"Debug: Saved CosmosReason1 chunk {chunk_idx} frame {i} at {relative_timestamp:.2f}s")
 
         return processed_images
-
-    def save_debug_frames(self, images, video_frames_times, chunk_idx=None):
-        """Debug frames now saved directly in overlay_frame_number - no separate logic needed"""
-        pass  # Debug saving now happens automatically in overlay_frame_number
 
     @staticmethod
     def get_model_info():

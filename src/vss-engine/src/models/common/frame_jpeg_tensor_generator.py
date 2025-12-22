@@ -250,7 +250,8 @@ class FrameJPEGTensorGenerator:
                             )
                             overlaid_frames.append(overlaid_frame)
                             
-                            # Debug: Save only key frames (1st, 5th, last) for verification
+                            # Debug mode: Save key frames (1st, 5th, last) per chunk for visual verification
+                            # Enable with VSS_DEBUG_FRAME_OVERLAY=true environment variable
                             if self._debug_save_frames and (j == 0 or j == 4 or j == len(frames) - 1):
                                 import os
                                 os.makedirs(self._debug_output_dir, exist_ok=True)
@@ -280,114 +281,7 @@ class FrameJPEGTensorGenerator:
         return embeds
 
 
-def save_overlaid_frames_for_debugging(frames_: list, video_frames_times: List[List[float]] = None, output_dir: str = "/tmp/vss_debug_frames", start_counter: int = 0):
-    """Legacy function - debug saving now happens inline in get_embeddings for key frames only"""
-    # Debug saving now happens automatically in get_embeddings() for key frames (1st, 5th, last)
-    return start_counter
-
-
-def test_overlay_functionality():
-    """Test function to verify overlay functionality with sample data"""
-    logger.info("Testing overlay functionality...")
-    
-    # Create a simple test image as JPEG buffer
-    test_image = Image.new('RGB', (640, 480), color='blue')
-    buffer = io.BytesIO()
-    test_image.save(buffer, format='JPEG', quality=95)
-    test_jpeg_buffer = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
-    
-    # Test with sample frame times
-    sample_frames = [[test_jpeg_buffer] * 3]  # 3 frames in one chunk
-    sample_frame_times = [[0.0, 2.5, 5.0]]   # timestamps in seconds
-    
-    # Save for visual inspection
-    save_overlaid_frames_for_debugging(sample_frames, sample_frame_times, "/tmp/vss_test_overlay", 0)
-    
-    # Test the embedding generation with overlay
-    generator = FrameJPEGTensorGenerator()
-    embeddings = generator.get_embeddings(sample_frames, sample_frame_times)
-    
-    logger.info(f"Generated {len(embeddings)} embeddings with overlays")
-    logger.info(f"Embedding shape: {embeddings[0].shape if embeddings else 'None'}")
-    
-    return embeddings
-
-
-def create_visualization_grid(frames_: list, video_frames_times: List[List[float]] = None, output_path: str = "/tmp/vss_overlay_grid.jpg"):
-    """Create a grid visualization showing original vs overlaid frames"""
-    from PIL import Image
-    import math
-    
-    all_images = []
-    labels = []
-    
-    for i, frames in enumerate(frames_):
-        for j, frame_buffer in enumerate(frames[:6]):  # Limit to 6 frames per chunk for visualization
-            # Original frame
-            original_img = jpeg_buffer_to_pil_image(frame_buffer)
-            all_images.append(original_img)
-            labels.append(f"Chunk {i} Frame {j} (Original)")
-            
-            # Overlaid frame if frame times available
-            if video_frames_times and i < len(video_frames_times) and j < len(video_frames_times[i]):
-                relative_timestamp = (
-                    float(video_frames_times[i][j]) - float(video_frames_times[i][0])
-                    if len(video_frames_times[i]) > 0
-                    else float(video_frames_times[i][j])
-                )
-                
-                overlaid_buffer = overlay_frame_number_on_jpeg_buffer(
-                    frame_buffer, relative_timestamp, j % 2
-                )
-                overlaid_img = jpeg_buffer_to_pil_image(overlaid_buffer)
-                all_images.append(overlaid_img)
-                labels.append(f"Chunk {i} Frame {j} (Overlay {relative_timestamp:.2f}s)")
-    
-    if not all_images:
-        logger.warning("No images to create grid")
-        return
-    
-    # Calculate grid dimensions
-    cols = min(4, len(all_images))
-    rows = math.ceil(len(all_images) / cols)
-    
-    # Resize images to consistent size
-    img_width, img_height = 320, 240
-    resized_images = [img.resize((img_width, img_height)) for img in all_images]
-    
-    # Create grid
-    grid_width = cols * img_width
-    grid_height = rows * img_height + 30 * rows  # Extra space for labels
-    grid_img = Image.new('RGB', (grid_width, grid_height), color='white')
-    
-    # Paste images into grid
-    for idx, (img, label) in enumerate(zip(resized_images, labels)):
-        row = idx // cols
-        col = idx % cols
-        x = col * img_width
-        y = row * (img_height + 30)
-        
-        grid_img.paste(img, (x, y))
-        
-        # Add label (simple text overlay)
-        try:
-            draw = ImageDraw.Draw(grid_img)
-            font = ImageFont.load_default()
-            draw.text((x + 5, y + img_height + 5), label, fill='black', font=font)
-        except Exception as e:
-            logger.debug(f"Could not add text label: {e}")
-    
-    # Save grid
-    grid_img.save(output_path, quality=95)
-    logger.info(f"Visualization grid saved to {output_path}")
-    return output_path
-
-
 if __name__ == "__main__":
     # To test and debug, please use harness:
     # PYTHONPATH=src pytest tests/model/gpt4/test_gpt4v_jpeg_tensor_gen.py -s
-    # Please add new test case for each bug
-    
-    # Uncomment below to run overlay tests
-    # test_overlay_functionality()
     pass
