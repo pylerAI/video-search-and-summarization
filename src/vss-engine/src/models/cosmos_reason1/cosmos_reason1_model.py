@@ -69,7 +69,6 @@ class CosmosReason1:
         else:
             self._debug_output_dir = debug_output_dir
             
-        self._frame_counter = 0  # Global counter to prevent overwrites
         if self._debug_save_frames:
             logger.info(f"CosmosReason1 debug mode enabled: will save frames to {self._debug_output_dir}")
 
