@@ -263,14 +263,18 @@ class FrameJPEGTensorGenerator:
                                 original_path = os.path.join(self._debug_output_dir, f"openai_c{i:02d}_frame_{j:02d}_original.jpg")
                                 overlaid_path = os.path.join(self._debug_output_dir, f"openai_c{i:02d}_frame_{j:02d}_overlaid_{timestamp_str}.jpg")
                                 
-                                # Only save if file doesn't exist (avoid duplicates from multiple calls)
-                                if not os.path.exists(original_path):
-                                    with open(original_path, 'wb') as f:
+                                # Atomically create files to avoid race conditions; ignore if already created
+                                try:
+                                    with open(original_path, 'xb') as f:
                                         f.write(frame_buffer.tobytes())
-                                if not os.path.exists(overlaid_path):
-                                    with open(overlaid_path, 'wb') as f:
+                                except FileExistsError:
+                                    pass
+                                try:
+                                    with open(overlaid_path, 'xb') as f:
                                         f.write(overlaid_frame.tobytes())
                                     logger.debug(f"Debug: Saved OpenAI key frame {j} at {relative_timestamp:.2f}s")
+                                except FileExistsError:
+                                    pass
                         else:
                             overlaid_frames.append(frame_buffer)
                     logger.debug(f"len of frames after overlay  {len(overlaid_frames)}")
