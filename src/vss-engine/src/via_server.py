@@ -235,8 +235,7 @@ class ViaServer:
         @self._app.post(
             f"{API_PREFIX}/files",
             summary="API for uploading media files",
-            description="Upload one or two files and receive info for both.",
-            # responses 부분은 프로젝트의 AddFileInfoResponse 정의에 따라 List 형태로 보정 필요
+            description="Upload one or two files. Converts segment format automatically.",
             tags=["Files"],
         )
         async def add_video_file(
@@ -249,6 +248,33 @@ class ViaServer:
         ):
             logger.info(f"Received add file request for asset_id: {asset_id}")
 
+            # 변환 로직 함수 (내부 헬퍼)
+            def convert_segment_format(old_data: dict, video_id: str) -> dict:
+                new_data = {
+                    "video_id": video_id,
+                    "coarse_scenes": []
+                }
+                for idx, scene in enumerate(old_data.get("hierarchical_scenes", [])):
+                    medium_scene = scene.get("medium_scene", {})
+                    high_scenes = scene.get("contained_high_scenes", [])
+
+                    coarse_scene = {
+                        "id": idx,
+                        "start_time": medium_scene.get("start_time", ""),
+                        "end_time": medium_scene.get("end_time", ""),
+                        "num_finegrained_scenes": len(high_scenes),
+                        "fine_scenes": []
+                    }
+                    for jdx, hs in enumerate(high_scenes):
+                        fine_scene = {
+                            "id": jdx,
+                            "start_time": hs.get("start_time", ""),
+                            "end_time": hs.get("end_time", "")
+                        }
+                        coarse_scene["fine_scenes"].append(fine_scene)
+                    new_data["coarse_scenes"].append(coarse_scene)
+                return new_data
+
             upload_tasks = [(file1, media_type1)]
             if file2 and media_type2:
                 upload_tasks.append((file2, media_type2))
@@ -258,22 +284,40 @@ class ViaServer:
             for file, m_type in upload_tasks:
                 m_type_val = m_type.value if hasattr(m_type, 'value') else m_type
                 
-                # 1. 파일 저장
+                # 1. 파일 기본 저장
                 await self._asset_manager.save_file(file, asset_id, purpose.value, m_type_val)
 
-                # 2. 저장된 파일 정보 확인 (용량 등)
-                ext = {
-                    "video": ".mp4", "image": ".jpg", 
-                    "segment": ".json", "metadata": ".json"
-                }.get(m_type_val, "")
+                # 2. 경로 및 확장자 설정
+                ext_map = {"video": ".mp4", "image": ".jpg", "segment": ".json", "metadata": ".json"}
+                ext = ext_map.get(m_type_val, "")
                 target_path = os.path.join(self._asset_manager._asset_dir, asset_id, f"{m_type_val}{ext}")
-                
+
+                # [추가 부분] 3. segment 타입일 경우 포맷 변환 수행
+                if m_type_val == "segment":
+                    try:
+                        # 저장된 파일을 다시 읽음
+                        async with aiofiles.open(target_path, mode='r') as f:
+                            content = await f.read()
+                            old_segment_data = json.loads(content)
+
+                        # 변환 로직 적용
+                        new_segment_data = convert_segment_format(old_segment_data, asset_id)
+
+                        # 변환된 데이터를 다시 덮어씀
+                        async with aiofiles.open(target_path, mode='w') as f:
+                            await f.write(json.dumps(new_segment_data, indent=4))
+                        
+                        logger.info(f"Segment format converted for asset_id: {asset_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to convert segment format: {e}")
+                        # 변환 실패 시 기존 파일은 유지되나 로그를 남김
+
+                # 4. 저장된 파일 정보 확인 (용량 등)
                 try:
                     fsize = (await aiofiles.os.stat(target_path)).st_size
                 except:
                     fsize = 0
 
-                # 개별 파일 정보 저장
                 uploaded_files_result.append({
                     "asset_id": asset_id,
                     "bytes": fsize,
@@ -281,7 +325,7 @@ class ViaServer:
                     "purpose": "vision"
                 })
 
-                # 비디오인 경우 FPS 캐시 업데이트 로직 (기존 유지)
+                # 비디오 FPS 캐시 업데이트 로직
                 if m_type_val == "video" and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
                     try:
                         media_info = await MediaFileInfo.get_info_async(target_path)
@@ -290,12 +334,10 @@ class ViaServer:
                     except Exception as e:
                         logger.error(f"Video verification failed: {e}")
 
-            # 3. 결과 반환 (파일이 1개면 객체 하나, 2개면 리스트 또는 두 정보 모두 포함)
-            # 프로젝트의 응답 규격에 따라 아래 형태 중 선택 가능합니다.
             return {
                 "asset_id": asset_id,
                 "object": "list",
-                "data": uploaded_files_result  # 두 파일의 정보를 모두 담은 리스트
+                "data": uploaded_files_result
             }
 
         @self._app.delete(
