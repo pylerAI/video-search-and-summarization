@@ -145,25 +145,23 @@ def overlay_frame_number(
         font_color: str = "white",
     ) -> List[Image.Image]:
         """
-        Overlay text on a list of PIL images with black border.
-        The timestamp position cycles through available positions.
+        Overlay text on a list of PIL images with a black border.
+        The timestamp position cycles through available horizontal positions.
 
         Args:
-            images: List of PIL images to process
-            video_frames_times: List of frame timestamps (e.g., in seconds) used to compute relative time for each frame
-            border_height: Height of the black border in pixels (default: 28)
-            temporal_path_size: Number of positions to cycle through (default: 2)
-            font_size: Font size for the text (default: 20)
-            font_color: Color of the text (default: "white")
+            images: List of PIL images to process.
+            video_frames_times: List of frame timestamps (in seconds) corresponding to each image.
+            border_height: Height of the black border in pixels (default: 28).
+            temporal_path_size: Number of horizontal positions to cycle through (default: 2).
+            font_size: Font size for the text (default: 20).
+            font_color: Color of the text (default: "white").
 
         Returns:
-            List of PIL images with text overlay
-            List of timestamps
+            List[Image.Image]: List of PIL images with overlaid timestamp text.
         """
 
         # Try to use DejaVu Sans Mono font for better readability
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
-
         # Process each image
         processed_images = []
 
