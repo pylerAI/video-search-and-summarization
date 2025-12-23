@@ -761,6 +761,7 @@ class ViaStreamHandler:
                             ),
                         )
                     else:
+                        data = segment_to_meta(req_info, chunk.chunkIdx)
                         req_info._ctx_mgr.add_doc(
                             vlm_response,
                             doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
@@ -768,13 +769,15 @@ class ViaStreamHandler:
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
+                                    "source": "segment",
+                                    "coarse_grained_scene_id": self.coarse_idx,
+                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
                                 }
                             ),
                             callback=lambda output: logger.debug(
                                 f"Summary till now: {output.result()}"
                             ),
                         )
-
 
                     if transcript is not None:  # enable audio
 
@@ -797,6 +800,7 @@ class ViaStreamHandler:
                                 ),
                             )
                         else:
+                            data = segment_to_meta(req_info, self.coarse_idx)
                             req_info._ctx_mgr.add_doc(
                                 transcript,
                                 doc_i=chunk.chunkIdx * 2 + 1,
@@ -804,6 +808,9 @@ class ViaStreamHandler:
                                     vars(chunk)
                                     | {
                                         "uuid": req_info.stream_id,
+                                        "source": "segment",
+                                        "coarse_grained_scene_id": data["coarse_grained_scene_id"],
+                                        "coarse_grained_scene_length": data["coarse_grained_scene_length"],
                                     }
                                 ),
                                 callback=lambda output: logger.debug(
@@ -1774,6 +1781,12 @@ class ViaStreamHandler:
                         last_meta["uuid"] = req_info.stream_id
                         last_meta["asset_dir"] = self._args.asset_dir
                         last_meta["camera_id"] = req_info.camera_id
+                        if req_info.chunk_type:
+                            last_meta["source"] = "segment"
+                            data = segment_to_meta(req_info, -1)
+                            last_meta["coarse_grained_scene_id"] = self.coarse_idx
+                            last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
+
                         with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
                             req_info._ctx_mgr.add_doc(
                                 ".",
