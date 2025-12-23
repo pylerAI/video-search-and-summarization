@@ -761,17 +761,13 @@ class ViaStreamHandler:
                             ),
                         )
                     else:
-                        data = segment_to_meta(req_info, self.coarse_idx)
                         req_info._ctx_mgr.add_doc(
-                            transcript,
-                            doc_i=chunk.chunkIdx * 2 + 1,
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
                             doc_meta=(
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
-                                    "source": "segment",
-                                    "coarse_grained_scene_id": self.coarse_idx,
-                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
                                 }
                             ),
                             callback=lambda output: logger.debug(
@@ -785,20 +781,35 @@ class ViaStreamHandler:
                         if response.audio_transcript:
                             logger.info("Adding audio transcript for chunk %r", chunk)
 
-                        req_info._ctx_mgr.add_doc(
-                            transcript,
-                            doc_i=chunk.chunkIdx * 2 + 1,
-                            doc_meta=(
-                                vars(chunk)
-                                | {
-                                    "uuid": req_info.stream_id,
-                                    "camera_id": req_info.camera_id,
-                                }
-                            ),
-                            callback=lambda output: logger.debug(
-                                f"Summary till now: {output.result()}"
-                            ),
-                        )
+                        if not req_info.chunk_type:
+                            req_info._ctx_mgr.add_doc(
+                                transcript,
+                                doc_i=chunk.chunkIdx * 2 + 1,
+                                doc_meta=(
+                                    vars(chunk)
+                                    | {
+                                        "uuid": req_info.stream_id,
+                                        "camera_id": req_info.camera_id,
+                                    }
+                                ),
+                                callback=lambda output: logger.debug(
+                                    f"Summary till now: {output.result()}"
+                                ),
+                            )
+                        else:
+                            req_info._ctx_mgr.add_doc(
+                                transcript,
+                                doc_i=chunk.chunkIdx * 2 + 1,
+                                doc_meta=(
+                                    vars(chunk)
+                                    | {
+                                        "uuid": req_info.stream_id,
+                                    }
+                                ),
+                                callback=lambda output: logger.debug(
+                                    f"Summary till now: {output.result()}"
+                                ),
+                            )
                     if os.environ.get("VSS_POST_PROCESS_ON_EACH_DOC_ADD", "false").lower() in (
                         "true",
                         "1",

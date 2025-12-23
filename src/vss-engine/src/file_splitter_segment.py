@@ -120,8 +120,8 @@ class FileSplitterSegment:
             for coarse in seg_data.get("coarse_scenes", []):
                 coarse_start = parse_time_str(coarse["start_time"])
                 for fine in coarse.get("fine_scenes", []):
-                    start_pts = coarse_start + parse_time_str(fine["start_time"])
-                    end_pts = coarse_start + parse_time_str(fine["end_time"])
+                    start_pts =  parse_time_str(fine["start_time"])
+                    end_pts = parse_time_str(fine["end_time"])
     
                     info = ChunkInfo()
                     info.chunkIdx = chunkIdx
@@ -135,11 +135,11 @@ class FileSplitterSegment:
                     info.start_ntp_float = ntp_to_unix_timestamp(info.start_ntp)
                     info.end_ntp_float = ntp_to_unix_timestamp(info.end_ntp)
                     print(f"coarse_idx: {coarse_idx}, {chunkIdx}")
-                    self._on_new_chunk(info, coarse_idx=coarse_idx)
+                    self._on_new_chunk(info, coarse_idx)
                     chunkIdx += 1
                 coarse_idx += 1
             # 마지막 None 콜백으로 종료 알림
-            self._on_new_chunk(None, coarse_idx=coarse_idx)
+            self._on_new_chunk(None, coarse_idx)
 
         return not self._got_error
 

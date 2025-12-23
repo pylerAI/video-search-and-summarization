@@ -286,9 +286,7 @@ start_via_server() {
     if [ $DISABLE_GUARDRAILS = true ]; then
         EXTRA_ARGS+=" --disable-guardrails"
     fi
-    if [ $DISABLE_CV_PIPELINE = true ]; then
-        EXTRA_ARGS+=" --disable-cv-pipeline"
-    fi
+
     if [ "$ENABLE_AUDIO" = true ]; then
         EXTRA_ARGS+=" --enable-audio"
     fi
