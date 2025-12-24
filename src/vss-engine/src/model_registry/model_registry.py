@@ -221,13 +221,14 @@ class ModelRegistry:
         models = []
         for model in self._models.values():
             if model.is_valid():
-                model_info = model.to_dict()
-                # Add additional API-specific fields
-                model_info.update({
-                    "object": "model",
+                # Format according to ModelInfo schema in vss_api_models.py
+                model_info = {
+                    "id": model.model_id,
                     "created": 0,  # Static value for compatibility
-                    "owned_by": "external"
-                })
+                    "object": "model",
+                    "owned_by": "external",
+                    "api_type": "external"  # All registry models are external
+                }
                 models.append(model_info)
         
         return models

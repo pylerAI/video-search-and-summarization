@@ -6,59 +6,23 @@ vlm_models:
   # OpenAI GPT-4o
   gpt-4o:
     type: "openai-compat"
-    api_key_env: "OPENAI_GPT4O_API_KEY"  # Environment variable containing the API key
+    api_key_env: "OPENAI_API_KEY"  # Environment variable containing the API key
     endpoint: "https://api.openai.com/v1/"
     deployment_name: "gpt-4o"
     enabled: true
     description: "OpenAI GPT-4o model with vision capabilities"
-    
-  # OpenAI GPT-4o-mini
-  gpt-4o-mini:
-    type: "openai-compat"
-    api_key_env: "OPENAI_GPT4O_MINI_API_KEY"
-    endpoint: "https://api.openai.com/v1/"
-    deployment_name: "gpt-4o-mini"
-    enabled: true
-    description: "OpenAI GPT-4o-mini model - faster and more cost-effective"
-    
-  # Google Gemini 2.0 Flash
-  gemini-2.0-flash:
-    type: "openai-compat"
-    api_key_env: "GOOGLE_GEMINI_API_KEY"
-    endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    deployment_name: "gemini-2.0-flash-exp"
-    enabled: true
-    description: "Google Gemini 2.0 Flash experimental model"
-    
-  # Google Gemini 2.5 Pro
-  gemini-2.5-pro:
-    type: "openai-compat"
-    api_key_env: "GOOGLE_GEMINI_API_KEY"
-    endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    deployment_name: "gemini-2.5-pro"
-    enabled: true
-    description: "Google Gemini 2.5 Pro model with vision capabilities"
       
-  # Local/On-premise OpenAI-compatible endpoint (example)
-  local-vlm:
+  # Local/On-premise OpenAI-compatible endpoint (cosmos-reason-1-7b)
+  cosmos-reason-1-7b:
     type: "openai-compat"
     api_key_env: "LOCAL_VLM_API_KEY"  # Can be a dummy key for local deployments
-    endpoint: "http://100.10.30.7:32213/svc-vss/v1"  # Your local endpoint
-    deployment_name: "qwen3-vl-30b-a3b-instruct"
-    enabled: false  # Disabled by default
-    description: "Local on-premise VLM model with OpenAI-compatible API"
-    
-  # NVIDIA NIM endpoint (example)
-  nvidia-nim-vlm:
-    type: "openai-compat"
-    api_key_env: "NVIDIA_API_KEY"
-    endpoint: "https://integrate.api.nvidia.com/v1/"
-    deployment_name: "nvidia/vila-1.5-8b"  # Example NIM model
-    enabled: false  # Disabled by default
-    description: "NVIDIA NIM hosted VLM model"
+    endpoint: "http://ray-cluster-worker-serve-svc.ray-cluster.idc.k8s:8000/svc-vss/v1/"
+    deployment_name: "cosmos-reason-1-7b"  # Updated to match run_240.sh
+    enabled: true  # Enabled for Phase 3A testing
+    description: "Local on-premise Cosmos Reason1-7B model with OpenAI-compatible API"
 
 # Default model configuration
-default_model: "gpt-4o-mini"  # This will be used if no model is specified in API calls
+default_model: "gpt-4o"  # This will be used if no model is specified in API calls
 
 # Global settings for all OpenAI-compatible models
 global_settings:

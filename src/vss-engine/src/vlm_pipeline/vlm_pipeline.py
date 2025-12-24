@@ -671,6 +671,21 @@ class VlmProcess(ViaProcessBase):
         """Set dynamic model configuration for this VLM process"""
         self._dynamic_model_config = model_config
         logger.info(f"Set dynamic model config for VLM process: {model_config.get('model_id', 'unknown')}")
+        
+        # For OpenAI compatible models, reinitialize with new configuration if model is already loaded
+        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+            current_model = getattr(self, '_model', None)
+            if current_model is not None:
+                try:
+                    from models.openai_compat.openai_compat_model import CompOpenAIModel
+                    logger.info(f"Reinitializing OpenAI model with dynamic config: {model_config.get('model_id')}")
+                    self._model = CompOpenAIModel(True, model_config=model_config)
+                    logger.info(f"Successfully reinitialized model for {model_config.get('model_id')}")
+                except Exception as e:
+                    logger.error(f"Failed to reinitialize model with dynamic config: {e}")
+                    raise
+            else:
+                logger.info(f"Model not yet initialized, dynamic config will be used during initialization")
 
     def _deinitialize(self):
         self._model = None

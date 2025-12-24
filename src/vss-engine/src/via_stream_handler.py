@@ -1233,23 +1233,27 @@ class ViaStreamHandler:
         req_info.vlm_request_params.vlm_prompt = query.prompt
         req_info.vlm_request_params.vlm_generation_config = vlm_generation_config
         
-        # Populate model configuration if available
+        # Dynamic model configuration - check model field for external models  
         if hasattr(query, 'model') and query.model:
+            # Check if this is an external model in registry
             try:
                 from model_registry import get_model_registry
                 model_registry = get_model_registry()
-                model_config = model_registry.get_model_config(query.model)
-                if model_config:
-                    req_info.vlm_request_params.model_id = model_config.model_id
-                    req_info.vlm_request_params.model_endpoint = model_config.endpoint
-                    req_info.vlm_request_params.model_api_key = model_config.api_key
-                    req_info.vlm_request_params.model_deployment_name = model_config.deployment_name
-                    req_info.vlm_request_params.model_additional_headers = model_config.additional_headers
-                    logger.info(f"Populated model config for {query.model} in request {req_info.request_id}")
-                else:
-                    logger.warning(f"Model config not found for {query.model}")
+                if model_registry.is_model_available(query.model):
+                    # External model - get configuration from registry
+                    model_config = model_registry.get_model_config(query.model)
+                    if model_config:
+                        logger.info(f"Using external model from registry: {query.model}")
+                        req_info.vlm_request_params.model_id = model_config.model_id
+                        req_info.vlm_request_params.model_endpoint = model_config.endpoint
+                        req_info.vlm_request_params.model_api_key = model_config.api_key
+                        req_info.vlm_request_params.model_deployment_name = model_config.deployment_name
+                        req_info.vlm_request_params.model_additional_headers = model_config.additional_headers
+                    else:
+                        logger.error(f"Model config not found for {query.model}")
             except Exception as e:
-                logger.error(f"Failed to get model config for {query.model}: {e}")
+                logger.debug(f"Not using external model (registry not available or model not found): {e}")
+                # This is fine - model might be a legacy loaded model
         req_info.assets = assets
         req_info.stream_id = req_info.assets[0].asset_id
         req_info.start_timestamp = (
