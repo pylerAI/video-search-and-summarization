@@ -1195,12 +1195,15 @@ class ViaServer:
                 "description"
             ] = "Request body schema for adding a file."
             openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
-                "file"
+                "file1"
             ]["maxLength"] = 100e9
-            openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["id"][
+            openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
+                "file2"
+            ]["maxLength"] = 100e9
+            openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["asset_id"][
                 "anyOf"
             ][1]["maxItems"] = 50
-            openapi_schema["components"]["schemas"]["ChatCompletionQuery"]["properties"]["id"][
+            openapi_schema["components"]["schemas"]["ChatCompletionQuery"]["properties"]["asset_id"][
                 "anyOf"
             ][1]["maxItems"] = 50
 

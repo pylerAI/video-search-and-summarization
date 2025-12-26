@@ -218,7 +218,7 @@ def ntp_to_unix_timestamp(ntp_ts):
     )
 
 def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
-    if req_info.chunk_type != "segment":
+    if not req_info.chunk_type:
         raise ViaException("Invalid chunk type", "BadParameter", 400)
     path = req_info.chunk_type
     with open(path, "r") as f:
@@ -761,7 +761,7 @@ class ViaStreamHandler:
                             ),
                         )
                     else:
-                        data = segment_to_meta(req_info, chunk.chunkIdx)
+                        data = segment_to_meta(req_info, self.coarse_idx)
                         req_info._ctx_mgr.add_doc(
                             vlm_response,
                             doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
@@ -1002,7 +1002,7 @@ class ViaStreamHandler:
                 self._vlm_pipeline.enqueue_chunk(
                     chunk,
                     lambda response, req_info=req_info: self._on_vlm_chunk_response(
-                        response, req_info
+                        response, req_info, coarse_idx=coarse_idx
                     ),
                     req_info.vlm_request_params,
                     req_info.num_frames_per_chunk,
