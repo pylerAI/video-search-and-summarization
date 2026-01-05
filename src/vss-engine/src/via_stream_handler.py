@@ -76,6 +76,8 @@ class RequestInfo:
 
     def __init__(self) -> None:
         self.request_id = str(uuid.uuid4())
+        self.chunk_type = "uniform"
+        self.segment_file_path = None
         self.stream_id = ""
         self.chunk_count = 0
         self.chunk_size = 0
@@ -109,8 +111,6 @@ class RequestInfo:
         self.nvtx_summarization_start = None
         self.summarize = None
         self.enable_chat = True
-        self.enable_cv_pipeline = False
-        self.cv_metadata_json_file = ""
         self.pending_add_doc_start_time = 0
         self.pending_add_doc_end_time = 0
         self.num_frames_per_chunk = None
@@ -217,6 +217,21 @@ def ntp_to_unix_timestamp(ntp_ts):
     return (
         datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
     )
+
+def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
+    if req_info.chunk_type != "segment":
+        raise ViaException("Invalid chunk type", "BadParameter", 400)
+    
+    if not req_info.segment_file_path:
+        raise ViaException("Segment file path is not set", "BadParameter", 400)
+    
+    with open(req_info.segment_file_path, "r") as f:
+        data = json.load(f)
+
+    return {
+        "coarse_grained_scene_id": data["coarse_scenes"][coarse_idx]["id"],
+        "coarse_grained_scene_length": data["coarse_scenes"][coarse_idx]["num_finegrained_scenes"],
+    }
 
 
 class ViaStreamHandler:
@@ -338,11 +353,6 @@ class ViaStreamHandler:
                 "Latest chat completions API processing latency in seconds",
             )
 
-            self.cv_pipeline_latency_latest = prom.Gauge(
-                "cv_pipeline_latency_seconds_latest",
-                "Latest CV pipeline processing latency in seconds",
-            )
-
             self.asr_pipeline_latency = prom.Histogram(
                 "asr_pipeline_latency_seconds",
                 "ASR pipeline processing latency in seconds",
@@ -383,7 +393,6 @@ class ViaStreamHandler:
             prom.REGISTRY.unregister(self.vlm_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.chat_completions_latency)
             prom.REGISTRY.unregister(self.chat_completions_latency_latest)
-            prom.REGISTRY.unregister(self.cv_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.asr_pipeline_latency)
             prom.REGISTRY.unregister(self.asr_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.stream_fps_histogram)
@@ -414,10 +423,11 @@ class ViaStreamHandler:
         self._args = args
         if os.environ.get("VSS_LOG_LEVEL"):
             self._args.log_level = os.environ.get("VSS_LOG_LEVEL").upper()
-        self._args.cv_pipeline_configs = {"gdino_engine": "", "tracker_config": ""}
 
         self._via_health_eval = False
         self.first_init = True
+
+        self.coarse_idx = None
 
         self.default_caption_prompt = self._args.summarization_query
         self._ctx_mgr_pool = []
@@ -545,17 +555,6 @@ class ViaStreamHandler:
         req_info.status_event.set()
 
 
-    @staticmethod
-    def _remove_segmasks_from_cv_meta(cv_meta_):
-        cv_meta = deepcopy(cv_meta_)
-        for data in cv_meta:
-            for obj in data["objects"]:
-                if "misc" not in obj:
-                    continue
-                for misc in obj["misc"]:
-                    misc["seg"] = {}
-        return cv_meta
-
     def _create_video_from_cached_frames(self, req_info):
         def check_ffmpeg():
             """Check if FFmpeg is installed."""
@@ -601,9 +600,10 @@ class ViaStreamHandler:
         else:
             return None
 
-    def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo):
+    def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo, coarse_idx: int = None):
         """Gather chunks processed by the pipeline and run any further post-processing"""
         # Per-chunk decode latency and OTEL tracing
+        self.coarse_idx = coarse_idx
         if hasattr(response, "decode_start_time") and hasattr(response, "decode_end_time"):
             if (
                 response.decode_start_time
@@ -745,62 +745,84 @@ class ViaStreamHandler:
             response.vlm_response = vlm_response
             # Add the chunk VLM response to the milvus DB
             if req_info._ctx_mgr:
-                # Along with chunk, add cv metadata for the chunk
-                # get cv metadata present in file chunk.cv_metadata_json_file
-                # for duration chunk.start_pts to chunk.end_pts
-                cv_meta = chunk.cached_frames_cv_meta
-                cv_meta_str = json.dumps(self._remove_segmasks_from_cv_meta(cv_meta))
-                if len(cv_meta_str) > MAX_MILVUS_STRING_LEN:
-                    cv_meta_str = cv_meta_str[:MAX_MILVUS_STRING_LEN]
-                    logger.warning(
-                        "CV metadata length exceeds max milvus string length, " "truncating to %d",
-                        MAX_MILVUS_STRING_LEN,
-                    )
-                print(
-                    f"chunkIdx = {chunk.chunkIdx}  chunk.start_pts = {chunk.start_pts} \
-                      chunk.end_pts = {chunk.end_pts} CV metadata length = {len(cv_meta)}"
-                )
-                # Since cv metadata is getting  attached seperately to the context manager,
-                # set cached_frames_cv_meta to empty string in chunk
-                chunk.cached_frames_cv_meta = ""
+               
                 with TimeMeasure("Context Manager - Add Doc"):
                     add_doc_start_time = time.time()
-                    req_info._ctx_mgr.add_doc(
-                        vlm_response,
-                        doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
-                        doc_meta=(
-                            vars(chunk)
-                            | {
-                                "uuid": req_info.stream_id,
-                                "cv_meta": cv_meta_str,
-                                "camera_id": req_info.camera_id,
-                            }
-                        ),
-                        callback=lambda output: logger.debug(
-                            f"Summary till now: {output.result()}"
-                        ),
-                    )
 
-                    if transcript is not None:  # enable audio
-
-                        if response.audio_transcript:
-                            logger.info("Adding audio transcript for chunk %r", chunk)
-
+                    if req_info.chunk_type == "uniform":
                         req_info._ctx_mgr.add_doc(
-                            transcript,
-                            doc_i=chunk.chunkIdx * 2 + 1,
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
                             doc_meta=(
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
-                                    "cv_meta": cv_meta_str,
                                     "camera_id": req_info.camera_id,
+                                    "source": "uniform",
                                 }
                             ),
                             callback=lambda output: logger.debug(
                                 f"Summary till now: {output.result()}"
                             ),
                         )
+                    else:
+                        data = segment_to_meta(req_info, self.coarse_idx)
+                        req_info._ctx_mgr.add_doc(
+                            vlm_response,
+                            doc_i=chunk.chunkIdx * 2 if req_info.enable_audio else chunk.chunkIdx,
+                            doc_meta=(
+                                vars(chunk)
+                                | {
+                                    "uuid": req_info.stream_id,
+                                    "source": "segment",
+                                    "coarse_grained_scene_id": self.coarse_idx,
+                                    "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                                }
+                            ),
+                            callback=lambda output: logger.debug(
+                                f"Summary till now: {output.result()}"
+                            ),
+                        )
+
+                    if transcript is not None:  # enable audio
+
+                        if response.audio_transcript:
+                            logger.info("Adding audio transcript for chunk %r", chunk)
+
+                        if req_info.chunk_type == "uniform":
+                            req_info._ctx_mgr.add_doc(
+                                transcript,
+                                doc_i=chunk.chunkIdx * 2 + 1,
+                                doc_meta=(
+                                    vars(chunk)
+                                    | {
+                                        "uuid": req_info.stream_id,
+                                        "camera_id": req_info.camera_id,
+                                        "source": "uniform",
+                                    }
+                                ),
+                                callback=lambda output: logger.debug(
+                                    f"Summary till now: {output.result()}"
+                                ),
+                            )
+                        else:
+                            data = segment_to_meta(req_info, self.coarse_idx)
+                            req_info._ctx_mgr.add_doc(
+                                transcript,
+                                doc_i=chunk.chunkIdx * 2 + 1,
+                                doc_meta=(
+                                    vars(chunk)
+                                    | {
+                                        "uuid": req_info.stream_id,
+                                        "source": "segment",
+                                        "coarse_grained_scene_id": data["coarse_grained_scene_id"],
+                                        "coarse_grained_scene_length": data["coarse_grained_scene_length"],
+                                    }
+                                ),
+                                callback=lambda output: logger.debug(
+                                    f"Summary till now: {output.result()}"
+                                ),
+                            )
                     if os.environ.get("VSS_POST_PROCESS_ON_EACH_DOC_ADD", "false").lower() in (
                         "true",
                         "1",
@@ -880,6 +902,7 @@ class ViaStreamHandler:
     def _trigger_query(self, req_info: RequestInfo, start_time: float = None):
         """Trigger a query on a file"""
         from file_splitter import FileSplitter
+        from file_splitter_segment import FileSplitterSegment
 
         logger.info("Triggering oldest queued query %s", req_info.request_id)
         req_info.status = RequestInfo.Status.PROCESSING
@@ -951,12 +974,12 @@ class ViaStreamHandler:
                     vlm_response.chunk.streamId = req_info.stream_id
                     saved_responses[vlm_response.chunk.chunkIdx] = vlm_response
 
-        def _on_new_chunk(chunk: ChunkInfo, saved_responses=None):
+        def _on_new_chunk(chunk: ChunkInfo, coarse_idx: int = None, saved_responses=None):
             """Callback for when a new chunk is created"""
+
             if chunk is None:
                 return
             chunk.streamId = req_info.stream_id
-            chunk.cv_metadata_json_file = req_info.cv_metadata_json_file
             req_info.chunk_count += 1
 
             saved_response = (
@@ -969,7 +992,7 @@ class ViaStreamHandler:
                 self._vlm_pipeline.enqueue_chunk(
                     chunk,
                     lambda _, req_info=req_info: self._on_vlm_chunk_response(
-                        saved_response, req_info
+                        saved_response, req_info, coarse_idx=coarse_idx
                     ),
                     req_info.vlm_request_params,
                     req_info.num_frames_per_chunk,
@@ -984,8 +1007,8 @@ class ViaStreamHandler:
                 # No saved response, enqueue the chunk for normal VLM processing
                 self._vlm_pipeline.enqueue_chunk(
                     chunk,
-                    lambda response, req_info=req_info: self._on_vlm_chunk_response(
-                        response, req_info
+                    lambda response, req_info=req_info, coarse_idx=coarse_idx: self._on_vlm_chunk_response(
+                        response, req_info, coarse_idx=coarse_idx
                     ),
                     req_info.vlm_request_params,
                     req_info.num_frames_per_chunk,
@@ -1000,15 +1023,28 @@ class ViaStreamHandler:
             message="File Splitting-" + str(req_info.request_id), color="blue"
         )
         # Create virtual file chunks
-        FileSplitter(
-            paths_string,
-            FileSplitter.SplitMode.SEEK,
-            req_info.chunk_size,
-            start_pts=int(req_info.start_timestamp * 1e9),
-            end_pts=int(req_info.end_timestamp * 1e9),
-            sliding_window_overlap_sec=req_info.chunk_overlap_duration,
-            on_new_chunk=lambda chunk: _on_new_chunk(chunk, saved_responses),
-        ).split()
+        
+        # chunk type이 uniform인 경우
+        if req_info.chunk_type == "uniform":
+            FileSplitter(
+                paths_string,
+                FileSplitter.SplitMode.SEEK,
+                req_info.chunk_size,
+                start_pts=int(req_info.start_timestamp * 1e9),
+                end_pts=int(req_info.end_timestamp * 1e9),
+                sliding_window_overlap_sec=req_info.chunk_overlap_duration,
+                on_new_chunk=lambda chunk: _on_new_chunk(chunk, saved_responses),
+            ).split()
+        elif req_info.chunk_type == "segment":
+            FileSplitterSegment(
+                paths_string,
+                FileSplitterSegment.SplitMode.SEEK,
+                req_info.segment_file_path,
+                on_new_chunk=lambda chunk, coarse_idx: _on_new_chunk(chunk, coarse_idx),
+            ).split()
+        else:
+            raise ViaException(f"Invalid chunk type: {req_info.chunk_type}", "BadParameter", 400)
+        
         nvtx.end_range(nvtx_file_split_start)
 
         # No chunks were created. Mark the request completed and trigger next query if queued
@@ -1022,9 +1058,15 @@ class ViaStreamHandler:
             message="VLM Pipeline-" + str(req_info.request_id), color="green"
         )
 
-    def get_ctx_mgr(self, assets: list[Asset]) -> None:
+    def get_ctx_mgr(self, assets: list[Asset]):
         """
-        Return a ContextManager associated with the given assets.
+        Return a ContextManager associated with the given assets, or None if not found.
+        
+        This method only FINDS an existing context manager, it does NOT reset it.
+        The caller is responsible for resetting if needed.
+        
+        Returns:
+            ContextManager instance if found, None otherwise.
         """
         with self._lock:
             for _, request_info in self._request_info_map.items():
@@ -1034,24 +1076,9 @@ class ViaStreamHandler:
                         req_matches = False
                         break
                 if req_matches:
-                    if request_info.enable_chat:
-                        request_info._ctx_mgr.reset(
-                            {
-                                "summarization": {"uuid": request_info.stream_id},
-                                "retriever_function": {"uuid": request_info.stream_id},
-                                "ingestion_function": {"uuid": request_info.stream_id},
-                            }
-                        )
-                    elif request_info.summarize:
-                        request_info._ctx_mgr.reset(
-                            {
-                                "summarization": {"uuid": request_info.stream_id},
-                            }
-                        )
                     return request_info._ctx_mgr
             # If ctx mgr not found in request info map
-            logger.info(f"Getting new Context Manager for {assets[0].asset_id}")
-            return self._ctx_mgr_pool.pop()
+            return None
 
     def remove_request_ids(self, assets: list[Asset]) -> None:
         """
@@ -1095,6 +1122,9 @@ class ViaStreamHandler:
         generation_config=None,
         start_timestamp=None,
         end_timestamp=None,
+        chunk_type: str = "uniform",  # ✅ chunk_type 파라미터로 변경
+        collection_name: str = None,  # ✅ collection_name 파라미터 추가
+        segment_level: str = "shot",  # ✅ segment_level 파라미터 추가 (renamed from granularity)
     ):
         try:
             request_infos = self.get_request_infos(assets)
@@ -1103,38 +1133,111 @@ class ViaStreamHandler:
                     f"Multiple video processing requests identified for same assets;"
                     f" using request to identify the Graph database: {str(request_infos[-1])}"
                 )
+            # Get or create context manager for chat
             if len(request_infos) >= 1:
-                if request_infos[-1].enable_chat is False:
+                req_info = request_infos[-1]
+                if req_info.enable_chat is False:
                     return (
                         "Chat functionality disabled for request id: "
-                        + request_infos[-1].request_id
+                        + req_info.request_id
                     )
-
-                result = request_infos[-1]._ctx_mgr.call(
-                    {
-                        "retriever_function": {
-                            "question": messages,
-                            "is_last": False,
-                        }
-                    }
-                )
-                logger.debug(f"Q&A: result object is {result}")
-
-                retriever_result = result["retriever_function"]
-
-                if "error" in result and result["error"]:
-                    return result["error"]
-
-                if "response" not in retriever_result:
-                    logger.error("No response found in retriever result")
-                    return "An internal error occurred"
-
-                return retriever_result["response"]
+                ctx_mgr = req_info._ctx_mgr
+                
+                # ✅ If a different collection_name is provided, update the context manager
+                if collection_name and collection_name != req_info.user_specified_collection_name:
+                    logger.info(f"Switching collection from {req_info.user_specified_collection_name} to {collection_name}")
+                    req_info.user_specified_collection_name = collection_name
+                    
+                    config = deepcopy(self._ca_rag_config)
+                    config["context_manager"]["uuid"] = req_info.stream_id
+                    
+                    if "tools" not in config:
+                        config["tools"] = {}
+                    if "vector_db" not in config["tools"]:
+                        config["tools"]["vector_db"] = {}
+                    if "params" not in config["tools"]["vector_db"]:
+                        config["tools"]["vector_db"]["params"] = {}
+                    config["tools"]["vector_db"]["params"]["user_specified_collection_name"] = collection_name
+                    logger.info(f"Using custom collection: {collection_name}")
+                    
+                    ctx_mgr.configure(config=config)
             else:
+                # No existing request_info, create minimal context for chat
+                logger.info(f"No request_info found for {assets[0].asset_id}, creating minimal context for chat")
+                
+                with self._lock:
+                    self._create_ctx_mgr_pool(self._ca_rag_config)
+                    ctx_mgr = self.get_ctx_mgr(assets)
+                    
+                    if not ctx_mgr:
+                        # Create new context manager and minimal request_info
+                        ctx_mgr = self._ctx_mgr_pool.pop()
+                        
+                        req_info = RequestInfo()
+                        req_info.assets = assets
+                        req_info.stream_id = assets[0].asset_id
+                        req_info.chunk_type = chunk_type
+                        req_info.enable_chat = True
+                        req_info.user_specified_collection_name = collection_name  # ✅ collection_name 설정
+                        req_info._ctx_mgr = ctx_mgr
+                        self._request_info_map[req_info.request_id] = req_info
+                        
+                        # Configure context manager
+                        config = deepcopy(self._ca_rag_config)
+                        config["context_manager"]["uuid"] = req_info.stream_id
+                        
+                        # ✅ collection_name 설정
+                        if collection_name:
+                            if "tools" not in config:
+                                config["tools"] = {}
+                            if "vector_db" not in config["tools"]:
+                                config["tools"]["vector_db"] = {}
+                            if "params" not in config["tools"]["vector_db"]:
+                                config["tools"]["vector_db"]["params"] = {}
+                            config["tools"]["vector_db"]["params"]["user_specified_collection_name"] = collection_name
+                            logger.info(f"Using custom collection: {collection_name}")
+                        
+                        ctx_mgr.configure(config=config)
+                        logger.info(f"Created new context manager for chat-only request")
+
+            # Convert chunk_type to source for internal use
+            source = "segment" if chunk_type == "segment" else "uniform"
+            asset_id = assets[0].asset_id
+            logger.info(f"Chat query for asset={asset_id}, chunk_type={chunk_type}, segment_level={segment_level}, using source={source}")
+
+            result = ctx_mgr.call(
+                {
+                    "retriever_function": {
+                        "question": messages,
+                        "is_last": False,
+                        "source": source,
+                        "segment_level": segment_level,  # ✅ segment_level 전달 (renamed from granularity)
+                        "uuid": asset_id,  # ✅ UUID 전달
+                    }
+                }
+            )
+            logger.debug(f"Q&A: result object is {result}")
+
+            retriever_result = result["retriever_function"]
+
+            if "error" in result and result["error"]:
+                return result["error"]
+
+            if "response" not in retriever_result:
+                logger.error("No response found in retriever result")
+                return "An internal error occurred"
+
+            # Check if no source documents were retrieved (data doesn't exist for this chunk_type)
+            source_docs = retriever_result.get("source_docs", [])
+            if not source_docs or len(source_docs) == 0:
+                asset_id = assets[0].asset_id
+                logger.warning(f"No {chunk_type} data found for asset {asset_id} (no source documents retrieved)")
                 return (
-                    "Chat functionality disabled; "
-                    "please call /summarize API with enable_chat: True;"
+                    f"No {chunk_type} data found for asset '{asset_id}'. "
+                    f"Please call /summarize API first with chunkType='{chunk_type}' and enableChat=true."
                 )
+
+            return retriever_result["response"]
         except Exception as e:
             error_message = f"An error occurred: {str(e)} - {e.__class__.__name__}"
             logger.error(error_message)
@@ -1144,6 +1247,7 @@ class ViaStreamHandler:
         self,
         assets: list[Asset],
         query: SummarizationQuery,
+        segment_file_path: str = None,
     ):
         """Run a summarization query on a file"""
         # Enable summarization if summarization config is enabled  OR API passes enable flag
@@ -1162,6 +1266,7 @@ class ViaStreamHandler:
             assets=assets,
             query=query,
             is_summarization=True,
+            segment_file_path=segment_file_path,
         )
 
     def query(
@@ -1169,9 +1274,9 @@ class ViaStreamHandler:
         assets: list[Asset],
         query: SummarizationQuery,
         is_summarization=False,
-        pregenerated_cv_metadata_json_file="",
         skip_guardrails=False,
         skip_ca_rag=False,
+        segment_file_path: str = None,
     ):
         """Run a query on a file"""
 
@@ -1237,6 +1342,8 @@ class ViaStreamHandler:
         # Create a RequestInfo object and populate it
         req_info = RequestInfo()
         req_info.file = assets[0].path
+        req_info.chunk_type = "segment" if segment_file_path else "uniform"
+        req_info.segment_file_path = segment_file_path
         req_info.chunk_size = query.chunk_duration
         req_info.is_summarization = is_summarization
         req_info.vlm_request_params.vlm_prompt = query.prompt
@@ -1281,7 +1388,50 @@ class ViaStreamHandler:
         if not self._args.disable_ca_rag and not skip_ca_rag:
             with self._lock:
                 self._create_ctx_mgr_pool(self._ca_rag_config)
-                req_info._ctx_mgr = self.get_ctx_mgr(req_info.assets)
+                # Try to find an existing context manager for this asset
+                ctx_mgr = self.get_ctx_mgr(req_info.assets)
+                
+                if ctx_mgr:
+                    # Found existing context manager - reset old data for this source type
+                    source_type = "segment" if req_info.chunk_type == "segment" else "uniform"
+                    logger.info(f"Reusing context manager for {req_info.assets[0].asset_id}, resetting source={source_type}")
+                    
+                    if req_info.enable_chat:
+                        ctx_mgr.reset({
+                            "summarization": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                            "retriever_function": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                            "ingestion_function": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                        })
+                    elif req_info.summarize:
+                        ctx_mgr.reset({
+                            "summarization": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                            "retriever_function": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                            "ingestion_function": {
+                                "uuid": req_info.stream_id,
+                                "source": source_type,
+                            },
+                        })
+                    req_info._ctx_mgr = ctx_mgr
+                else:
+                    # No existing context manager - get a new one from the pool
+                    logger.info(f"Getting new Context Manager for {req_info.assets[0].asset_id}")
+                    req_info._ctx_mgr = self._ctx_mgr_pool.pop()
+                    
             try:
                 config = deepcopy(self._ca_rag_config)
                 config["context_manager"]["uuid"] = req_info.stream_id
@@ -1326,7 +1476,6 @@ class ViaStreamHandler:
         # Add the request to the pending queue
         self._metrics.queries_pending.inc()
 
-        req_info.cv_metadata_json_file = pregenerated_cv_metadata_json_file
 
         self._trigger_query(req_info, None)
 
@@ -1544,12 +1693,17 @@ class ViaStreamHandler:
                     f"Resetting context manager {ctx_mgr._process_index}"
                     " for ingestion, retrieval and summarization"
                 )
+                source_type = "segment" if req_info.chunk_type == "segment" else "uniform"
                 ctx_mgr.reset(
                     {
-                        "summarization": {"uuid": req_info.stream_id},
+                        "summarization": {
+                            "uuid": req_info.stream_id,
+                            "source": source_type,  # ✅ source 추가
+                        },
                         "retriever_function": {"uuid": req_info.stream_id},
                         "ingestion_function": {
                             "uuid": req_info.stream_id,
+                            "source": source_type,  # ✅ source 추가
                             "delete_external_collection": req_info.delete_external_collection,
                         },
                     }
@@ -1558,11 +1712,17 @@ class ViaStreamHandler:
                 logger.info(
                     f"Resetting context manager {ctx_mgr._process_index}" " for summarization"
                 )
+                source_type = "segment" if req_info.chunk_type == "segment" else "uniform"
                 ctx_mgr.reset(
                     {
                         "summarization": {
                             "uuid": req_info.stream_id,
+                            "source": source_type,
                             "delete_external_collection": req_info.delete_external_collection,
+                        },
+                        "ingestion_function": {
+                            "uuid": req_info.stream_id,
+                            "source": source_type,  # ✅ source 추가
                         },
                     }
                 )
@@ -1665,7 +1825,10 @@ class ViaStreamHandler:
                     if req_info._ctx_mgr:
                         req_info._ctx_mgr.reset(
                             {
-                                "summarization": {"uuid": req_info.stream_id},
+                                "summarization": {
+                                    "uuid": req_info.stream_id,
+                                    "source": "segment" if req_info.chunk_type == "segment" else "uniform",
+                                },
                                 "delete_external_collection": req_info.delete_external_collection,
                             }
                         )
@@ -1726,62 +1889,6 @@ class ViaStreamHandler:
             logger.info(f"No chunks with vlm responses for request {req_info.request_id}")
             return []
 
-        # Aggregate token usage across all chunks for this video
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_tokens = 0
-        chunks_with_stats = 0
-        
-        # Detailed breakdown for verification
-        chunk_token_details = []
-        for i, chunk_response in enumerate(chunk_responses):
-            if hasattr(chunk_response, 'vlm_stats') and chunk_response.vlm_stats:
-                chunk_input = chunk_response.vlm_stats.get('input_tokens', 0)
-                chunk_output = chunk_response.vlm_stats.get('output_tokens', 0)
-                chunk_total = chunk_response.vlm_stats.get('total_tokens', 0)
-                
-                total_input_tokens += chunk_input
-                total_output_tokens += chunk_output
-                total_tokens += chunk_total
-                chunks_with_stats += 1
-                
-                # Store details for verification
-                chunk_token_details.append({
-                    'chunk_idx': chunk_response.chunk.chunkIdx if hasattr(chunk_response, 'chunk') else i,
-                    'input': chunk_input,
-                    'output': chunk_output,
-                    'total': chunk_total
-                })
-        
-        # Verification: Check if sum of input + output equals total
-        calculated_total = total_input_tokens + total_output_tokens
-        total_mismatch = abs(calculated_total - total_tokens) if total_tokens > 0 else 0
-        
-        # Log aggregated token statistics with verification details
-        logger.debug(
-            f"Token usage summary for video {req_info.request_id}: "
-            f"chunks_processed={len(chunk_responses)}, chunks_with_stats={chunks_with_stats}, "
-            f"total_input_tokens={total_input_tokens}, "
-            f"total_output_tokens={total_output_tokens}, "
-            f"total_tokens={total_tokens}, "
-            f"calculated_total={calculated_total}, "
-            f"verification={'PASS' if total_mismatch <= 1 else 'FAIL'}"
-        )
-        
-        # Log per-chunk breakdown for verification (only if there are issues or debug logging enabled)
-        if total_mismatch > 1 or logger.isEnabledFor(10):  # DEBUG level
-            logger.debug(f"Per-chunk token breakdown for {req_info.request_id}: {chunk_token_details}")
-        
-        # Store aggregated token stats in request info for later use
-        if not hasattr(req_info, 'aggregated_token_stats'):
-            req_info.aggregated_token_stats = {}
-        req_info.aggregated_token_stats = {
-            'input_tokens': total_input_tokens,
-            'output_tokens': total_output_tokens,
-            'total_tokens': total_tokens,
-            'chunk_count': len(chunk_responses)
-        }
-
         if self._via_health_eval is True:
             with TimeMeasure("VLM Test Data - Write Chunk Responses"):
                 with open(
@@ -1805,9 +1912,16 @@ class ViaStreamHandler:
                         last_meta = vars(chunk_responses[-1].chunk)
                         last_meta["is_last"] = True
                         last_meta["uuid"] = req_info.stream_id
-                        last_meta["cv_meta"] = ""
                         last_meta["asset_dir"] = self._args.asset_dir
                         last_meta["camera_id"] = req_info.camera_id
+                        if req_info.chunk_type == "segment":
+                            last_meta["source"] = "segment"
+                            data = segment_to_meta(req_info, -1)
+                            last_meta["coarse_grained_scene_id"] = self.coarse_idx
+                            last_meta["coarse_grained_scene_length"] = data["coarse_grained_scene_length"]
+                        else:
+                            last_meta["source"] = "uniform"
+
                         with TimeMeasure("Context Manager Summarize/add_doc - last chunk"):
                             req_info._ctx_mgr.add_doc(
                                 ".",
@@ -1974,12 +2088,6 @@ class ViaStreamHandler:
             action="store_true",
             default=False,
             help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
-            "--disable-cv-pipeline",
-            action="store_true",
-            default=False,
-            help="Disable CV Pipeline",
         )
         parser.add_argument(
             "--guardrails-config",

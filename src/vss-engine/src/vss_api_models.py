@@ -354,6 +354,12 @@ class SummarizationQuery(ViaBaseModel):
         ],
     )
 
+    chunk_type: Literal["uniform", "segment"] = Field(
+        default="uniform",
+        description="Chunk type (uniform, segment).",
+        examples=["uniform", "segment"],
+    )
+
     @field_validator("asset_id", mode="after")
     @classmethod # Pydantic V2에서는 classmethod 권장
     def check_ids(cls, v: any):
@@ -525,6 +531,22 @@ class SummarizationQuery(ViaBaseModel):
         max_length=5000,
         description="Prompt for summary aggregation",
         examples=["Prompt for summary aggregation"],
+        pattern=ANY_CHAR_PATTERN,
+    )
+
+    shot_summarization_prompt: str = Field(
+        default="",
+        max_length=5000,
+        description="Prompt for shot-level summarization (segment mode)",
+        examples=["Prompt for combining VLM and ASR into shot summary"],
+        pattern=ANY_CHAR_PATTERN,
+    )
+
+    scene_summarization_prompt: str = Field(
+        default="",
+        max_length=5000,
+        description="Prompt for scene-level summarization (segment mode)",
+        examples=["Prompt for aggregating shot summaries into scene summary"],
         pattern=ANY_CHAR_PATTERN,
     )
 
@@ -809,6 +831,22 @@ class ChatCompletionQuery(ViaBaseModel):
     @property
     def id_list(self) -> List[str]:
         return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
+
+    chunk_type: Literal["uniform", "segment"] = Field(
+        default="uniform",
+        description="Chunk type for RAG retrieval: 'uniform' for uniform chunks, 'segment' for segment-based chunks."
+    )
+    
+    segment_level: Literal["shot", "scene"] = Field(
+        default="shot",
+        description="Retrieval unit for segment-based queries: 'shot' for shot-level (detailed), 'scene' for scene-level (broader context). Only used when chunk_type='segment'."
+    )
+
+    collection_name: str = Field(
+        default=None,
+        description="Custom Milvus collection name. If not provided, uses default collection.",
+        max_length=256,
+    )
 
     messages: List[ChatMessage] = Field(
         description="The list of chat messages.", max_length=1000000
