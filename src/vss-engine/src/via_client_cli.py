@@ -221,16 +221,6 @@ def get_parser():
         action="store_true",
     )
     opt_args.add_argument(
-        "--enable-cv-metadata",
-        help="Enable CV metadata",
-        action="store_true",
-    )
-    opt_args.add_argument(
-        "--cv-pipeline-prompt",
-        help=("Prompt used by CV pipeline."),
-        type=str,
-    )
-    opt_args.add_argument(
         "--response-format",
         help="Format of the model output",
         choices=["json_object", "text"],
@@ -369,16 +359,6 @@ def get_parser():
         "--model-max-tokens", help="Max tokens to use while generating from LLM", type=int
     )
     opt_args.add_argument("--model-seed", help="Seed to use while generating from LLM", type=int)
-    opt_args.add_argument(
-        "--enable-cv-metadata",
-        help="Enable CV metadata",
-        action="store_true",
-    )
-    opt_args.add_argument(
-        "--cv-pipeline-prompt",
-        help=("Prompt used by CV pipeline."),
-        type=str,
-    )
     opt_args.add_argument(
         "--response-format",
         help="Format of the model output",
@@ -639,7 +619,6 @@ def get_parser():
     opt_args.add_argument(
         "--confidence", type=float, default=1.0, help="Confidence score (0.0-1.0)"
     )
-    opt_args.add_argument("--cv-metadata-path", type=str, help="Path to CV metadata file")
     opt_args.add_argument("--stream-name", type=str, help="Stream name")
     opt_args.add_argument(
         "--do-verification",
@@ -665,9 +644,6 @@ def get_parser():
     )
     opt_args.add_argument(
         "--enable-caption", action="store_true", help="Enable detailed captioning"
-    )
-    opt_args.add_argument(
-        "--cv-metadata-overlay", action="store_true", help="Enable CV metadata overlay"
     )
     opt_args.add_argument("--debug", action="store_true", help="Enable debug output in response")
     opt_args.add_argument(
@@ -830,7 +806,6 @@ def do_summarize(args):
         "model": args.model,
         "response_format": {"type": args.response_format},
         "enable_chat": args.enable_chat,
-        "enable_cv_metadata": args.enable_cv_metadata,
     }
 
     if args.model_temperature is not None:
@@ -886,8 +861,6 @@ def do_summarize(args):
         req_json["caption_summarization_prompt"] = args.caption_summarization_prompt
         if args.summary_aggregation_prompt:
             req_json["summary_aggregation_prompt"] = args.summary_aggregation_prompt
-    if args.cv_pipeline_prompt:
-        req_json["cv_pipeline_prompt"] = args.cv_pipeline_prompt
     if args.num_frames_per_chunk is not None:
         req_json["num_frames_per_chunk"] = args.num_frames_per_chunk
     if args.vlm_input_width is not None:
@@ -1045,7 +1018,6 @@ def do_generate_vlm_captions(args):
         "id": args.id,
         "model": args.model,
         "response_format": {"type": args.response_format},
-        "enable_cv_metadata": args.enable_cv_metadata,
     }
 
     if args.model_temperature is not None:
@@ -1068,8 +1040,6 @@ def do_generate_vlm_captions(args):
         req_json["prompt"] = args.prompt
     if args.system_prompt:
         req_json["system_prompt"] = args.system_prompt
-    if args.cv_pipeline_prompt:
-        req_json["cv_pipeline_prompt"] = args.cv_pipeline_prompt
     if args.num_frames_per_chunk is not None:
         req_json["num_frames_per_chunk"] = args.num_frames_per_chunk
     if args.vlm_input_width is not None:
@@ -1335,7 +1305,6 @@ def do_review_alert(args):
         "chunk_duration": args.chunk_duration,
         "chunk_overlap_duration": args.chunk_overlap_duration,
         "num_frames_per_chunk": args.num_frames_per_chunk,
-        "cv_metadata_overlay": args.cv_metadata_overlay,
         "enable_reasoning": args.enable_reasoning,
         "debug": args.debug,
     }
@@ -1364,8 +1333,6 @@ def do_review_alert(args):
     }
     if args.stream_name:
         req_json["stream_name"] = args.stream_name
-    if args.cv_metadata_path:
-        req_json["cv_metadata_path"] = args.cv_metadata_path
 
     if args.print_curl_command:
         print(f'curl -i -X POST {get_api_url("/reviewAlert")} \\')

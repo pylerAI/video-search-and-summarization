@@ -39,7 +39,6 @@ ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
 KEY_PATTERN = r"^[A-Za-z0-9]*$"
 ANY_CHAR_PATTERN = r"^(.|\n)*$"
-CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
 
 DEFAULT_CALLBACK_JSON_TEMPLATE = (
     "{ "
@@ -566,17 +565,6 @@ class SummarizationQuery(ViaBaseModel):
         default=False,
         description="Enable chat Question & Answers on the input media",
         examples=[True, False],
-    )
-    enable_cv_metadata: bool = Field(
-        default=False, description="Enable CV metadata", examples=[True, False]
-    )
-
-    cv_pipeline_prompt: str = Field(
-        default="",
-        max_length=1024,
-        description="Prompt for CV pipeline",
-        examples=["person . car . bicycle;0.5"],
-        pattern=CV_PROMPT_PATTERN,
     )
 
     num_frames_per_chunk: int = Field(
@@ -1322,9 +1310,6 @@ class VssParams(ViaBaseModel):
         le=256,
         json_schema_extra={"format": "int32"},
     )
-    cv_metadata_overlay: bool = Field(
-        description="Enable CV metadata overlay", default=False, examples=[True, False]
-    )
     enable_reasoning: bool = Field(
         description="Enable reasoning for VLM alert review",
         default=False,
@@ -1509,18 +1494,6 @@ class VlmQuery(ViaBaseModel):
         default=[],
         description="List of tools for the current VLM captions request",
         max_length=100,
-    )
-
-    enable_cv_metadata: bool = Field(
-        default=False, description="Enable CV metadata", examples=[True, False]
-    )
-
-    cv_pipeline_prompt: str = Field(
-        default="",
-        max_length=1024,
-        description="Prompt for CV pipeline",
-        examples=["person . car . bicycle;0.5"],
-        pattern=CV_PROMPT_PATTERN,
     )
 
     num_frames_per_chunk: int = Field(

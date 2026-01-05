@@ -458,11 +458,9 @@ async def summarize(
     summarize=True,
     enable_chat=True,
     alerts_table=None,
-    enable_cv_metadata=False,
     num_frames_per_chunk=0,
     vlm_input_width=0,
     vlm_input_height=0,
-    cv_pipeline_prompt="",
     enable_audio=False,
 ):
     logger.info(f"summarize. ip: {request.client.host}")
@@ -524,9 +522,6 @@ async def summarize(
             req_json["summary_aggregation_prompt"] = summary_aggregation_prompt
         req_json["summarize"] = summarize
         req_json["enable_chat"] = enable_chat
-        req_json["enable_cv_metadata"] = enable_cv_metadata
-        if cv_pipeline_prompt:
-            req_json["cv_pipeline_prompt"] = cv_pipeline_prompt
         req_json["enable_audio"] = enable_audio
 
         parsed_alerts = []
@@ -820,7 +815,6 @@ def get_example_details(f):
         dc_path = str(f) + ".dc.json"
 
     # set default
-    cv_pipeline_prompt = "person . forklift . robot . fire . spill"
 
     try:
         if Path(str(f) + ".prompts.json").exists():
@@ -829,7 +823,6 @@ def get_example_details(f):
                 prompt = prompts["prompt"]
                 caption_summarization_prompt = prompts["caption_summarization_prompt"]
                 summary_aggregation_prompt = prompts["summary_aggregation_prompt"]
-                cv_pipeline_prompt = prompts["cv_pipeline_prompt"]
     except Exception:
         pass
 
@@ -838,7 +831,6 @@ def get_example_details(f):
         prompt,
         caption_summarization_prompt,
         summary_aggregation_prompt,
-        cv_pipeline_prompt,
     )
 
 
@@ -973,26 +965,6 @@ def build_summarization(args, app_cfg, logger_):
                             and bool(os.environ.get("ENABLE_AUDIO", "false").lower() == "true"),
                         )
 
-                        enable_cv_metadata = gr.Checkbox(
-                            value=False,
-                            label="Enable CV Metadata",
-                            visible=not args.image_mode
-                            and bool(
-                                os.environ.get("DISABLE_CV_PIPELINE", "true").lower() == "false"
-                            ),
-                        )
-
-                        cv_pipeline_prompt = gr.TextArea(
-                            label="CV PIPELINE PROMPT (OPTIONAL)",
-                            lines=1,
-                            max_lines=1,
-                            value="person . forklift . robot . fire . spill ",
-                            visible=not args.image_mode
-                            and bool(
-                                os.environ.get("DISABLE_CV_PIPELINE", "true").lower() == "false"
-                            ),
-                        )
-
                 with gr.Tab("Samples"):
                     gr.Examples(
                         examples=[
@@ -1013,7 +985,6 @@ def build_summarization(args, app_cfg, logger_):
                             summary_prompt,
                             caption_summarization_prompt,
                             summary_aggregation_prompt,
-                            cv_pipeline_prompt,
                             # graph_rag_prompt_yaml,
                         ],
                         label="SELECT A SAMPLE",
@@ -1663,11 +1634,9 @@ def build_summarization(args, app_cfg, logger_):
             summary_prompt,
             caption_summarization_prompt,
             summary_aggregation_prompt,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
             summarize_top_p,
             summarize_temperature,
@@ -1711,11 +1680,9 @@ def build_summarization(args, app_cfg, logger_):
             summarize_checkbox,  # summarize
             chat_checkbox,  # enable_chat
             alerts_table,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
         ],
         outputs=[
@@ -1734,11 +1701,9 @@ def build_summarization(args, app_cfg, logger_):
             summary_prompt,
             caption_summarization_prompt,
             summary_aggregation_prompt,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
             summarize_top_p,
             summarize_temperature,

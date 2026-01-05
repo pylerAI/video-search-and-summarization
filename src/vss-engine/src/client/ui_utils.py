@@ -254,12 +254,6 @@ class RetrieveCache:
             ),  # rag_batch_size
             gr.update(value=id_settings.get("rag_top_k", 10), interactive=True),  # rag_top_k
             gr.update(
-                value=id_settings.get("enable_cv_metadata", False), interactive=True
-            ),  # enable_cv_metadata
-            gr.update(
-                value=id_settings.get("cv_pipeline_prompt", ""), interactive=True
-            ),  # cv_pipeline_prompt
-            gr.update(
                 value=id_settings.get("enable_audio", False), interactive=True
             ),  # enable_audio
             gr.update(
