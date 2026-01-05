@@ -24,10 +24,9 @@ import gc
 import json
 import os
 import time
-import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated
+from typing import Annotated, Optional
 
 import aiofiles
 import aiofiles.os
@@ -53,7 +52,6 @@ from via_exception import ViaException
 from via_logger import LOG_PERF_LEVEL, TimeMeasure, logger
 from vss_api_models import (
     UUID_LENGTH,
-    AddFileInfoResponse,
     ChatCompletionQuery,
     CompletionResponse,
     CompletionUsage,
@@ -236,90 +234,110 @@ class ViaServer:
         # ======================= Files API
         @self._app.post(
             f"{API_PREFIX}/files",
-            summary="API for uploading a media file",
-            description="Files are used to upload media files.",
-            responses={
-                200: {"description": "Successful Response."},
-                **add_common_error_responses(),
-            },
+            summary="API for uploading media files",
+            description="Upload one or two files. Converts segment format automatically.",
             tags=["Files"],
         )
         async def add_video_file(
-            purpose: Annotated[
-                Purpose,
-                Form(
-                    description=(
-                        "The intended purpose of the uploaded file."
-                        " For VIA use-case this must be set to vision"
-                    )
-                ),
-            ],
-            media_type: Annotated[MediaType, Form(description="Media type (image / video / segment / metadata).")],
-            file: Annotated[
-                UploadFile, File(description="File object (not file name) to be uploaded.")
-            ],
-            asset_id: Annotated[
-                str,
-                Form(
-                    description="video_id ID to be used for the file.",
-                    max_length=256,
-                ),
-            ],
-        ) -> AddFileInfoResponse:
+            purpose: Annotated[Purpose, Form(...)],
+            asset_id: Annotated[str, Form(description="Asset ID to store the files")],
+            media_type1: Annotated[MediaType, Form(description="Media type for file1")],
+            file1: Annotated[UploadFile, File(description="First file object")],
+            media_type2: Annotated[Optional[MediaType], Form(description="Media type for file2")] = None,
+            file2: Annotated[Optional[UploadFile], File(description="Second file object")] = None,
+        ):
+            logger.info(f"Received add file request for asset_id: {asset_id}")
 
-            logger.info(
-                "Received add video file request - purpose %s,"
-                " media_type %s have file %r, filename - %s, camera_id - %s",
-                purpose,
-                media_type,
-                file,
-                asset_id,
-            )
+            # 변환 로직 함수 (내부 헬퍼)
+            def convert_segment_format(old_data: dict, video_id: str) -> dict:
+                new_data = {
+                    "video_id": video_id,
+                    "coarse_scenes": []
+                }
+                for idx, scene in enumerate(old_data.get("hierarchical_scenes", [])):
+                    medium_scene = scene.get("medium_scene", {})
+                    high_scenes = scene.get("contained_high_scenes", [])
 
+                    coarse_scene = {
+                        "id": idx,
+                        "start_time": medium_scene.get("start_time", ""),
+                        "end_time": medium_scene.get("end_time", ""),
+                        "num_finegrained_scenes": len(high_scenes),
+                        "fine_scenes": []
+                    }
+                    for jdx, hs in enumerate(high_scenes):
+                        fine_scene = {
+                            "id": jdx,
+                            "start_time": hs.get("start_time", ""),
+                            "end_time": hs.get("end_time", "")
+                        }
+                        coarse_scene["fine_scenes"].append(fine_scene)
+                    new_data["coarse_scenes"].append(coarse_scene)
+                return new_data
 
-            if media_type != "video" and media_type != "image" and media_type != "metadata" and media_type != "segment":
-                raise ViaException(
-                    "Currently only 'video', 'image', 'metadata', 'segment' media_type is supported.",
-                    "InvalidParameters",
-                    422,
-                )
-            asset_id = await self._asset_manager.save_file(
-                file, asset_id, purpose.value, media_type.value, 
-            )
+            upload_tasks = [(file1, media_type1)]
+            if file2 and media_type2:
+                upload_tasks.append((file2, media_type2))
 
-            try:
-                if media_type in ["video", "image"] and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
-                    media_info = await MediaFileInfo.get_info_async(
-                        self._asset_manager.get_asset(asset_id).path
-                    )
-                    if not media_info.video_codec:
-                        raise Exception("Invalid file")
-                    if (media_type == "image") != media_info.is_image:
-                        raise Exception("Invalid file")
+            uploaded_files_result = []
 
-                    # Cache video FPS in the asset
-                    if media_type == "video" and hasattr(media_info, "video_fps"):
-                        asset = self._asset_manager.get_asset(asset_id)
-                        asset.update_video_fps(float(media_info.video_fps))
-            except Exception as e:
-                logger.error("".join(traceback.format_exception(e)))
-                self._asset_manager.cleanup_asset(asset_id)
-                raise ViaException(
-                    f"File does not seem to be a valid {media_type} file",
-                    "InvalidFile",
-                    400,
-                )
+            for file, m_type in upload_tasks:
+                m_type_val = m_type.value if hasattr(m_type, 'value') else m_type
+                
+                # 1. 파일 기본 저장
+                await self._asset_manager.save_file(file, asset_id, purpose.value, m_type_val)
 
-            asset = self._asset_manager.get_asset(asset_id)
-            try:
-                fsize = (await aiofiles.os.stat(asset.path)).st_size
-            except Exception:
-                fsize = 0
+                # 2. 경로 및 확장자 설정
+                ext_map = {"video": ".mp4", "image": ".jpg", "segment": ".json", "metadata": ".json"}
+                ext = ext_map.get(m_type_val, "")
+                target_path = os.path.join(self._asset_manager._asset_dir, asset_id, f"{m_type_val}{ext}")
+
+                # [추가 부분] 3. segment 타입일 경우 포맷 변환 수행
+                if m_type_val == "segment":
+                    try:
+                        # 저장된 파일을 다시 읽음
+                        async with aiofiles.open(target_path, mode='r') as f:
+                            content = await f.read()
+                            old_segment_data = json.loads(content)
+
+                        # 변환 로직 적용
+                        new_segment_data = convert_segment_format(old_segment_data, asset_id)
+
+                        # 변환된 데이터를 다시 덮어씀
+                        async with aiofiles.open(target_path, mode='w') as f:
+                            await f.write(json.dumps(new_segment_data, indent=4))
+                        
+                        logger.info(f"Segment format converted for asset_id: {asset_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to convert segment format: {e}")
+                        # 변환 실패 시 기존 파일은 유지되나 로그를 남김
+
+                # 4. 저장된 파일 정보 확인 (용량 등)
+                try:
+                    fsize = (await aiofiles.os.stat(target_path)).st_size
+                except:
+                    fsize = 0
+
+                uploaded_files_result.append({
+                    "asset_id": asset_id,
+                    "bytes": fsize,
+                    "media_type": m_type_val,
+                    "purpose": "vision"
+                })
+
+                # 비디오 FPS 캐시 업데이트 로직
+                if m_type_val == "video" and not os.environ.get("VSS_SKIP_INPUT_MEDIA_VERIFICATION", ""):
+                    try:
+                        media_info = await MediaFileInfo.get_info_async(target_path)
+                        if hasattr(media_info, "video_fps"):
+                            self._asset_manager.get_asset(asset_id).update_video_fps(float(media_info.video_fps))
+                    except Exception as e:
+                        logger.error(f"Video verification failed: {e}")
+
             return {
                 "asset_id": asset_id,
-                "bytes": fsize,
-                "media_type": media_type,
-                "purpose": "vision",
+                "object": "list",
+                "data": uploaded_files_result
             }
 
         @self._app.delete(
@@ -575,8 +593,9 @@ class ViaServer:
         )
         async def summarize(query: SummarizationQuery, request: Request) -> CompletionResponse:
             # 1. asset_id 리스트 처리
-            assetIdList = [str(uuid_obj) for uuid_obj in query.id_list]
+            assetIdList = [str(obj) for obj in query.id_list]
             assetList = []
+            sampling_source = None
 
             for asset_id in assetIdList:
                 # AssetManager에서 해당 asset_id 폴더 정보를 가져옴
@@ -595,6 +614,25 @@ class ViaServer:
                 # 엔진이 분석할 수 있도록 asset 객체의 path를 video.mp4로 설정
                 asset._path = video_file_path
                 assetList.append(asset)
+            
+            if query.chunk_type == "segment":
+                main_asset_id = assetIdList[0]
+                segment_file_path = os.path.join(self._asset_manager._asset_dir, main_asset_id, "segment.json")
+
+                if os.path.exists(segment_file_path):
+                    sampling_source = segment_file_path
+                    logger.info(f"Using segment-based sampling with file: {sampling_source}")
+                else:
+                    # segment 타입인데 파일이 없으면 에러 처리 또는 uniform 강제 전환 (여기선 에러 처리)
+                    raise ViaException(
+                        f"Segment file (segment.json) not found for asset: {main_asset_id}",
+                        "ResourceNotFound", 404
+                    )
+            else:
+                sampling_source = None
+                logger.info("Using uniform sampling")
+            
+            logger.info(f"Sampling source: {sampling_source}")
 
             # 2. 오디오 지원 여부 및 미디어 타입 검증
             if query.enable_audio:
@@ -663,6 +701,7 @@ class ViaServer:
                 self._stream_handler.summarize,
                 assetList,
                 query,
+                sampling_source,
             )
             logger.info("Created video file query %s for main asset %s", request_id, main_asset_id)
 
@@ -700,7 +739,6 @@ class ViaServer:
                 },
             }
 
-        # ======================= Summarize API
 
         # ======================= Summarize API
 
@@ -1060,6 +1098,9 @@ class ViaServer:
                 {},
                 media_info_start,
                 media_info_end,
+                query.chunk_type,  # ✅ chunk_type 전달
+                query.collection_name,  # ✅ collection_name 전달
+                query.segment_level,  # ✅ segment_level 전달 (renamed from granularity)
             )
 
             chat_latency = time.time() - chat_start_time
