@@ -109,7 +109,6 @@ class DecoderProcess(ViaProcessBase):
         self._module_loader = None
         self._max_live_streams = max(1, -(-args.max_live_streams // args.num_gpus))
         self._enable_audio = args.enable_audio
-        self._cv_pipeline_configs = args.cv_pipeline_configs
 
     def _initialize(self):
         from .video_file_frame_getter import DefaultFrameSelector, VideoFileFrameGetter
@@ -442,14 +441,7 @@ class EmbeddingProcess(ViaProcessBase):
                 FrameJPEGTensorGenerator,
             )
 
-            # Check for debug mode environment variables
-            debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
-            debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames')
-            
-            self._emb_generator = FrameJPEGTensorGenerator(
-                debug_save_frames=debug_save_frames,
-                debug_output_dir=debug_output_dir
-            )
+            self._emb_generator = FrameJPEGTensorGenerator()
         elif self._vlm_model_type is None:
             model = CustomModuleLoader(self._model_path).load_model()
             self._emb_generator = model.get_embedding_generator()
@@ -498,17 +490,7 @@ class EmbeddingProcess(ViaProcessBase):
         nvtx_embedding_start = nvtx.start_range(
             message="Embedding Process-" + str(chunk[0]), color="blue"
         )
-        # Pass frame_times to embedding generator for OpenAI compatible models
-        if len(frame_times) > 0:
-            try:
-                # Try to pass frame_times parameter for overlay functionality
-                embeddings = self._emb_generator.get_embeddings(frames, frame_times)
-            except TypeError:
-                # Fallback for embedding generators that don't support frame_times parameter
-                logger.debug("Embedding generator doesn't support frame_times parameter, using fallback")
-                embeddings = self._emb_generator.get_embeddings(frames)
-        else:
-            embeddings = self._emb_generator.get_embeddings(frames)
+        embeddings = self._emb_generator.get_embeddings(frames)
 
         def on_embeddings_done(
             chunk,
@@ -627,18 +609,12 @@ class VlmProcess(ViaProcessBase):
         elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
             from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
 
-            # Check for debug mode environment variables
-            debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
-            debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames_cosmos')
-
             self._model = CosmosReason1(
                 self._model_path,
                 use_trt=self._use_trt,
                 trt_engine_dir=self._trt_engine_dir,
                 max_batch_size=self._batch_size,
                 async_output=True,
-                debug_save_frames=debug_save_frames,
-                debug_output_dir=debug_output_dir,
             )
             self._batch_size = 1
 
@@ -793,8 +769,6 @@ class VlmProcess(ViaProcessBase):
         error_msg = kwargs.pop("error", None)
 
         if isinstance(vlm_response_stats, concurrent.futures.Future):
-            logger.debug("VLM response stats: %s", vlm_response_stats)
-
             return self._handle_future_result(
                 process_vlm_response,
                 chunk,
@@ -808,7 +782,6 @@ class VlmProcess(ViaProcessBase):
                 nvtx_vlm_process_start,
             )
         else:
-            logger.debug("VLM response stats: %s", vlm_response_stats)
             return process_vlm_response(
                 chunk,
                 request_params,
@@ -820,7 +793,7 @@ class VlmProcess(ViaProcessBase):
                 vlm_start_time,
                 nvtx_vlm_process_start,
             )
-      
+
 
 class AsrProcess(ViaProcessBase):
     """ASR Process"""
