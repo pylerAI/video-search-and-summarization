@@ -39,7 +39,7 @@ class RetrieveCache:
 
         if not id_settings:
             self.logger.debug(f"No stream settings found for {video_id}.")
-            return [gr.update(interactive=True)] * 30
+            return [gr.update(interactive=True)] * 27
 
         # Map settings to Gradio updates
         updates = [
@@ -83,15 +83,6 @@ class RetrieveCache:
             gr.update(
                 value=id_settings.get("chat_max_tokens", 512), interactive=True
             ),  # chat_max_tokens
-            gr.update(
-                value=id_settings.get("notification_top_p", 0.5), interactive=True
-            ),  # notification_top_p
-            gr.update(
-                value=id_settings.get("notification_temperature", 0.5), interactive=True
-            ),  # notification_temperature
-            gr.update(
-                value=id_settings.get("notification_max_tokens", 512), interactive=True
-            ),  # notification_max_tokens
             gr.update(
                 value=id_settings.get("summarize_batch_size", 100), interactive=True
             ),  # summarize_batch_size

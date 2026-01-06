@@ -243,22 +243,6 @@ def get_parser():
         "--chat-max-tokens", help="Max tokens to use while generating from LLM for QnA", type=int
     )
 
-    opt_args.add_argument(
-        "--notification-top-p",
-        help="Top-P to use while generating from LLM for notification",
-        type=float,
-    )
-    opt_args.add_argument(
-        "--notification-temperature",
-        help="Temperature to use while generating from LLM for notification",
-        type=float,
-    )
-    opt_args.add_argument(
-        "--notification-max-tokens",
-        help="Max tokens to use while generating from LLM for notification",
-        type=int,
-    )
-
     opt_args.add_argument("--vlm-input-width", help="VLM Input Width", type=int)
     opt_args.add_argument("--vlm-input-height", help="VLM Input Height", type=int)
     opt_args.add_argument(
@@ -614,13 +598,6 @@ def do_summarize(args):
         req_json["chat_temperature"] = args.chat_temperature
     if args.chat_max_tokens is not None:
         req_json["chat_max_tokens"] = args.chat_max_tokens
-
-    if args.notification_top_p is not None:
-        req_json["notification_top_p"] = args.notification_top_p
-    if args.notification_temperature is not None:
-        req_json["notification_temperature"] = args.notification_temperature
-    if args.notification_max_tokens is not None:
-        req_json["notification_max_tokens"] = args.notification_max_tokens
 
     if args.prompt:
         req_json["prompt"] = args.prompt
