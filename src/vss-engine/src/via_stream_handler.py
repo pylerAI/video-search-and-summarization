@@ -397,9 +397,6 @@ class ViaStreamHandler:
         self.NUM_CA_RAG_PROCESSES_LAUNCH = 10
         self.num_ctx_mgr = 0
 
-        self._LLMRailsPool = []
-        self._rails_config = None
-
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
         if not args.disable_ca_rag:
@@ -1211,7 +1208,6 @@ class ViaStreamHandler:
         assets: list[Asset],
         query: SummarizationQuery,
         is_summarization=False,
-        skip_guardrails=False,
         skip_ca_rag=False,
         segment_file_path: str = None,
     ):
@@ -2010,22 +2006,10 @@ class ViaStreamHandler:
         VlmPipeline.populate_argument_parser(parser)
 
         parser.add_argument(
-            "--disable-guardrails",
-            action="store_true",
-            default=False,
-            help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
             "--enable-dev-dc-gen",
             action="store_true",
             default=False,
-            help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
-            "--guardrails-config",
-            type=str,
-            default="/opt/nvidia/via/guardrails_config",
-            help="NEMO Guardrails configuration",
+            help="Enable development DC generation",
         )
         parser.add_argument(
             "--max-file-duration",
