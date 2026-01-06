@@ -14,12 +14,9 @@
 ASSET_STORAGE_DIR="${ASSET_STORAGE_DIR:-/tmp/assets}"
 
 CA_RAG_CONFIG="${CA_RAG_CONFIG:-/opt/nvidia/via/default_config.yaml}"
-CV_PIPELINE_TRACKER_CONFIG="${CV_PIPELINE_TRACKER_CONFIG:-/opt/nvidia/via/config/default_tracker_config.yml}"
 
 DISABLE_CA_RAG=${DISABLE_CA_RAG:-false}
 DISABLE_FRONTEND=${DISABLE_FRONTEND:-false}
-DISABLE_GUARDRAILS=${DISABLE_GUARDRAILS:-false}
-DISABLE_CV_PIPELINE=${DISABLE_CV_PIPELINE:-true}
 
 MILVUS_DB_HOST="${MILVUS_DB_HOST:-127.0.0.1}"
 MILVUS_DB_PORT="${MILVUS_DB_PORT:-19530}"
@@ -283,12 +280,6 @@ start_via_server() {
         bash "$MODEL_PATH/install_prerequisites.sh"
     fi
     EXTRA_ARGS="$VSS_EXTRA_ARGS"
-    if [ $DISABLE_GUARDRAILS = true ]; then
-        EXTRA_ARGS+=" --disable-guardrails"
-    fi
-    if [ $DISABLE_CV_PIPELINE = true ]; then
-        EXTRA_ARGS+=" --disable-cv-pipeline"
-    fi
     if [ "$ENABLE_AUDIO" = true ]; then
         EXTRA_ARGS+=" --enable-audio"
     fi
