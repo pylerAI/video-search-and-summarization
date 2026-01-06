@@ -54,11 +54,7 @@ class NVilaContext:
         if self._model.num_time_tokens == 0:
             string_of_times = ""
             for t, frame_time in enumerate(self._video_frames_times[0]):
-                string_of_times += (
-                    f"<T{t}>"
-                    if self._chunks[0].file.startswith("rtsp://")
-                    else self._chunks[0].get_timestamp(frame_time)
-                )
+                string_of_times += self._chunks[0].get_timestamp(frame_time)
                 string_of_times += " "
             query = (
                 "These are frames sampled from the same video at times "

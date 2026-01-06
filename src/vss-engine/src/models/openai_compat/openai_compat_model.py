@@ -287,10 +287,7 @@ class CompOpenAIModel:
                     if tidx <= len(chunk):
                         string_timestamp = chunk[tidx].get_timestamp(video_frames_times_[j])
                         if not time_format_str:
-                            if chunk[tidx].file.startswith("rtsp://"):
-                                time_format_str = " at timestamps in RFC3339 format"
-                            else:
-                                time_format_str = " at timestamps in seconds"
+                            time_format_str = " at timestamps in seconds"
                     else:
                         logger.error("Chunk ID going out of chunk size")
                         string_timestamp = str(video_frames_times_[j])

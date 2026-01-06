@@ -500,52 +500,6 @@ class ViaStreamHandler:
         self._metrics.queries_pending.dec()
         req_info.status_event.set()
 
-
-    def _create_video_from_cached_frames(self, req_info):
-        def check_ffmpeg():
-            """Check if FFmpeg is installed."""
-            ffmpeg_path = shutil.which("ffmpeg_for_overlay_video")
-            return ffmpeg_path is not None
-
-        cached_frames_dir = f"/tmp/via/cached_frames/{req_info.request_id}"
-        video_path = f"{cached_frames_dir}/{req_info.request_id}.mp4"
-        images_path = f"{cached_frames_dir}/frame_*.jpg"
-        if os.path.exists(cached_frames_dir) and check_ffmpeg():
-            # BN TBD : Need better way to handle this
-            # calculate frame rate from number of frames and duration
-            frame_count = len([f for f in os.listdir(cached_frames_dir) if f.endswith(".jpg")])
-            frame_rate = frame_count / (req_info.file_duration / 1e9)
-            print(f"Creating cached frames video with frame rate {frame_rate}")
-            command = [
-                "ffmpeg_for_overlay_video",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-framerate",
-                str(frame_rate),
-                "-pattern_type",
-                "glob",
-                "-i",
-                images_path,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                video_path,
-            ]
-            try:
-                # Execute the command
-                subprocess.run(command, check=True)
-                print(f"Cached Frames Video created at {video_path}")
-                # Now delete all jpg files
-                [shutil.os.remove(f) for f in glob.glob(images_path)]
-                return video_path
-            except subprocess.CalledProcessError as e:
-                print(f"FFmpeg command failed: {e}")
-                return None
-        else:
-            return None
-
     def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo, coarse_idx: int = None):
         """Gather chunks processed by the pipeline and run any further post-processing"""
         # Per-chunk decode latency and OTEL tracing
