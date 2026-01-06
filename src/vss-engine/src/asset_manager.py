@@ -29,7 +29,7 @@ AGE_OUT_RUN_INTERVAL_SEC = 300
 
 
 class Asset:
-    """VIA Asset. Can be a file or a live stream."""
+    """VIA Asset."""
 
     def __init__(
         self,
@@ -39,27 +39,19 @@ class Asset:
         media_type: str,
         asset_dir: str,
         fileName="",
-        username="",
-        password="",
-        description="",
         video_fps=None,
-        camera_id="",
     ) -> None:
         """Asset constructor.
 
         Args:
             asset_id: Unique ID for the asset
-            path: Path for the asset. Path to the file or RTSP URL
+            path: Path to the file.
             purpose: Purpose of the file.
             media_type: Media Type (video/image) of the file.
             asset_dir: Directory where the asset information and other files related
                        to the asset are stored.
             fileName (optional): Name of the file. Defaults to "".
-            username (optional): Username to access the live stream. Defaults to "".
-            password (optional): Password to access the live stream. Defaults to "".
-            description (optional): Description of the asset (live-stream only). Defaults to "".
             video_fps (optional): Cached video FPS. Defaults to None.
-            camera_id (optional): Camera ID to be used for the asset. Defaults to "".
         """
         self._asset_id = asset_id
         self._filename = fileName
@@ -68,11 +60,7 @@ class Asset:
         self._path = path
         self._use_count = 0
         self._asset_dir = asset_dir
-        self._description = description
-        self._username = username
-        self._password = password
         self._video_fps = video_fps
-        self._camera_id = camera_id
 
     @classmethod
     def fromdir(cls, asset_dir):
@@ -85,12 +73,8 @@ class Asset:
                 fileName=info.get("fileName", ""),
                 purpose=info.get("purpose", "vision"),
                 media_type=info.get("media_type", "video"),
-                username=info.get("username", ""),
-                password=info.get("password", ""),
-                description=info.get("description", ""),
                 asset_dir=asset_dir,
                 video_fps=info.get("video_fps", None),
-                camera_id=info.get("camera_id", ""),
             )
 
     @property
@@ -115,33 +99,13 @@ class Asset:
 
     @property
     def path(self):
-        """Path to the file / live stream URL"""
+        """Path to the file"""
         return self._path
-
-    @property
-    def description(self):
-        """Description of the asset (live-stream only)"""
-        return self._description
-
-    @property
-    def username(self):
-        """Username to access the live stream"""
-        return self._username
-
-    @property
-    def password(self):
-        """Password to access the live stream"""
-        return self._password
 
     @property
     def asset_dir(self):
         """Storage directory for the asset"""
         return self._asset_dir
-
-    @property
-    def camera_id(self):
-        """Camera ID to be used for the asset"""
-        return self._camera_id
 
     def lock(self):
         """Lock the asset. Asset cannot be deleted if in use."""
@@ -182,7 +146,7 @@ class Asset:
 
 
 class AssetManager:
-    """VIA Asset Manager. Responsible for managing the assets - files & live streams
+    """VIA Asset Manager. Responsible for managing the assets (files)
     added to the backend server."""
 
     def __init__(
@@ -302,14 +266,13 @@ class AssetManager:
                 raise e
             raise ViaException("Could not save asset file")
 
-    def add_file(self, file_path, purpose, media_type, camera_id="", reuse_asset=False):
+    def add_file(self, file_path, purpose, media_type, reuse_asset=False):
         """Add a file already on the file system as a path.
 
         Args:
             file_path: Path of the file to add.
             purpose: Purpose of the file.
             media_type: Media type (video/image) of the file.
-            camera_id: Camera ID to be used for the file.
             reuse_asset: Whether to reuse an existing asset.
         Returns:
             A unique id for the asset.
@@ -343,11 +306,7 @@ class AssetManager:
                     "fileName": os.path.basename(file_path),
                     "purpose": purpose,
                     "media_type": media_type,
-                    "username": "",
-                    "password": "",
-                    "description": "",
                     "video_fps": None,
-                    "camera_id": camera_id,
                 },
                 f,
             )

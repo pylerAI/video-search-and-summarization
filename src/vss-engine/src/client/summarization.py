@@ -26,7 +26,7 @@ from gradio_videotimeline import VideoTimeline
 from pyaml_env import parse_config
 from utils import MediaFileInfo
 
-from .ui_utils import validate_camera_id, validate_question
+from .ui_utils import validate_question
 
 STANDALONE_MODE = True
 pipeline_args = None
@@ -40,7 +40,6 @@ DEFAULT_VIA_TARGET_USECASE_EVENT_DURATION = 10  # in seconds
 dummy_mr = """
 #### just to create the space
 """
-column_names = ["Alert Name", "Event(s) [comma separated]", "", ""]
 
 USER_AVATAR_ICON = tempfile.NamedTemporaryFile()
 USER_AVATAR_ICON.write(
@@ -114,7 +113,6 @@ async def remove_all_media(session: aiohttp.ClientSession, media_ids):
 
 async def add_assets(
     gr_video,
-    camera_id,
     chatbot,
     image_mode,
     dc_json_path,
@@ -170,7 +168,6 @@ async def add_assets(
                 url,
                 data={
                     "filename": media_path,
-                    "camera_id": camera_id,
                     "purpose": "vision",
                     "media_type": "video",
                 },
@@ -252,7 +249,6 @@ async def close_asset(chatbot, question_textbox, video, media_ids, image_mode):
     chatbot = []
     yield (
         chatbot,
-        gr.update(interactive=False, value=""),  # camera_id, , , , ,
         gr.update(interactive=False, value=""),  # question_textbox
         gr.update(interactive=False),  # ask_button
         gr.update(interactive=False),  # reset_chat_button
@@ -264,8 +260,6 @@ async def close_asset(chatbot, question_textbox, video, media_ids, image_mode):
         ),  # summarize_button
         gr.update(interactive=True, value=True),  # summarize_checkbox
         gr.update(interactive=True),  # chat_button
-        None,  # output_alerts
-        gr.update(value=[[""] * 4] * 10, headers=column_names),  # alerts_table,
         gr.update(interactive=True, value=0),  # num_frames_per_chunk
         gr.update(interactive=True, value=0),  # vlm_input_width
         gr.update(interactive=True, value=0),  # vlm_input_height
@@ -457,12 +451,9 @@ async def summarize(
     request: gr.Request,
     summarize=True,
     enable_chat=True,
-    alerts_table=None,
-    enable_cv_metadata=False,
     num_frames_per_chunk=0,
     vlm_input_width=0,
     vlm_input_height=0,
-    cv_pipeline_prompt="",
     enable_audio=False,
 ):
     logger.info(f"summarize. ip: {request.client.host}")
@@ -524,54 +515,9 @@ async def summarize(
             req_json["summary_aggregation_prompt"] = summary_aggregation_prompt
         req_json["summarize"] = summarize
         req_json["enable_chat"] = enable_chat
-        req_json["enable_cv_metadata"] = enable_cv_metadata
-        if cv_pipeline_prompt:
-            req_json["cv_pipeline_prompt"] = cv_pipeline_prompt
         req_json["enable_audio"] = enable_audio
 
-        parsed_alerts = []
         accumulated_responses = []
-        past_alerts = []
-        if parsed_alerts:
-            output_alerts = get_output_string(
-                "Waiting for new alerts..." if past_alerts else "Waiting for alerts", past_alerts
-            )
-            yield (
-                chatbot,
-                output_alerts,
-                *[
-                    gr.update(),
-                ]
-                * 31,
-            )
-        else:
-            output_alerts = ""
-        collected_alerts = alerts_table[
-            alerts_table.apply(lambda row: not row.eq("").any(), axis=1)
-        ].to_csv(sep=":", index=False, columns=column_names[:-2], header=False, lineterminator=";")
-        logger.debug(f"Collected alerts: {collected_alerts}")
-        for alert in collected_alerts.split(";"):
-            alert = alert.strip()
-            if not alert:
-                continue
-            try:
-                alert_name, events = [word.strip() for word in alert.split(":")]
-                assert alert_name
-                assert events
-
-                parsed_events = [ev.strip() for ev in events.split(",") if ev.strip()]
-                assert parsed_events
-            except Exception:
-                raise gr.Error(f"Failed to parse alert '{alert}'") from None
-            parsed_alerts.append(
-                {
-                    "type": "alert",
-                    "alert": {"name": alert_name, "events": parsed_events},
-                }
-            )
-            logger.debug(f"parsed_alerts: {parsed_alerts}")
-        if parsed_alerts:
-            req_json["tools"] = parsed_alerts
 
         async with session.post(appConfig["backend"] + "/summarize", json=req_json) as resp:
             if resp.status >= 400:
@@ -605,33 +551,6 @@ async def summarize(
                 if response["usage"]:
                     usage = response["usage"]
                 request_id = response["id"]
-                if (
-                    parsed_alerts
-                    and response["choices"]
-                    and response["choices"][0]["finish_reason"] == "tool_calls"
-                ):
-                    alert = response["choices"][0]["message"]["tool_calls"][0]["alert"]
-                    alert_str = (
-                        f"Alert Name: {alert['name']}\n"
-                        f"Detected Events: {', '.join(alert['detectedEvents'])}\n"
-                        f"Time: {alert['offset']} seconds\n"
-                        f"Details: {alert['details']}\n"
-                    )
-                    past_alerts = past_alerts[int(len(past_alerts) / 99) :] + (
-                        [alert_str] if alert_str else []
-                    )
-                    output_alerts = get_output_string(
-                        "Waiting for new alerts..." if past_alerts else "Waiting for alerts",
-                        past_alerts,
-                    )
-                    yield (
-                        chatbot,
-                        output_alerts,
-                        *[
-                            gr.update(),
-                        ]
-                        * 31,
-                    )
 
         if len(accumulated_responses) == 1:
             response_str = accumulated_responses[0]["choices"][0]["message"]["content"]
@@ -675,12 +594,8 @@ async def summarize(
             ]
         # await remove_all_media(session, media_ids)
 
-        if parsed_alerts and not past_alerts:
-            output_alerts = "No alerts were generated for this input media"
-
         yield (
             chatbot,
-            output_alerts,
             gr.update(interactive=False),
             *[
                 gr.update(interactive=True),
@@ -820,7 +735,6 @@ def get_example_details(f):
         dc_path = str(f) + ".dc.json"
 
     # set default
-    cv_pipeline_prompt = "person . forklift . robot . fire . spill"
 
     try:
         if Path(str(f) + ".prompts.json").exists():
@@ -829,7 +743,6 @@ def get_example_details(f):
                 prompt = prompts["prompt"]
                 caption_summarization_prompt = prompts["caption_summarization_prompt"]
                 summary_aggregation_prompt = prompts["summary_aggregation_prompt"]
-                cv_pipeline_prompt = prompts["cv_pipeline_prompt"]
     except Exception:
         pass
 
@@ -838,7 +751,6 @@ def get_example_details(f):
         prompt,
         caption_summarization_prompt,
         summary_aggregation_prompt,
-        cv_pipeline_prompt,
     )
 
 
@@ -880,19 +792,9 @@ def build_summarization(args, app_cfg, logger_):
                     sources=["upload"],
                     show_download_button=False,
                 )
-                camera_id = gr.Textbox(
-                    label="Video ID (Optional)",
-                    info=(
-                        "Can be used in the prompt to identify the video; "
-                        "prefix with 'camera_' or 'video_'"
-                    ),
-                    show_label=True,
-                    visible=True,
-                )
             else:
                 video = gr.Gallery(show_label=False, type="filepath")
                 chunk_size = gr.State(0)
-                camera_id = gr.Textbox(visible=False)  # Adding for consistency in image mode
             display_image = gr.Image(visible=False, type="filepath")
 
             stream_name = gr.Textbox(show_label=False, visible=False)
@@ -973,26 +875,6 @@ def build_summarization(args, app_cfg, logger_):
                             and bool(os.environ.get("ENABLE_AUDIO", "false").lower() == "true"),
                         )
 
-                        enable_cv_metadata = gr.Checkbox(
-                            value=False,
-                            label="Enable CV Metadata",
-                            visible=not args.image_mode
-                            and bool(
-                                os.environ.get("DISABLE_CV_PIPELINE", "true").lower() == "false"
-                            ),
-                        )
-
-                        cv_pipeline_prompt = gr.TextArea(
-                            label="CV PIPELINE PROMPT (OPTIONAL)",
-                            lines=1,
-                            max_lines=1,
-                            value="person . forklift . robot . fire . spill ",
-                            visible=not args.image_mode
-                            and bool(
-                                os.environ.get("DISABLE_CV_PIPELINE", "true").lower() == "false"
-                            ),
-                        )
-
                 with gr.Tab("Samples"):
                     gr.Examples(
                         examples=[
@@ -1013,207 +895,13 @@ def build_summarization(args, app_cfg, logger_):
                             summary_prompt,
                             caption_summarization_prompt,
                             summary_aggregation_prompt,
-                            cv_pipeline_prompt,
                             # graph_rag_prompt_yaml,
-                        ],
-                        label="SELECT A SAMPLE",
-                        elem_id="example",
-                    )
+                    ],
+                    label="SELECT A SAMPLE",
+                    elem_id="example",
+                )
 
-                with gr.Tab("Create Alerts"):
-
-                    with gr.Row():
-                        add_alert_btn = gr.Button(
-                            "Add Alert", size="sm", interactive=True, variant="primary"
-                        )
-
-                    alerts_table = gr.Dataframe(
-                        headers=column_names,
-                        datatype=["str", "str", "str", "str"],
-                        row_count=10,
-                        col_count=(4, "fixed"),
-                        interactive=False,
-                        elem_classes=["white-background", "alerts-table"],
-                    )
-
-                    # Hidden elements for the popup
-                    with gr.Column(visible=False, elem_classes="popup") as popup:
-                        popup_title = gr.Markdown("### Add New Alert")  # Dynamic title
-                        alert_name = gr.Textbox(
-                            label="Alert Name",
-                            placeholder="Enter alert name...",
-                            elem_classes=["white-background"],
-                        )
-                        alert_events = gr.Textbox(
-                            label="Event(s)",
-                            placeholder="Enter comma-separated events...",
-                            elem_classes=["white-background"],
-                        )
-                        with gr.Row():
-                            cancel_btn = gr.Button("Cancel", size="sm")
-                            save_btn = gr.Button(
-                                "Save", size="sm", variant="primary", interactive=False
-                            )
-
-                    # State to store table data
-                    table_state = gr.State([[]])
-                    edit_index = gr.State(None)
-
-                    def show_popup(is_edit=False):
-                        return [
-                            gr.update(visible=True),  # popup
-                            gr.update(interactive=False),  # add_alert_btn
-                            gr.update(
-                                value="### Edit Alert" if is_edit else "### Add New Alert"
-                            ),  # popup_title
-                        ]
-
-                    def hide_popup():
-                        return [
-                            gr.update(visible=False),  # popup
-                            gr.update(interactive=True),  # add_alert_btn
-                            gr.update(value=""),  # alert_name
-                            gr.update(value=""),  # alert_events
-                            None,  # edit_index
-                            gr.update(value="### Add New Alert"),  # popup_title
-                        ]
-
-                    def show_edit_popup(evt: gr.SelectData, current_data):
-                        try:
-                            row_idx = int(evt.index[0])
-                            col_idx = int(evt.index[1])
-                            logger.debug(f"row_idx: {row_idx}, col_idx: {col_idx}")
-
-                            # Only process if we have data and click is in edit/delete columns
-                            if (
-                                current_data[0]
-                                and row_idx < len(current_data[0])
-                                and col_idx in [2, 3]
-                            ):  # Edit or Delete columns
-
-                                if col_idx == 2 and evt.value == "Edit":  # Edit column
-                                    row_data = current_data[0][row_idx]
-                                    return [
-                                        gr.update(visible=True),  # popup
-                                        gr.update(interactive=False),  # add_alert_btn
-                                        gr.update(value=row_data[0]),  # alert_name
-                                        gr.update(value=row_data[1]),  # alert_events
-                                        row_idx,  # edit_index
-                                        gr.update(value="### Edit Alert"),  # popup_title
-                                    ]
-                        except (IndexError, ValueError, TypeError) as e:
-                            logger.error(f"Error in show_edit_popup: {e}")
-                            pass
-
-                        return [
-                            gr.update(),
-                            gr.update(),
-                            gr.update(),
-                            gr.update(),
-                            None,
-                            gr.update(),
-                        ]
-
-                    def save_alert(alert_name, alert_events, current_data, edit_idx):
-                        new_row = [alert_name, alert_events, "Edit", "X"]
-                        updated_data = current_data[0].copy() if current_data[0] else []
-
-                        if edit_idx is not None:
-                            # Editing existing row
-                            updated_data[edit_idx] = new_row
-                        else:
-                            # Adding new row
-                            updated_data.append(new_row)
-
-                        return [updated_data], gr.update(value=updated_data, headers=column_names)
-
-                    def delete_row(evt: gr.SelectData, current_data):
-                        try:
-                            row_idx = int(evt.index[0])
-                            col_idx = int(evt.index[1])
-                            logger.debug(f"row_idx: {row_idx}, col_idx: {col_idx}")
-
-                            # Only process if we have data and click is in delete column
-                            if (
-                                current_data[0]
-                                and row_idx < len(current_data[0])
-                                and col_idx == 3
-                                and evt.value == "X"
-                            ):
-
-                                updated_data = (
-                                    current_data[0][:row_idx] + current_data[0][row_idx + 1 :]
-                                )
-                                return [updated_data], gr.update(
-                                    value=updated_data, headers=column_names
-                                )
-                        except (IndexError, ValueError, TypeError) as e:
-                            logger.error(f"Error in delete_row: {e}")
-                            pass
-
-                        return current_data, gr.update()
-
-                    # Event handlers
-                    add_alert_btn.click(show_popup, outputs=[popup, add_alert_btn, popup_title])
-
-                    cancel_btn.click(
-                        hide_popup,
-                        outputs=[
-                            popup,
-                            add_alert_btn,
-                            alert_name,
-                            alert_events,
-                            edit_index,
-                            popup_title,
-                        ],
-                    )
-
-                    def update_save_button(alert_name, alert_events):
-                        # Enable save button only if both fields have content
-                        return gr.update(interactive=bool(alert_name and alert_events))
-
-                    # Add input handlers to check fields
-                    alert_name.change(
-                        update_save_button, inputs=[alert_name, alert_events], outputs=[save_btn]
-                    )
-                    alert_events.change(
-                        update_save_button, inputs=[alert_name, alert_events], outputs=[save_btn]
-                    )
-                    save_btn.click(
-                        save_alert,
-                        inputs=[alert_name, alert_events, table_state, edit_index],
-                        outputs=[table_state, alerts_table],
-                    ).success(
-                        hide_popup,
-                        outputs=[
-                            popup,
-                            add_alert_btn,
-                            alert_name,
-                            alert_events,
-                            edit_index,
-                            popup_title,
-                        ],
-                    )
-
-                    # Add click handlers for edit and delete
-                    alerts_table.select(
-                        show_edit_popup,
-                        inputs=[table_state],
-                        outputs=[
-                            popup,
-                            add_alert_btn,
-                            alert_name,
-                            alert_events,
-                            edit_index,
-                            popup_title,
-                        ],
-                    )
-
-                    alerts_table.select(
-                        delete_row, inputs=[table_state], outputs=[table_state, alerts_table]
-                    )
-
-            summarize_button = gr.Button(
+        summarize_button = gr.Button(
                 interactive=False,
                 value=f"Select/Upload {'image(s)' if args.image_mode else 'video'} to summarize",
                 variant="primary",
@@ -1265,14 +953,10 @@ def build_summarization(args, app_cfg, logger_):
                             label="Ask a question",
                             interactive=False,
                             scale=3,
-                        )
-                        with gr.Column(scale=1):
-                            ask_button = gr.Button("Ask", interactive=False)
-                            reset_chat_button = gr.Button("Reset Chat", interactive=False)
-                with gr.Tab("ALERTS"):
-                    output_alerts = gr.TextArea(
-                        interactive=False, max_lines=30, lines=30, show_label=False
                     )
+                    with gr.Column(scale=1):
+                        ask_button = gr.Button("Ask", interactive=False)
+                        reset_chat_button = gr.Button("Reset Chat", interactive=False)
 
     # Add popup container
     with gr.Column(visible=False, elem_classes="modal-container") as popup_container:
@@ -1634,14 +1318,9 @@ def build_summarization(args, app_cfg, logger_):
     )
 
     summarize_button.click(
-        validate_camera_id,
-        inputs=[camera_id],
-        outputs=[],
-    ).success(
         add_assets,
         inputs=[
             video,
-            camera_id,
             chatbot,
             gr.State(args.image_mode),
             dc_json_path,
@@ -1663,11 +1342,9 @@ def build_summarization(args, app_cfg, logger_):
             summary_prompt,
             caption_summarization_prompt,
             summary_aggregation_prompt,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
             summarize_top_p,
             summarize_temperature,
@@ -1710,17 +1387,13 @@ def build_summarization(args, app_cfg, logger_):
             rag_top_k,
             summarize_checkbox,  # summarize
             chat_checkbox,  # enable_chat
-            alerts_table,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
         ],
         outputs=[
             chatbot,
-            output_alerts,
             summarize_button,
             summarize_checkbox,
             chat_checkbox,
@@ -1734,11 +1407,9 @@ def build_summarization(args, app_cfg, logger_):
             summary_prompt,
             caption_summarization_prompt,
             summary_aggregation_prompt,
-            enable_cv_metadata,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
-            cv_pipeline_prompt,
             enable_audio,
             summarize_top_p,
             summarize_temperature,
@@ -1823,15 +1494,13 @@ def build_summarization(args, app_cfg, logger_):
     video.change(
         video_changed,
         inputs=[video, gr.State(args.image_mode)],
-        outputs=[summarize_button, chunk_size, alerts_table, table_state],
+        outputs=[summarize_button, chunk_size],
     )
     video.upload(
         fn=enable_button,
         inputs=[video],
         outputs=[
             summarize_button,
-            alerts_table,
-            table_state,
         ],
     )
 
@@ -1857,7 +1526,6 @@ def build_summarization(args, app_cfg, logger_):
         inputs=[chatbot, question_textbox, video, media_ids, gr.State(args.image_mode)],
         outputs=[
             chatbot,
-            camera_id,
             question_textbox,
             ask_button,
             reset_chat_button,
@@ -1866,8 +1534,6 @@ def build_summarization(args, app_cfg, logger_):
             summarize_button,
             summarize_checkbox,
             chat_checkbox,
-            output_alerts,
-            alerts_table,
             num_frames_per_chunk,
             vlm_input_width,
             vlm_input_height,
@@ -1888,6 +1554,5 @@ def build_summarization(args, app_cfg, logger_):
             rag_batch_size,
             rag_top_k,
             display_image,
-            table_state,
         ],
     )

@@ -22,12 +22,10 @@ import sys
 import time
 from typing import Dict
 
-from alert_review_benchmark import AlertReviewBenchmark
 from base import BenchmarkBase
 from chat_completions_benchmark import ChatCompletionsBenchmark
 from dotenv import load_dotenv
 from file_burst_benchmark import FileBurstBenchmark
-from live_streams_benchmark import LiveStreamsBenchmark
 from single_file_benchmark import SingleFileBenchmark
 from vlm_captions_benchmark import VlmCaptionsBenchmark
 
@@ -38,8 +36,6 @@ logger = logging.getLogger(__name__)
 BENCHMARK_REGISTRY = {
     "single_file": SingleFileBenchmark,
     "file_burst": FileBurstBenchmark,
-    "max_live_streams": LiveStreamsBenchmark,
-    "alert_review_burst": AlertReviewBenchmark,
     "vlm_captions_burst": VlmCaptionsBenchmark,
     "chat_completions_burst": ChatCompletionsBenchmark,
 }

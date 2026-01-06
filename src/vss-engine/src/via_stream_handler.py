@@ -98,7 +98,6 @@ class RequestInfo:
         self.assets: list[Asset] = None
         self.status = RequestInfo.Status.QUEUED
         self.status_event = Event()
-        self.summary_duration = 0
         self.caption_summarization_prompt = ""
         self.summary_aggregation_prompt = ""
         self.graph_rag_prompt_yaml = ""
@@ -130,8 +129,6 @@ class RequestInfo:
         self.graph_db = None
         self.enable_cot = False
         self.enable_image = False
-        self.alert_review = False
-        self.camera_id = ""
         # OTEL spans
         self._e2e_span = None
         self.vlm_pipeline_span = None
@@ -163,10 +160,6 @@ class DCSerializer:
                                 "pts_offset_ns": vlm_response.chunk.pts_offset_ns,
                                 "start_pts": vlm_response.chunk.start_pts,
                                 "end_pts": vlm_response.chunk.end_pts,
-                                "start_ntp": vlm_response.chunk.start_ntp,
-                                "end_ntp": vlm_response.chunk.end_ntp,
-                                "start_ntp_float": vlm_response.chunk.start_ntp_float,
-                                "end_ntp_float": vlm_response.chunk.end_ntp_float,
                                 "is_first": vlm_response.chunk.is_first,
                                 "is_last": vlm_response.chunk.is_last,
                                 "asset_dir": vlm_response.chunk.asset_dir,
@@ -192,10 +185,6 @@ class DCSerializer:
                     chunk_info.pts_offset_ns = data["chunk"]["pts_offset_ns"]
                     chunk_info.start_pts = data["chunk"]["start_pts"]
                     chunk_info.end_pts = data["chunk"]["end_pts"]
-                    chunk_info.start_ntp = data["chunk"]["start_ntp"]
-                    chunk_info.end_ntp = data["chunk"]["end_ntp"]
-                    chunk_info.start_ntp_float = data["chunk"]["start_ntp_float"]
-                    chunk_info.end_ntp_float = data["chunk"]["end_ntp_float"]
                     chunk_info.is_first = data["chunk"]["is_first"]
                     chunk_info.is_last = data["chunk"]["is_last"]
                     vlm_response = VlmChunkResponse()
@@ -211,12 +200,6 @@ class DCSerializer:
             logger.warning("read from json exception", str(e))
         return request_info
 
-
-def ntp_to_unix_timestamp(ntp_ts):
-    """Convert an RFC3339 timestamp string to a UNIX timestamp(float)"""
-    return (
-        datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
-    )
 
 def segment_to_meta(req_info: RequestInfo, coarse_idx: int):
     if req_info.chunk_type != "segment":
@@ -248,11 +231,6 @@ class ViaStreamHandler:
             self.queries_pending = prom.Gauge(
                 "video_file_queries_pending",
                 "Number of video file queries which are queued and yet to be processed",
-            )
-
-            self.active_live_streams = prom.Gauge(
-                "active_live_streams",
-                "Number of live streams whose summaries are being actively generated",
             )
 
             self.system_uptime = prom.Gauge(
@@ -364,22 +342,9 @@ class ViaStreamHandler:
                 "Latest ASR pipeline processing latency in seconds",
             )
 
-            self.live_stream_summary_latency = prom.Histogram(
-                "live_stream_summary_latency_seconds",
-                "Live stream summary processing latency in seconds",
-                buckets=[10.0, 15.0, 20.0, 30.0, 40.0, 50.0, 70.0, 100.0, 200, 300, 500, 1000],
-            )
-
-            self.live_stream_captions_latency = prom.Histogram(
-                "live_stream_captions_latency_seconds",
-                "Live stream captions processing latency in seconds",
-                buckets=[10.0, 15.0, 20.0, 30.0, 40.0, 50.0, 70.0, 100.0, 200, 300, 500, 1000],
-            )
-
         def unregister(self):
             prom.REGISTRY.unregister(self.queries_processed)
             prom.REGISTRY.unregister(self.queries_pending)
-            prom.REGISTRY.unregister(self.active_live_streams)
             prom.REGISTRY.unregister(self.system_uptime)
             prom.REGISTRY.unregister(self.decode_latency)
             prom.REGISTRY.unregister(self.vlm_latency)
@@ -396,8 +361,6 @@ class ViaStreamHandler:
             prom.REGISTRY.unregister(self.asr_pipeline_latency)
             prom.REGISTRY.unregister(self.asr_pipeline_latency_latest)
             prom.REGISTRY.unregister(self.stream_fps_histogram)
-            prom.REGISTRY.unregister(self.live_stream_summary_latency)
-            prom.REGISTRY.unregister(self.live_stream_captions_latency)
 
     def __init__(self, args) -> None:
         """Initialize the VIA Stream Handler"""
@@ -433,10 +396,6 @@ class ViaStreamHandler:
         self._ctx_mgr_pool = []
         self.NUM_CA_RAG_PROCESSES_LAUNCH = 10
         self.num_ctx_mgr = 0
-        self.MAX_STREAMS = self._args.max_live_streams
-
-        self._LLMRailsPool = []
-        self._rails_config = None
 
         self._vlm_pipeline = VlmPipeline(args.asset_dir, args)
 
@@ -473,12 +432,6 @@ class ViaStreamHandler:
             # Create ctx mgr pool only if the pool is empty
             if len(self._ctx_mgr_pool) > 0:
                 return
-            if self.num_ctx_mgr >= self.MAX_STREAMS:
-                raise ViaException(
-                    "Server is already processing maximum number of live streams"
-                    f" ({self._args.max_live_streams})",
-                    503,
-                )
             logger.info(
                 f"Context Manager Process Pool is empty, adding new processes from index \
                       {self.num_ctx_mgr}"
@@ -489,29 +442,22 @@ class ViaStreamHandler:
                 )
                 os.environ["CA_RAG_ENABLE_WARMUP"] = "false"
                 self.num_ctx_mgr = self.num_ctx_mgr + 1
-                if self.num_ctx_mgr >= self.MAX_STREAMS:
-                    return
 
     def _process_output(
         self,
         req_info: RequestInfo,
-        is_live_stream_ended: bool,
         chunk_responses: list[VlmChunkResponse],
     ):
         new_response = []
-        if (
-            not is_live_stream_ended
-            and req_info.status != RequestInfo.Status.FAILED
-            and not req_info.alert_review
-        ):
+        if req_info.status != RequestInfo.Status.FAILED:
             try:
                 new_response = self._get_aggregated_summary(req_info, chunk_responses)
             except Exception as ex:
                 logger.error("".join(traceback.format_exception(ex)))
                 req_info.response += [
                     RequestInfo.Response(
-                        chunk_responses[0].chunk.start_ntp,
-                        chunk_responses[-1].chunk.end_ntp,
+                        chunk_responses[0].chunk.start_pts / 1e9,
+                        chunk_responses[-1].chunk.end_pts / 1e9,
                         "Summarization failed",
                     )
                 ]
@@ -553,52 +499,6 @@ class ViaStreamHandler:
         self._metrics.queries_processed.inc()
         self._metrics.queries_pending.dec()
         req_info.status_event.set()
-
-
-    def _create_video_from_cached_frames(self, req_info):
-        def check_ffmpeg():
-            """Check if FFmpeg is installed."""
-            ffmpeg_path = shutil.which("ffmpeg_for_overlay_video")
-            return ffmpeg_path is not None
-
-        cached_frames_dir = f"/tmp/via/cached_frames/{req_info.request_id}"
-        video_path = f"{cached_frames_dir}/{req_info.request_id}.mp4"
-        images_path = f"{cached_frames_dir}/frame_*.jpg"
-        if os.path.exists(cached_frames_dir) and check_ffmpeg():
-            # BN TBD : Need better way to handle this
-            # calculate frame rate from number of frames and duration
-            frame_count = len([f for f in os.listdir(cached_frames_dir) if f.endswith(".jpg")])
-            frame_rate = frame_count / (req_info.file_duration / 1e9)
-            print(f"Creating cached frames video with frame rate {frame_rate}")
-            command = [
-                "ffmpeg_for_overlay_video",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-framerate",
-                str(frame_rate),
-                "-pattern_type",
-                "glob",
-                "-i",
-                images_path,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                video_path,
-            ]
-            try:
-                # Execute the command
-                subprocess.run(command, check=True)
-                print(f"Cached Frames Video created at {video_path}")
-                # Now delete all jpg files
-                [shutil.os.remove(f) for f in glob.glob(images_path)]
-                return video_path
-            except subprocess.CalledProcessError as e:
-                print(f"FFmpeg command failed: {e}")
-                return None
-        else:
-            return None
 
     def _on_vlm_chunk_response(self, response: VlmChunkResponse, req_info: RequestInfo, coarse_idx: int = None):
         """Gather chunks processed by the pipeline and run any further post-processing"""
@@ -707,7 +607,6 @@ class ViaStreamHandler:
                     },
                 )
 
-        self._update_stream_fps(response, req_info)
         chunk = response.chunk
         vlm_response = response.vlm_response
         # frame_times = response.frame_times
@@ -725,8 +624,7 @@ class ViaStreamHandler:
 
         if response.error:
             # Error was encountered while processing a chunk,
-            # mark the request as failed for files
-            # For live streams, continue processing new chunks
+            # mark the request as failed
             req_info.status = RequestInfo.Status.FAILED
             req_info.error_message = response.error
             self._vlm_pipeline.abort_chunks(req_info.assets[0].asset_id)
@@ -757,7 +655,6 @@ class ViaStreamHandler:
                                 vars(chunk)
                                 | {
                                     "uuid": req_info.stream_id,
-                                    "camera_id": req_info.camera_id,
                                     "source": "uniform",
                                 }
                             ),
@@ -797,7 +694,6 @@ class ViaStreamHandler:
                                     vars(chunk)
                                     | {
                                         "uuid": req_info.stream_id,
-                                        "camera_id": req_info.camera_id,
                                         "source": "uniform",
                                     }
                                 ),
@@ -831,7 +727,6 @@ class ViaStreamHandler:
                             {
                                 "ingestion_function": {
                                     "uuid": req_info.stream_id,
-                                    "camera_id": req_info.camera_id,
                                 },
                             }
                         )
@@ -866,8 +761,6 @@ class ViaStreamHandler:
             nvtx.end_range(req_info.nvtx_vlm_start)
             cur_time = time.time()
 
-            self._finalize_stream_fps_tracking(req_info)
-
             if req_info.status == RequestInfo.Status.FAILED:
                 self._vlm_pipeline.abort_chunks_done(req_info.assets[0].asset_id)
             else:
@@ -876,8 +769,7 @@ class ViaStreamHandler:
                     req_info.request_id,
                     cur_time - req_info.start_time,
                 )
-                if not req_info.alert_review:
-                    logger.info("Generating summary for request %s", req_info.request_id)
+                logger.info("Generating summary for request %s", req_info.request_id)
 
                 if req_info._health_summary:
                     latency = cur_time - req_info.start_time
@@ -895,7 +787,7 @@ class ViaStreamHandler:
             # Queue for getting the aggregated summary
             if req_info._output_process_thread_pool:
                 req_info._output_process_thread_pool.submit(
-                    self._process_output, req_info, False, req_info.processed_chunk_list
+                    self._process_output, req_info, req_info.processed_chunk_list
                 )
                 req_info._output_process_thread_pool.shutdown(wait=False)
 
@@ -919,9 +811,6 @@ class ViaStreamHandler:
                 req_info.vlm_pipeline_span = tracer.start_span("VLM Pipeline Latency")
                 req_info.vlm_pipeline_span.set_attribute("request_id", req_info.request_id)
                 req_info.vlm_pipeline_span.set_attribute("stream_id", req_info.stream_id)
-
-        # Start FPS tracking for this stream
-        self._start_stream_fps_tracking(req_info)
 
         # Trigger collecting VIA GPU health metrics
         self.start_via_gpu_monitor(req_info)
@@ -1053,7 +942,6 @@ class ViaStreamHandler:
             req_info.progress = 100
             req_info.end_time = time.time()
             req_info.response = []
-            self._finalize_stream_fps_tracking(req_info)
         req_info.nvtx_vlm_start = nvtx.start_range(
             message="VLM Pipeline-" + str(req_info.request_id), color="green"
         )
@@ -1274,7 +1162,6 @@ class ViaStreamHandler:
         assets: list[Asset],
         query: SummarizationQuery,
         is_summarization=False,
-        skip_guardrails=False,
         skip_ca_rag=False,
         segment_file_path: str = None,
     ):
@@ -1350,7 +1237,6 @@ class ViaStreamHandler:
         req_info.vlm_request_params.vlm_generation_config = vlm_generation_config
         req_info.assets = assets
         req_info.stream_id = req_info.assets[0].asset_id
-        req_info.camera_id = req_info.assets[0].camera_id
         req_info.start_timestamp = (
             query.media_info.start_offset
             if query.media_info and query.media_info.type == "offset"
@@ -1482,7 +1368,7 @@ class ViaStreamHandler:
         return req_info.request_id
 
     def generate_vlm_captions(self, assets: list[Asset], query: SummarizationQuery):
-        """Run VLM captions generation on a file or RTSP stream.
+        """Run VLM captions generation on a file.
         This reuses the query function since they have identical logic.
         """
         # For VLM captions, we skip CA-RAG to get individual chunk responses
@@ -1820,7 +1706,6 @@ class ViaStreamHandler:
             if not req_info.enable_chat:
                 # If request for file summarization has completed
                 if (req_info.progress == 100):
-                    # If live stream ended
                     self.remove_request_ids(req_info.assets)
                     if req_info._ctx_mgr:
                         req_info._ctx_mgr.reset(
@@ -1881,7 +1766,7 @@ class ViaStreamHandler:
                     )
                     # Sort chunks based on their start times
                     chunk_responses.sort(
-                        key=lambda item: ntp_to_unix_timestamp(item.chunk.start_ntp)
+                        key=lambda item: item.chunk.start_pts
                     )
 
         if len(chunk_responses) == 0:
@@ -1913,7 +1798,6 @@ class ViaStreamHandler:
                         last_meta["is_last"] = True
                         last_meta["uuid"] = req_info.stream_id
                         last_meta["asset_dir"] = self._args.asset_dir
-                        last_meta["camera_id"] = req_info.camera_id
                         if req_info.chunk_type == "segment":
                             last_meta["source"] = "segment"
                             data = segment_to_meta(req_info, -1)
@@ -1959,7 +1843,6 @@ class ViaStreamHandler:
                                             },
                                             "ingestion_function": {
                                                 "uuid": req_info.stream_id,
-                                                "camera_id": req_info.camera_id,
                                             },
                                         }
                                     )
@@ -2008,7 +1891,6 @@ class ViaStreamHandler:
                                 {
                                     "ingestion_function": {
                                         "uuid": req_info.stream_id,
-                                        "camera_id": req_info.camera_id,
                                     },
                                 }
                             )
@@ -2078,22 +1960,10 @@ class ViaStreamHandler:
         VlmPipeline.populate_argument_parser(parser)
 
         parser.add_argument(
-            "--disable-guardrails",
-            action="store_true",
-            default=False,
-            help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
             "--enable-dev-dc-gen",
             action="store_true",
             default=False,
-            help="Disable NEMO Guardrails",
-        )
-        parser.add_argument(
-            "--guardrails-config",
-            type=str,
-            default="/opt/nvidia/via/guardrails_config",
-            help="NEMO Guardrails configuration",
+            help="Enable development DC generation",
         )
         parser.add_argument(
             "--max-file-duration",
@@ -2128,46 +1998,6 @@ class ViaStreamHandler:
         """Create a ThreadPoolExecutor with named threads"""
         return concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix=f"{prefix}-{str(uuid.uuid4())[:8]}"
-        )
-
-    def _start_stream_fps_tracking(self, req_info: RequestInfo):
-        """Start FPS tracking for a new stream."""
-        req_info._fps_start_time = time.time()
-        req_info._fps_frame_count = 0
-        req_info._fps_last_update_time = req_info._fps_start_time
-        req_info._fps_is_active = True
-        logger.debug(f"Started FPS tracking for stream: {req_info.request_id}")
-
-    def _update_stream_fps(self, response: VlmChunkResponse, req_info: RequestInfo):
-        """Update FPS tracking for a stream."""
-        if not req_info._fps_is_active:
-            return
-
-        if req_info.video_fps:
-            frame_count = int(req_info.chunk_size * req_info.video_fps)
-        else:
-            frame_count = (
-                len(response.frame_times)
-                if hasattr(response, "frame_times") and response.frame_times
-                else 0
-            )
-
-        req_info._fps_frame_count += frame_count
-        req_info._fps_last_update_time = time.time()
-
-        current_fps = self._get_request_fps(req_info)
-        self._metrics.stream_fps_histogram.observe(current_fps)
-
-    def _finalize_stream_fps_tracking(self, req_info: RequestInfo):
-        """Finalize FPS tracking for a completed stream."""
-        if not req_info._fps_is_active:
-            return
-
-        final_fps = self._get_request_fps(req_info)
-        self._metrics.stream_fps_histogram.observe(final_fps)
-        req_info._fps_is_active = False
-        logger.debug(
-            f"Finalized FPS tracking for stream {req_info.request_id}, final FPS: {final_fps:.2f}"
         )
 
     def _update_db_tool_param(self, ca_rag_config, db_tool_name, param_name, param_value):

@@ -24,13 +24,6 @@ def get_timestamp_str(ts):
     )
 
 
-def ntp_to_unix_timestamp(ntp_ts):
-    """Convert an RFC3339 timestamp string to a UNIX timestamp(float)"""
-    return (
-        datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
-    )
-
-
 def parse_time_str(time_str: str) -> int:
     """Convert 'MM:SS' or 'HH:MM:SS' to nanoseconds"""
     parts = time_str.split(":")
@@ -95,11 +88,8 @@ class FileSplitterSegment:
         self._last_pts_offset = 0
         self._last_chunkidx = 0
         self._loop = None
-        self._ntp_epoch = 0
-        self._ntp_pts = 0
         self._start_pts = start_pts
         self._end_pts = end_pts
-        self._base_ntp_time = 0
         self._got_error = False
         self._username = username
         self._password = password
@@ -130,10 +120,6 @@ class FileSplitterSegment:
                     info.pts_offset_ns = 0
                     info.start_pts = start_pts
                     info.end_pts = end_pts
-                    info.start_ntp = get_timestamp_str(self._base_ntp_time + start_pts / 1e9)
-                    info.end_ntp = get_timestamp_str(self._base_ntp_time + end_pts / 1e9)
-                    info.start_ntp_float = ntp_to_unix_timestamp(info.start_ntp)
-                    info.end_ntp_float = ntp_to_unix_timestamp(info.end_ntp)
                     self._on_new_chunk(info, coarse_idx)
                     chunkIdx += 1
                 coarse_idx += 1

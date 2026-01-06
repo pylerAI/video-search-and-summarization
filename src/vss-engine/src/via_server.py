@@ -69,14 +69,10 @@ from vss_api_models import (
     VlmQuery,
 )
 
-gi.require_version("GstRtsp", "1.0")  # isort:skip
-
 
 API_PREFIX = (
     "/v1" if os.environ.get("VSS_API_ENABLE_VERSIONING", "").lower() in ["true", "1"] else ""
 )
-
-ALERT_REVIEW_MEDIA_BASE_DIR = os.environ.get("ALERT_REVIEW_MEDIA_BASE_DIR", "")
 
 
 # Remove some default metrics reported by prometheus client.
@@ -120,7 +116,7 @@ class ViaServer:
         )
 
         self._async_executor = ThreadPoolExecutor(
-            max_workers=args.max_live_streams, thread_name_prefix="vss-async-worker"
+            max_workers=10, thread_name_prefix="vss-async-worker"
         )
 
         # Use FastAPI to implement the REST API
@@ -584,7 +580,7 @@ class ViaServer:
                 503: {
                     "model": ViaError,
                     "description": (
-                        "Server is busy processing another file / live-stream."
+                        "Server is busy processing another file."
                         " Client may try again in some time."
                     ),
                 },
@@ -661,18 +657,16 @@ class ViaServer:
 
             # 4. 로깅 (videoId 대신 assetIdList 사용)
             logger.info(
-                "Received summarize query, ids - %s (live-stream=%d), "
+                "Received summarize query, ids - %s, "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
-                "media-end-time=%r, camera_id = %s, enable_audio = %d",
+                "media-end-time=%r, enable_audio = %d",
                 ", ".join(assetIdList),
-                query.stream,
                 query.chunk_duration,
                 query.chunk_overlap_duration,
                 query.media_info and query.media_info.type,
                 media_info_start,
                 media_info_end,
-                query.camera_id,
                 query.enable_audio,
             )
 
@@ -768,7 +762,7 @@ class ViaServer:
                 503: {
                     "model": ViaError,
                     "description": (
-                        "Server is busy processing another file / live-stream."
+                        "Server is busy processing another file."
                         " Client may try again in some time."
                     ),
                 },
@@ -806,7 +800,6 @@ class ViaServer:
             if query.media_info:
                 # Extract user specified start/end time filter.
                 # For files, it is in terms of "offset" - start/end time in seconds
-                # For live stream, it is in terms of "timetamp" - start/end NTP timestamp.
                 if query.media_info.type == "offset":
                     media_info_start = query.media_info.start_offset
                     media_info_end = query.media_info.end_offset
@@ -815,7 +808,7 @@ class ViaServer:
                     media_info_end = query.media_info.end_timestamp
 
             logger.info(
-                "Received generate_vlm_captions query, id - %s (live-stream=%d), "
+                "Received generate_vlm_captions query, id - %s, "
                 "chunk_duration=%d, chunk_overlap_duration=%d, "
                 "media-offset-type=%s, media-start-time=%r, "
                 "media-end-time=%r, modelParams=%s, "
@@ -1003,7 +996,7 @@ class ViaServer:
                 503: {
                     "model": ViaError,
                     "description": (
-                        "Server is busy processing another file / live-stream."
+                        "Server is busy processing another file."
                         " Client may try again in some time."
                     ),
                 },

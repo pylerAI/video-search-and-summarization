@@ -33,34 +33,11 @@ TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{3})?
 FILE_NAME_PATTERN = r"^[A-Za-z0-9_.\- ]*$"
 PATH_PATTERN = r"^[A-Za-z0-9_.\-/ ]*$"
 DESCRIPTION_PATTERN = r'^[A-Za-z0-9_.\-"\' ,]*$'
-CAMERA_ID_PATTERN = r"^(?:camera_(\d+)|video_(\d+)|default)?$"
 UUID_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
 KEY_PATTERN = r"^[A-Za-z0-9]*$"
 ANY_CHAR_PATTERN = r"^(.|\n)*$"
-CV_PROMPT_PATTERN = r"^((([a-zA-Z0-9 ]+)(\s\.\s([a-zA-Z0-9 ]+))*)(;([0-9]*\.?[0-9]+))?)?$"
-
-DEFAULT_CALLBACK_JSON_TEMPLATE = (
-    "{ "
-    '"streamId": "{{ streamId }}", '
-    '"alertId": "{{ alertId }}", '
-    '"ntpTimestamp": "{{ ntpTimestamp }}", '
-    '"alertDetails": "{{ alertText }}", '
-    '"detectedEvents": {{ detectedEvents }}'
-    "}"
-)
-
-
-DEFAULT_CALLBACK_JSON_TEMPLATE = (
-    "{ "
-    '"streamId": "{{ streamId }}", '
-    '"alertId": "{{ alertId }}", '
-    '"ntpTimestamp": "{{ ntpTimestamp }}", '
-    '"alertDetails": "{{ alertText }}", '
-    '"detectedEvents": {{ detectedEvents }}'
-    "}"
-)
 
 
 # Common models
@@ -238,30 +215,6 @@ class MediaInfoOffset(ViaBaseModel):
     )
 
 
-class MediaInfoTimeStamp(ViaBaseModel):
-    """Media information using offset for live-streams."""
-
-    type: Literal["timestamp"] = Field(
-        description="Information about a segment of live-stream with start and end timestamp."
-    )
-    start_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to start processing from",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-    end_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to stop processing at",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T02:14:51.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-
-
 class ResponseType(str, Enum):
     """Query Response Type."""
 
@@ -290,57 +243,6 @@ class StreamOptions(ViaBaseModel):
         ),
         examples=[True, False],
     )
-
-
-class ChatCompletionToolType(str, Enum):
-    """Types of tools supported by VIA."""
-
-    ALERT = "alert"
-
-
-class AlertTool(ViaBaseModel):
-    """Alert tool configuration."""
-
-    name: str = Field(
-        description="Name for the alert tool",
-        pattern=ANY_CHAR_PATTERN,
-        max_length=256,
-    )
-    events: list[Annotated[str, Field(max_length=1024, pattern=ANY_CHAR_PATTERN)]] = Field(
-        description="List of events to trigger the alert for", max_length=100
-    )
-    callbackUrl: HttpUrl = Field(
-        description="URL to call when events are detected",
-        examples=["http://localhost:12000/vss-alert-callback"],
-        default=None,
-    )
-
-    callbackJsonTemplate: str = Field(
-        description=(
-            "JSON Template for the callback body. Supported placeholders:"
-            " {{streamId}}, {{alertId}}, {{ntpTimestamp}}, {{alertText}}, {{detectedEvents}}"
-        ),
-        max_length=1024,
-        default=DEFAULT_CALLBACK_JSON_TEMPLATE,
-        pattern=ANY_CHAR_PATTERN,
-    )
-
-    callbackToken: str = Field(
-        description="Bearer token to use when calling the callback URL",
-        default=None,
-        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
-        max_length=10000,
-        pattern=FILE_NAME_PATTERN,
-    )
-
-
-class ChatCompletionTool(ViaBaseModel):
-    """Configuration of the tool to be used as part of the request."""
-
-    type: ChatCompletionToolType = Field(
-        description="The type of the tool. Currently, only `alert` is supported."
-    )
-    alert: AlertTool
 
 
 class SummarizationQuery(ViaBaseModel):
@@ -492,23 +394,9 @@ class SummarizationQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
 
     user: str = Field(
@@ -550,12 +438,6 @@ class SummarizationQuery(ViaBaseModel):
         pattern=ANY_CHAR_PATTERN,
     )
 
-    tools: list[ChatCompletionTool] = Field(
-        default=[],
-        description="List of tools for the current summarization request",
-        max_length=100,
-    )
-
     summarize: bool = Field(
         default=None,
         description="Enable summarization for the group of chunks",
@@ -566,17 +448,6 @@ class SummarizationQuery(ViaBaseModel):
         default=False,
         description="Enable chat Question & Answers on the input media",
         examples=[True, False],
-    )
-    enable_cv_metadata: bool = Field(
-        default=False, description="Enable CV metadata", examples=[True, False]
-    )
-
-    cv_pipeline_prompt: str = Field(
-        default="",
-        max_length=1024,
-        description="Prompt for CV pipeline",
-        examples=["person . car . bicycle;0.5"],
-        pattern=CV_PROMPT_PATTERN,
     )
 
     num_frames_per_chunk: int = Field(
@@ -736,14 +607,6 @@ class SummarizationQuery(ViaBaseModel):
         description="Delete the external collection at the end of the summarization request",
     )
 
-    camera_id: Optional[str] = Field(
-        default=None,
-        description="Camera ID to be used for the summarization request.",
-        max_length=256,
-        examples=["camera_1", "video_1", "default"],
-        pattern=CAMERA_ID_PATTERN,
-    )
-
 
 class CompletionFinishReason(str, Enum):
     """The reason the model stopped generating tokens."""
@@ -751,46 +614,6 @@ class CompletionFinishReason(str, Enum):
     STOP = "stop"
     LENGTH = "length"
     CONTENT_FILTER = "content_filter"
-    TOOL_CALLS = "tool_calls"
-
-
-class ChatCompletionMessageAlertTool(ViaBaseModel):
-    """Alert trigerred by VIA."""
-
-    name: str = Field(
-        description="Name for the alert that was triggered.",
-        pattern=DESCRIPTION_PATTERN,
-        max_length=256,
-    )
-    ntpTimestamp: str | None = Field(
-        description="NTP timestamp of when the event occurred (for live-streams).",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-        default=None,
-    )
-    offset: int = Field(
-        description="Offset in seconds in the video file when the event occurred (for files).",
-        ge=0,
-        le=4000000,
-        examples=[20],
-        json_schema_extra={"format": "int64"},
-        default=None,
-    )
-    detectedEvents: list[
-        Annotated[str, Field(min_length=1, max_length=1024, pattern=DESCRIPTION_PATTERN)]
-    ] = Field(max_length=100, description="List of events detected.")
-    details: str = Field(
-        max_length=10000, pattern=ANY_CHAR_PATTERN, description="Details of the alert."
-    )
-
-
-class ChatCompletionMessageToolCall(ViaBaseModel):
-    """Tool calls generated by VIA."""
-
-    type: ChatCompletionToolType
-    alert: ChatCompletionMessageAlertTool
 
 
 class ChatMessage(ViaBaseModel):
@@ -818,7 +641,7 @@ class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
 
     asset_id: Union[str, List[str]] = Field(
-        description="Asset ID or list of Asset IDs of the file(s)/live-stream(s) to query"
+        description="Asset ID or list of Asset IDs of the file(s) to query"
     )
 
     @field_validator("asset_id", mode="after")
@@ -944,23 +767,9 @@ class ChatCompletionQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
     user: str = Field(
         default="",
@@ -986,7 +795,6 @@ class ChatCompletionResponseMessage(ViaBaseModel):
         pattern=ANY_CHAR_PATTERN,
         json_schema_extra={"nullable": True},
     )
-    tool_calls: list[ChatCompletionMessageToolCall] = Field(default=[], max_length=100)
     role: Literal["assistant"] = Field(description="The role of the author of this message.")
 
 
@@ -1073,8 +881,8 @@ class CompletionResponse(ViaBaseModel):
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
-    media_info: MediaInfoTimeStamp | MediaInfoOffset = Field(
-        description="Part of the file / live-stream for which this response is applicable."
+    media_info: MediaInfoOffset = Field(
+        description="Part of the file for which this response is applicable."
     )
     object: CompletionObject = Field(
         description=(
@@ -1090,13 +898,13 @@ class VlmCaptionResponse(ViaBaseModel):
     """Represents a VLM caption response for a single chunk."""
 
     start_time: str = Field(
-        description="Start time of the chunk (seconds for files, NTP timestamp for live streams)",
+        description="Start time of the chunk in seconds",
         max_length=50,
         pattern=r"^[0-9\.\-TZ]+$",
         examples=["15.5", "2024-05-30T01:41:25.000Z"],
     )
     end_time: str = Field(
-        description="End time of the chunk (seconds for files, NTP timestamp for live streams)",
+        description="End time of the chunk in seconds",
         max_length=50,
         pattern=r"^[0-9\.\-TZ]+$",
         examples=["30.2", "2024-05-30T01:41:35.000Z"],
@@ -1133,8 +941,8 @@ class VlmCaptionsCompletionResponse(ViaBaseModel):
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
-    media_info: MediaInfoTimeStamp | MediaInfoOffset = Field(
-        description="Part of the file / live-stream for which this response is applicable."
+    media_info: MediaInfoOffset = Field(
+        description="Part of the file for which this response is applicable."
     )
     usage: CompletionUsage | None = Field(default=None)
     chunk_responses: list[VlmCaptionResponse] = Field(
@@ -1209,7 +1017,7 @@ class VlmParams(ViaBaseModel):
 
     prompt: str = Field(
         max_length=5000,
-        description="VLM prompt for alert verification",
+        description="VLM prompt",
         pattern=ANY_CHAR_PATTERN,
         examples=[
             "Is there person detected in restricted area?",
@@ -1218,10 +1026,7 @@ class VlmParams(ViaBaseModel):
         ],
     )
     system_prompt: str = Field(
-        default=(
-            os.environ.get("ALERT_REVIEW_DEFAULT_VLM_SYSTEM_PROMPT", "")
-            or "You are a helpful assistant. Answer the user's question."
-        ),
+        default="You are a helpful assistant. Answer the user's question.",
         min_length=1,
         max_length=5000,
         description="System prompt for the VLM. To enable reasoning with Cosmos Reason1, add <think></think> and <answer></answer> tags to the system prompt.",  # noqa: E501
@@ -1322,16 +1127,13 @@ class VssParams(ViaBaseModel):
         le=256,
         json_schema_extra={"format": "int32"},
     )
-    cv_metadata_overlay: bool = Field(
-        description="Enable CV metadata overlay", default=False, examples=[True, False]
-    )
     enable_reasoning: bool = Field(
-        description="Enable reasoning for VLM alert review",
+        description="Enable reasoning for VLM",
         default=False,
         examples=[True, False],
     )
     do_verification: bool = Field(
-        description="Enable verification for VLM alert review",
+        description="Enable verification for VLM",
         default=False,
         examples=[True, False],
     )
@@ -1346,7 +1148,7 @@ class VlmQuery(ViaBaseModel):
     """VLM Captions Query Request Fields."""
 
     id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to generate VLM captions for",
+        description="Unique ID or list of IDs of the file(s) to generate VLM captions for",
         examples=[
             "123e4567-e89b-12d3-a456-426614174000",
             ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d1-b567-537725285111"],
@@ -1489,12 +1291,9 @@ class VlmQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
 
     user: str = Field(
@@ -1503,24 +1302,6 @@ class VlmQuery(ViaBaseModel):
         max_length=256,
         description="A unique identifier for the user",
         pattern=r"^[a-zA-Z0-9-._]*$",
-    )
-
-    tools: list[ChatCompletionTool] = Field(
-        default=[],
-        description="List of tools for the current VLM captions request",
-        max_length=100,
-    )
-
-    enable_cv_metadata: bool = Field(
-        default=False, description="Enable CV metadata", examples=[True, False]
-    )
-
-    cv_pipeline_prompt: str = Field(
-        default="",
-        max_length=1024,
-        description="Prompt for CV pipeline",
-        examples=["person . car . bicycle;0.5"],
-        pattern=CV_PROMPT_PATTERN,
     )
 
     num_frames_per_chunk: int = Field(
