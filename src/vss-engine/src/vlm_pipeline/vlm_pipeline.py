@@ -748,8 +748,6 @@ class VlmProcess(ViaProcessBase):
                 generation_config=request_params[0].vlm_generation_config,
                 chunk=chunk,
             )
-        if "is_live_stream" in kwargs and self._num_gpus > 1:
-            time.sleep(0.1)
 
         def process_vlm_response(
             chunk,
@@ -1024,7 +1022,6 @@ class VlmChunkResponse:
     error: str | None = None
     queue_time = 0
     processing_latency = 0
-    is_live_stream_ended = False
     decode_start_time = 0
     decode_end_time = 0
     embed_start_time = 0
@@ -1114,14 +1111,6 @@ def check_peer_access():
 class VlmPipeline:
     """VLM Pipeline"""
 
-    class _LiveStreamInfo:
-        num_chunks_processed = 0
-        on_chunk_reponse: Callable[[VlmChunkResponse], None] = None
-        end_of_stream = False
-        total_chunks_at_eos = 0
-        all_chunks_processed = False
-        gpu_id = -1
-
     def __init__(self, asset_dir, args) -> None:
         """Initialize the VLM pipeline"""
         logger.info("Initializing VLM pipeline")
@@ -1173,7 +1162,6 @@ class VlmPipeline:
 
         self._chunk_counter = 0
         self._chunk_callback_map: dict[int, Callable[[VlmChunkResponse], None]] = {}
-        self._live_stream_id_map: dict[str, VlmPipeline._LiveStreamInfo] = {}
 
         self._enqueue_lock = Lock()
 
@@ -1477,18 +1465,6 @@ class VlmPipeline:
             except queue.Empty:
                 continue
 
-            if item.get("live_stream_ended", False):
-                lsinfo = self._live_stream_id_map[item["live_stream_id"]]
-                lsinfo.end_of_stream = True
-                lsinfo.total_chunks_at_eos = item["total_chunks"]
-
-                if lsinfo.num_chunks_processed >= lsinfo.total_chunks_at_eos:
-                    response = VlmChunkResponse()
-                    response.is_live_stream_ended = True
-                    lsinfo.on_chunk_reponse(response)
-                    lsinfo.all_chunks_processed = True
-                continue
-
             response = VlmChunkResponse()
             response.error = item.get("error", None)
             response.chunk = item["chunk"]
@@ -1517,33 +1493,6 @@ class VlmPipeline:
                 response.frame_times = item.get("frame_times", [])
                 response.model_info = self.get_models_info()
 
-            if item.get("is_live_stream", False):
-                if response.vlm_end_time and response.vlm_end_time - (
-                    response.embed_end_time or response.vlm_start_time
-                ) > (response.chunk.end_pts - response.chunk.start_pts):
-                    logger.warning(
-                        "Detected high load on the system. This may result in higher response"
-                        " times. Try reducing number of streams or increasing the chunk size"
-                    )
-                if response.chunk.streamId in self._live_stream_id_map:
-                    lsinfo = self._live_stream_id_map[response.chunk.streamId]
-                    lsinfo.on_chunk_reponse(response)
-                    lsinfo.num_chunks_processed += 1
-                    if (
-                        lsinfo.end_of_stream
-                        and lsinfo.num_chunks_processed >= lsinfo.total_chunks_at_eos
-                    ):
-                        response = VlmChunkResponse()
-                        response.is_live_stream_ended = True
-                        lsinfo.on_chunk_reponse(response)
-                        lsinfo.all_chunks_processed = True
-                try:
-                    # Remove embedding and video chunks for live streams.
-                    # Currently, they are not being retained
-                    self._emb_helper.remove_chunk_data(response.chunk)
-                except Exception:
-                    pass
-                continue
             callback = self._chunk_callback_map.pop(item["chunk_id"], None)
             if callback:
                 callback(response)

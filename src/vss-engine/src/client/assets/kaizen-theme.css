@@ -35,14 +35,14 @@
   /* This needs to be !important, otherwise the breakpoint override the container being full width */
   max-width: 100% !important;
 
-  #aspect-ratio: 16 / 9 !important;
+  /* #aspect-ratio: 16 / 9 !important; */
   /* top | right | bottom | left */
   padding: 0px 0px 0px 0px !important;
   /*  padding-top: 16 !important;
- padding-right: 32 !important;
+  padding-right: 32 !important;
   padding-left: 32 !important;
   padding-bottom: 32 !important;*/
-  #margin: 30px !important;
+  /* #margin: 30px !important; */
   /*background-color: 212121 !important;*/
 
 }
@@ -278,83 +278,6 @@ input[role="listbox"] {
   max-height: 90vh;
   background-color: #ffffff !important;
   backdrop-filter: none;
-}
-/* Specific selectors for alerts table */
-.alerts-table {
-  overflow-x: auto !important;
-}
-.alerts-table table {
-  min-width: 100% !important;
-}
-.alerts-table table thead {
-  position: sticky !important;
-  top: 0;
-  z-index: 2;
-}
-.alerts-table table th .sort-button {
-  display: none !important;
-}
-/* Column width settings */
-.alerts-table table td:nth-child(1),
-.alerts-table table th:nth-child(1) {
-    width: 20% !important;
-    min-width: 150px !important;
-    white-space: nowrap !important;
-    overflow: auto !important;
-}
-.alerts-table table td:nth-child(2),
-.alerts-table table th:nth-child(2) {
-    width: 60% !important;
-    min-width: 300px !important;
-    white-space: nowrap !important;
-    overflow: auto !important;
-}
-.alerts-table table td:nth-child(1),
-.alerts-table table th:nth-child(1),
-.alerts-table table td:nth-child(2),
-.alerts-table table th:nth-child(2) {
-    position: relative !important;
-}
-.alerts-table table td:nth-child(1) > *,
-.alerts-table table td:nth-child(2) > * {
-    max-width: 100% !important;
-    overflow-x: auto !important;
-    white-space: nowrap !important;
-}
-.alerts-table table td:nth-child(3),
-.alerts-table table th:nth-child(3) {
-    width: 10% !important;
-    min-width: 50px !important;
-    position: sticky !important;
-    right: 32px;
-    text-align: center !important;
-    cursor: pointer !important;
-    border-left: none !important;
-}
-.alerts-table table td:last-child,
-.alerts-table table th:last-child {
-    width: 10% !important;
-    min-width: 50px !important;
-    position: sticky !important;
-    right: 0;
-    text-align: center !important;
-    cursor: pointer !important;
-    border-left: none !important;
-}
-/* Remove vertical lines before edit and delete columns */
-.alerts-table table td:nth-child(3)::before,
-.alerts-table table th:nth-child(3)::before,
-.alerts-table table td:last-child::before,
-.alerts-table table th:last-child::before {
-    display: none !important;
-}
-.alerts-table table td:nth-child(3),
-.alerts-table table td:last-child {
-    cursor: default !important;
-}
-.alerts-table table td:nth-child(3):not(:empty),
-.alerts-table table td:last-child:not(:empty) {
-    cursor: pointer !important;
 }
 .modal-container {
   position: fixed !important;

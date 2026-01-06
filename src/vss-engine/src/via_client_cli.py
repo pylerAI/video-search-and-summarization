@@ -196,13 +196,6 @@ def get_parser():
     )
     opt_args.add_argument("--model-seed", help="Seed to use while generating from LLM", type=int)
     opt_args.add_argument(
-        "--alert",
-        help="Add an alert to be received as a server-sent event."
-        " Format '<alert_name>:<event1>,<event2>,...'. Can be specified multiple times",
-        type=str,
-        action="append",
-    )
-    opt_args.add_argument(
         "--enable-chat",
         help="Enable Q&A on the asset",
         action="store_true",
@@ -442,13 +435,6 @@ def get_parser():
     )
     opt_args.add_argument("--model-seed", help="Seed to use while generating from LLM", type=int)
     opt_args.add_argument(
-        "--alert",
-        help="Add an alert to be received as a server-sent event."
-        " Format '<alert_name>:<event1>,<event2>,...'. Can be specified multiple times",
-        type=str,
-        action="append",
-    )
-    opt_args.add_argument(
         "--response-format",
         help="Format of the model output",
         choices=["json_object", "text"],
@@ -461,95 +447,6 @@ def get_parser():
         action="store_true",
     )
     add_common_args(chat)
-
-    review_alert = subparsers.add_parser(
-        "review-alert",
-        help="Review an external alert",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    mandatory_args = review_alert.add_argument_group("Mandatory Arguments")
-    mandatory_args.add_argument("--video-path", required=True, type=str, help="Path to video file")
-    mandatory_args.add_argument(
-        "--prompt", required=True, type=str, help="VLM prompt for alert review"
-    )
-    mandatory_args.add_argument("--sensor-id", required=True, type=str, help="Sensor identifier")
-    mandatory_args.add_argument("--alert-type", required=True, type=str, help="Alert type")
-    mandatory_args.add_argument(
-        "--alert-description", required=True, type=str, help="Alert description"
-    )
-    mandatory_args.add_argument("--event-type", required=True, type=str, help="Event type")
-    mandatory_args.add_argument(
-        "--event-description", required=True, type=str, help="Event description"
-    )
-
-    opt_args = review_alert.add_argument_group("Optional Arguments")
-    opt_args.add_argument("--version", type=str, default="1.0", help="Alert review API version")
-    opt_args.add_argument(
-        "--id", type=str, help="Unique request ID (auto-generated if not provided)"
-    )
-    opt_args.add_argument(
-        "--timestamp", type=str, help="Timestamp (auto-generated if not provided)"
-    )
-    opt_args.add_argument(
-        "--confidence", type=float, default=1.0, help="Confidence score (0.0-1.0)"
-    )
-    opt_args.add_argument("--stream-name", type=str, help="Stream name")
-    opt_args.add_argument(
-        "--do-verification",
-        action="store_true",
-        help="Enable verification of the alert",
-    )
-    opt_args.add_argument(
-        "--alert-severity",
-        type=str,
-        choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"],
-        default="MEDIUM",
-        help="Alert severity level",
-    )
-    opt_args.add_argument("--chunk-duration", type=int, default=0, help="Chunk duration in seconds")
-    opt_args.add_argument(
-        "--chunk-overlap-duration",
-        type=int,
-        default=0,
-        help="Chunk overlap duration in seconds",
-    )
-    opt_args.add_argument(
-        "--num-frames-per-chunk", type=int, default=0, help="Number of frames per chunk"
-    )
-    opt_args.add_argument(
-        "--enable-caption", action="store_true", help="Enable detailed captioning"
-    )
-    opt_args.add_argument("--debug", action="store_true", help="Enable debug output in response")
-    opt_args.add_argument(
-        "--system-prompt",
-        type=str,
-        help="System prompt for the VLM",
-    )
-    opt_args.add_argument("--max-tokens", type=int, help="Maximum number of tokens to generate")
-    opt_args.add_argument("--temperature", type=float, help="Sampling temperature (0.0-1.0)")
-    opt_args.add_argument("--top-p", type=float, help="Top-p sampling parameter (0.0-1.0)")
-    opt_args.add_argument("--top-k", type=float, help="Top-k sampling parameter")
-    opt_args.add_argument("--seed", type=int, help="Random seed for generation")
-    opt_args.add_argument(
-        "--enable-reasoning",
-        help="Enable reasoning for VLM alert review",
-        action="store_true",
-    )
-    opt_args.add_argument(
-        "--meta-labels", type=str, action="append", help="Metadata labels in format key:value"
-    )
-    opt_args.add_argument(
-        "--start-time",
-        type=float,
-        help="Start time of the clip in the input videoin seconds (default: 0.0)",
-    )
-    opt_args.add_argument(
-        "--end-time",
-        type=float,
-        help="End time of the clip in the input video in seconds (default: 0.0)",
-    )
-
-    add_common_args(review_alert)
 
     return parser
 
@@ -744,28 +641,6 @@ def do_summarize(args):
     if args.enable_reasoning:
         req_json["enable_reasoning"] = args.enable_reasoning
 
-    if args.alert:
-        parsed_alerts = []
-        for alert in args.alert:
-            try:
-                alert_name, events = [word.strip() for word in alert.split(":")]
-                assert alert_name
-                assert events
-
-                parsed_events = [ev.strip() for ev in events.split(",") if ev.strip()]
-                assert parsed_events
-            except Exception:
-                print(f"Failed to parse alert '{alert}'")
-                exit(-1)
-            parsed_alerts.append(
-                {
-                    "type": "alert",
-                    "alert": {"name": alert_name, "events": parsed_events},
-                }
-            )
-        if parsed_alerts:
-            req_json["tools"] = parsed_alerts
-
     media_info = {}
     if args.file_start_offset is not None:
         media_info["type"] = "offset"
@@ -836,13 +711,6 @@ def do_summarize(args):
                     if result["choices"][0]["finish_reason"] == "stop":
                         print("Response:")
                         print(result["choices"][0]["message"]["content"])
-                    if result["choices"][0]["finish_reason"] == "tool_calls":
-                        print("Alert:")
-                        alert = result["choices"][0]["message"]["tool_calls"][0]["alert"]
-                        print("    Name:", alert["name"])
-                        print("    Detected Event:", alert["detectedEvents"])
-                        print("    Time:", alert["offset"], "seconds")
-                        print("    Details:", alert["details"])
                 if result["usage"]:
                     print(f"Chunks processed: {result['usage']['total_chunks_processed']}")
                     print(f"Processing Time: {result['usage']['query_processing_time']} seconds")
@@ -1120,122 +988,6 @@ def do_chat(args):
     print(result["choices"][0]["message"]["content"])
 
 
-def do_review_alert(args):
-    import uuid
-    from datetime import datetime, timezone
-
-    # Generate ID and timestamp if not provided
-    alert_id = args.id if args.id else str(uuid.uuid4())
-    timestamp = (
-        args.timestamp
-        if args.timestamp
-        else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
-
-    # Parse meta labels if provided
-    meta_labels = []
-    if args.meta_labels:
-        for label in args.meta_labels:
-            if ":" in label:
-                key, value = label.split(":", 1)
-                meta_labels.append({"key": key.strip(), "value": value.strip()})
-            else:
-                print(f"Warning: Invalid meta label format '{label}'. Expected format: key:value")
-
-    # Build VLM parameters
-    vlm_params = {"prompt": args.prompt}
-
-    if args.system_prompt:
-        vlm_params["system_prompt"] = args.system_prompt
-
-    if args.max_tokens is not None:
-        vlm_params["max_tokens"] = args.max_tokens
-    if args.temperature is not None:
-        vlm_params["temperature"] = args.temperature
-    if args.top_p is not None:
-        vlm_params["top_p"] = args.top_p
-    if args.top_k is not None:
-        vlm_params["top_k"] = args.top_k
-    if args.seed is not None:
-        vlm_params["seed"] = args.seed
-
-    # Build VSS parameters
-    vss_params = {
-        "vlm_params": vlm_params,
-        "chunk_duration": args.chunk_duration,
-        "chunk_overlap_duration": args.chunk_overlap_duration,
-        "num_frames_per_chunk": args.num_frames_per_chunk,
-        "enable_reasoning": args.enable_reasoning,
-        "debug": args.debug,
-    }
-    if args.do_verification:
-        vss_params["do_verification"] = True
-
-    # Build the complete request
-    req_json = {
-        "version": args.version,
-        "id": alert_id,
-        "@timestamp": timestamp,
-        "sensor_id": args.sensor_id,
-        "video_path": args.video_path,
-        "confidence": args.confidence,
-        "start_time": args.start_time if args.start_time is not None else 0.0,
-        "end_time": args.end_time if args.end_time is not None else 0.0,
-        "alert": {
-            "severity": args.alert_severity,
-            "status": "REVIEW_PENDING",
-            "type": args.alert_type,
-            "description": args.alert_description,
-        },
-        "event": {"type": args.event_type, "description": args.event_description},
-        "vss_params": vss_params,
-        "meta_labels": meta_labels,
-    }
-    if args.stream_name:
-        req_json["stream_name"] = args.stream_name
-
-    if args.print_curl_command:
-        print(f'curl -i -X POST {get_api_url("/reviewAlert")} \\')
-        print('    -H "Content-Type: application/json" \\')
-        print(f"    --data \\\n'{json.dumps(req_json, indent=2)}'")
-        return
-
-    response = requests.post(get_api_url("/reviewAlert"), json=req_json)
-    check_err_response(response, True)
-    result = response.json()
-
-    print("Alert review completed:")
-    print(f"Request ID: {result['id']}")
-    print(f"Review Status: {result['result']['status']}")
-    print(f"Reviewed By: {result['result']['reviewed_by']}")
-    print(f"Reviewed At: {result['result']['reviewed_at']}")
-    verification_result = (
-        result["result"]["verification_result"]
-        if "verification_result" in result["result"]
-        else "N/A"
-    )
-    print(f"Review Verification: {verification_result}")
-
-    # Display reasoning if available
-    if result["result"]["reasoning"]:
-        print("\n" + "=" * 80)
-        print("REASONING")
-        print("=" * 80)
-        print(result["result"]["reasoning"])
-        print("=" * 80)
-
-    if result["result"]["description"]:
-        print(f"\nDescription: {result['result']['description']}")
-
-    if result["result"]["error_string"]:
-        print(f"Error: {result['result']['error_string']}")
-
-    if result["result"].get("debug"):
-        debug_info = result["result"]["debug"]
-        print("\nDebug Information:")
-        print(f"Selected Frame Timestamps: {debug_info['selected_frames_ts']}")
-
-
 def do_list_models(args):
     if args.print_curl_command:
         print(f"""curl -i -X GET {get_api_url("/models")}""")
@@ -1313,8 +1065,6 @@ def main():
         do_server_health_check(args)
     if args.request == "chat":
         do_chat(args)
-    if args.request == "review-alert":
-        do_review_alert(args)
 
 
 if __name__ == "__main__":

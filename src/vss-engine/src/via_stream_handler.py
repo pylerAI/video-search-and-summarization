@@ -129,7 +129,6 @@ class RequestInfo:
         self.graph_db = None
         self.enable_cot = False
         self.enable_image = False
-        self.alert_review = False
         # OTEL spans
         self._e2e_span = None
         self.vlm_pipeline_span = None
@@ -453,10 +452,7 @@ class ViaStreamHandler:
         chunk_responses: list[VlmChunkResponse],
     ):
         new_response = []
-        if (
-            req_info.status != RequestInfo.Status.FAILED
-            and not req_info.alert_review
-        ):
+        if req_info.status != RequestInfo.Status.FAILED:
             try:
                 new_response = self._get_aggregated_summary(req_info, chunk_responses)
             except Exception as ex:
@@ -822,8 +818,7 @@ class ViaStreamHandler:
                     req_info.request_id,
                     cur_time - req_info.start_time,
                 )
-                if not req_info.alert_review:
-                    logger.info("Generating summary for request %s", req_info.request_id)
+                logger.info("Generating summary for request %s", req_info.request_id)
 
                 if req_info._health_summary:
                     latency = cur_time - req_info.start_time

@@ -39,17 +39,7 @@ class RetrieveCache:
 
         if not id_settings:
             self.logger.debug(f"No stream settings found for {video_id}.")
-            return [gr.update(interactive=True)] * 30 + [gr.update(value=[[""] * 4] * 10)] + [[[]]]
-            # other components              # alerts_table              # table_state
-
-        # Process table data
-        # First create simplified table state (name, events only)
-        table_state = [
-            [i["alert"]["name"], ", ".join(i["alert"]["events"]), "Edit", "X"]
-            for i in id_settings.get("tools", [])
-            if i["type"] == "alert"
-        ]
-        table_data = table_state.copy()
+            return [gr.update(interactive=True)] * 30
 
         # Map settings to Gradio updates
         updates = [
@@ -112,10 +102,6 @@ class RetrieveCache:
             gr.update(
                 value=id_settings.get("enable_audio", False), interactive=True
             ),  # enable_audio
-            gr.update(
-                value=table_data, interactive=True
-            ),  # alerts_table (TODO: headers/column names)
-            [table_state],  # table_state
         ]
 
         return updates

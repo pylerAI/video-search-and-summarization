@@ -74,8 +74,6 @@ API_PREFIX = (
     "/v1" if os.environ.get("VSS_API_ENABLE_VERSIONING", "").lower() in ["true", "1"] else ""
 )
 
-ALERT_REVIEW_MEDIA_BASE_DIR = os.environ.get("ALERT_REVIEW_MEDIA_BASE_DIR", "")
-
 
 # Remove some default metrics reported by prometheus client.
 REGISTRY.unregister(PROCESS_COLLECTOR)
