@@ -26,7 +26,7 @@ from gradio_videotimeline import VideoTimeline
 from pyaml_env import parse_config
 from utils import MediaFileInfo
 
-from .ui_utils import validate_camera_id, validate_question
+from .ui_utils import validate_question
 
 STANDALONE_MODE = True
 pipeline_args = None
@@ -114,7 +114,6 @@ async def remove_all_media(session: aiohttp.ClientSession, media_ids):
 
 async def add_assets(
     gr_video,
-    camera_id,
     chatbot,
     image_mode,
     dc_json_path,
@@ -170,7 +169,6 @@ async def add_assets(
                 url,
                 data={
                     "filename": media_path,
-                    "camera_id": camera_id,
                     "purpose": "vision",
                     "media_type": "video",
                 },
@@ -252,7 +250,6 @@ async def close_asset(chatbot, question_textbox, video, media_ids, image_mode):
     chatbot = []
     yield (
         chatbot,
-        gr.update(interactive=False, value=""),  # camera_id, , , , ,
         gr.update(interactive=False, value=""),  # question_textbox
         gr.update(interactive=False),  # ask_button
         gr.update(interactive=False),  # reset_chat_button
@@ -872,19 +869,9 @@ def build_summarization(args, app_cfg, logger_):
                     sources=["upload"],
                     show_download_button=False,
                 )
-                camera_id = gr.Textbox(
-                    label="Video ID (Optional)",
-                    info=(
-                        "Can be used in the prompt to identify the video; "
-                        "prefix with 'camera_' or 'video_'"
-                    ),
-                    show_label=True,
-                    visible=True,
-                )
             else:
                 video = gr.Gallery(show_label=False, type="filepath")
                 chunk_size = gr.State(0)
-                camera_id = gr.Textbox(visible=False)  # Adding for consistency in image mode
             display_image = gr.Image(visible=False, type="filepath")
 
             stream_name = gr.Textbox(show_label=False, visible=False)
@@ -1605,14 +1592,9 @@ def build_summarization(args, app_cfg, logger_):
     )
 
     summarize_button.click(
-        validate_camera_id,
-        inputs=[camera_id],
-        outputs=[],
-    ).success(
         add_assets,
         inputs=[
             video,
-            camera_id,
             chatbot,
             gr.State(args.image_mode),
             dc_json_path,
@@ -1822,7 +1804,6 @@ def build_summarization(args, app_cfg, logger_):
         inputs=[chatbot, question_textbox, video, media_ids, gr.State(args.image_mode)],
         outputs=[
             chatbot,
-            camera_id,
             question_textbox,
             ask_button,
             reset_chat_button,

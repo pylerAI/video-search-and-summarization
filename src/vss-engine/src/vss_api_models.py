@@ -33,7 +33,6 @@ TIMESTAMP_PATTERN = r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{3})?
 FILE_NAME_PATTERN = r"^[A-Za-z0-9_.\- ]*$"
 PATH_PATTERN = r"^[A-Za-z0-9_.\-/ ]*$"
 DESCRIPTION_PATTERN = r'^[A-Za-z0-9_.\-"\' ,]*$'
-CAMERA_ID_PATTERN = r"^(?:camera_(\d+)|video_(\d+)|default)?$"
 UUID_LENGTH = 36
 ERROR_CODE_PATTERN = r"^[A-Za-z]*$"
 ERROR_MESSAGE_PATTERN = r'^[A-Za-z\-. ,_"\']*$'
@@ -44,18 +43,6 @@ DEFAULT_CALLBACK_JSON_TEMPLATE = (
     "{ "
     '"streamId": "{{ streamId }}", '
     '"alertId": "{{ alertId }}", '
-    '"ntpTimestamp": "{{ ntpTimestamp }}", '
-    '"alertDetails": "{{ alertText }}", '
-    '"detectedEvents": {{ detectedEvents }}'
-    "}"
-)
-
-
-DEFAULT_CALLBACK_JSON_TEMPLATE = (
-    "{ "
-    '"streamId": "{{ streamId }}", '
-    '"alertId": "{{ alertId }}", '
-    '"ntpTimestamp": "{{ ntpTimestamp }}", '
     '"alertDetails": "{{ alertText }}", '
     '"detectedEvents": {{ detectedEvents }}'
     "}"
@@ -237,30 +224,6 @@ class MediaInfoOffset(ViaBaseModel):
     )
 
 
-class MediaInfoTimeStamp(ViaBaseModel):
-    """Media information using offset for live-streams."""
-
-    type: Literal["timestamp"] = Field(
-        description="Information about a segment of live-stream with start and end timestamp."
-    )
-    start_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to start processing from",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-    end_timestamp: Annotated[str, AfterValidator(timestamp_validator)] = Field(
-        default=None,
-        description="Timestamp in the video to stop processing at",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T02:14:51.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-    )
-
-
 class ResponseType(str, Enum):
     """Query Response Type."""
 
@@ -317,7 +280,7 @@ class AlertTool(ViaBaseModel):
     callbackJsonTemplate: str = Field(
         description=(
             "JSON Template for the callback body. Supported placeholders:"
-            " {{streamId}}, {{alertId}}, {{ntpTimestamp}}, {{alertText}}, {{detectedEvents}}"
+            " {{streamId}}, {{alertId}}, {{alertText}}, {{detectedEvents}}"
         ),
         max_length=1024,
         default=DEFAULT_CALLBACK_JSON_TEMPLATE,
@@ -491,23 +454,9 @@ class SummarizationQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
 
     user: str = Field(
@@ -724,14 +673,6 @@ class SummarizationQuery(ViaBaseModel):
         description="Delete the external collection at the end of the summarization request",
     )
 
-    camera_id: Optional[str] = Field(
-        default=None,
-        description="Camera ID to be used for the summarization request.",
-        max_length=256,
-        examples=["camera_1", "video_1", "default"],
-        pattern=CAMERA_ID_PATTERN,
-    )
-
 
 class CompletionFinishReason(str, Enum):
     """The reason the model stopped generating tokens."""
@@ -749,14 +690,6 @@ class ChatCompletionMessageAlertTool(ViaBaseModel):
         description="Name for the alert that was triggered.",
         pattern=DESCRIPTION_PATTERN,
         max_length=256,
-    )
-    ntpTimestamp: str | None = Field(
-        description="NTP timestamp of when the event occurred (for live-streams).",
-        min_length=24,
-        max_length=24,
-        examples=["2024-05-30T01:41:25.000Z"],
-        pattern=TIMESTAMP_PATTERN,
-        default=None,
     )
     offset: int = Field(
         description="Offset in seconds in the video file when the event occurred (for files).",
@@ -806,7 +739,7 @@ class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
 
     asset_id: Union[str, List[str]] = Field(
-        description="Asset ID or list of Asset IDs of the file(s)/live-stream(s) to query"
+        description="Asset ID or list of Asset IDs of the file(s) to query"
     )
 
     @field_validator("asset_id", mode="after")
@@ -932,23 +865,9 @@ class ChatCompletionQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    summary_duration: int = Field(
-        default=0,
-        examples=[60],
-        description=(
-            "Summarize every `summaryDuration` seconds of the video."
-            " Applicable to live streams only."
-        ),
-        ge=-1,
-        le=3600,
-        json_schema_extra={"format": "int32"},
-    )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
     user: str = Field(
         default="",
@@ -1061,8 +980,8 @@ class CompletionResponse(ViaBaseModel):
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
-    media_info: MediaInfoTimeStamp | MediaInfoOffset = Field(
-        description="Part of the file / live-stream for which this response is applicable."
+    media_info: MediaInfoOffset = Field(
+        description="Part of the file for which this response is applicable."
     )
     object: CompletionObject = Field(
         description=(
@@ -1078,13 +997,13 @@ class VlmCaptionResponse(ViaBaseModel):
     """Represents a VLM caption response for a single chunk."""
 
     start_time: str = Field(
-        description="Start time of the chunk (seconds for files, NTP timestamp for live streams)",
+        description="Start time of the chunk in seconds",
         max_length=50,
         pattern=r"^[0-9\.\-TZ]+$",
         examples=["15.5", "2024-05-30T01:41:25.000Z"],
     )
     end_time: str = Field(
-        description="End time of the chunk (seconds for files, NTP timestamp for live streams)",
+        description="End time of the chunk in seconds",
         max_length=50,
         pattern=r"^[0-9\.\-TZ]+$",
         examples=["30.2", "2024-05-30T01:41:35.000Z"],
@@ -1121,8 +1040,8 @@ class VlmCaptionsCompletionResponse(ViaBaseModel):
         max_length=256,
         pattern=FILE_NAME_PATTERN,
     )
-    media_info: MediaInfoTimeStamp | MediaInfoOffset = Field(
-        description="Part of the file / live-stream for which this response is applicable."
+    media_info: MediaInfoOffset = Field(
+        description="Part of the file for which this response is applicable."
     )
     usage: CompletionUsage | None = Field(default=None)
     chunk_responses: list[VlmCaptionResponse] = Field(
@@ -1331,7 +1250,7 @@ class VlmQuery(ViaBaseModel):
     """VLM Captions Query Request Fields."""
 
     id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s)/live-stream(s) to generate VLM captions for",
+        description="Unique ID or list of IDs of the file(s) to generate VLM captions for",
         examples=[
             "123e4567-e89b-12d3-a456-426614174000",
             ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d1-b567-537725285111"],
@@ -1474,12 +1393,9 @@ class VlmQuery(ViaBaseModel):
         le=3600,
         json_schema_extra={"format": "int32"},
     )
-    media_info: MediaInfoOffset | MediaInfoTimeStamp = Field(
+    media_info: MediaInfoOffset = Field(
         default=None,
-        description=(
-            "Provide Start and End times offsets for processing part of a video file."
-            " Not applicable for live-streaming."
-        ),
+        description="Provide Start and End times offsets for processing part of a video file.",
     )
 
     user: str = Field(

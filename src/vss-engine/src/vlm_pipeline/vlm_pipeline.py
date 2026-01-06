@@ -107,9 +107,8 @@ class DecoderProcess(ViaProcessBase):
         self._num_frames_per_chunk = args.num_frames_per_chunk
         self._model_path = args.model_path
         self._module_loader = None
-        self._max_live_streams = max(1, -(-args.max_live_streams // args.num_gpus))
+        self._max_concurrent_requests = max(1, -(-10 // args.num_gpus))
         self._enable_audio = args.enable_audio
-        self._cv_pipeline_configs = args.cv_pipeline_configs
 
     def _initialize(self):
         from .video_file_frame_getter import DefaultFrameSelector, VideoFileFrameGetter
@@ -285,7 +284,7 @@ class DecoderProcess(ViaProcessBase):
             for _ in range(self._num_decoders_per_gpu)
         ]
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=int(self._max_live_streams + 1)
+            max_workers=int(self._max_concurrent_requests + 1)
         )
         self._file_thread_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=int(self._num_decoders_per_gpu)
@@ -1752,12 +1751,6 @@ class VlmPipeline:
             "--num-frames-per-chunk",
             type=int,
             help="Number of frames to pick from each chunk",
-        )
-        parser.add_argument(
-            "--max-live-streams",
-            type=int,
-            default=256,
-            help="Number of maximum live streams to support at a time",
         )
         parser.add_argument(
             "--enable-audio",

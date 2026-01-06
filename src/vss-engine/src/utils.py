@@ -48,26 +48,12 @@ class MediaFileInfo:
         uri_or_file = str(uri_or_file)
         media_file_info = MediaFileInfo()
 
-        if uri_or_file.startswith("rtsp://") or uri_or_file.startswith("file://"):
+        if uri_or_file.startswith("file://"):
             uri = uri_or_file
         else:
             uri = "file://" + os.path.abspath(str(uri_or_file))
 
-        def select_stream(source, idx, caps):
-            if "audio" in caps.to_string():
-                return False
-            return True
-
-        def source_setup(discoverer, source):
-            if uri.startswith("rtsp://"):
-                source.connect("select-stream", select_stream)
-                source.set_property("timeout", 1000000)
-                if username and password:
-                    source.set_property("user-id", username)
-                    source.set_property("user-pw", password)
-
         discoverer = GstPbutils.Discoverer()
-        discoverer.connect("source-setup", source_setup)
 
         try:
             file_info = discoverer.discover_uri(uri)
@@ -122,10 +108,7 @@ class MediaFileInfo:
 
     @staticmethod
     def get_info(uri_or_file: str, username="", password=""):
-        if str(uri_or_file).startswith("rtsp://"):
-            return MediaFileInfo._get_info_gst(uri_or_file, username, password)
-        else:
-            return MediaFileInfo._get_info_mediainfo(str(uri_or_file))
+        return MediaFileInfo._get_info_mediainfo(str(uri_or_file))
 
     @staticmethod
     async def get_info_async(uri_or_file: str, username="", password=""):
@@ -386,7 +369,6 @@ class StreamSettingsCache:
             "id",
             "model",
             "chunk_duration",
-            "summary_duration",
             "temperature",
             "seed",
             "max_tokens",
@@ -404,7 +386,6 @@ class StreamSettingsCache:
             "summary_aggregation_prompt",
             "tools",
             "summarize",
-            "camera_id",
         }
 
         # Extract only the required fields and remove None values

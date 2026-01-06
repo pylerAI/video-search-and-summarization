@@ -36,13 +36,6 @@ def get_timestamp_str(ts):
     )
 
 
-def ntp_to_unix_timestamp(ntp_ts):
-    """Convert an RFC3339 timestamp string to a UNIX timestamp(float)"""
-    return (
-        datetime.strptime(ntp_ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
-    )
-
-
 class FileSplitter:
     """File Splitter
 
@@ -75,7 +68,7 @@ class FileSplitter:
         """FileSplitter constructor.
 
         Args:
-            stream: RTSP URL or file path
+            stream: file path
             mode: Split mode
             chunk_duration_sec: Chunk duration in seconds
             on_new_chunk: Callback when new chunks are generated
@@ -96,11 +89,8 @@ class FileSplitter:
         self._last_pts_offset = 0
         self._last_chunkidx = 0
         self._loop = None
-        self._ntp_epoch = 0
-        self._ntp_pts = 0
         self._start_pts = start_pts
         self._end_pts = end_pts
-        self._base_ntp_time = 0
         self._got_error = False
         self._username = username
         self._password = password
@@ -131,8 +121,6 @@ class FileSplitter:
                     info.pts_offset_ns = 0
                     info.start_pts = 0
                     info.end_pts = 0
-                    info.start_ntp = get_timestamp_str(self._base_ntp_time + info.start_pts / 1e9)
-                    info.end_ntp = get_timestamp_str(self._base_ntp_time + info.end_pts / 1e9)
                     info.is_first = True
                     self._on_new_chunk(info)
                     return
@@ -143,8 +131,6 @@ class FileSplitter:
                     info.pts_offset_ns = 0
                     info.start_pts = 0
                     info.end_pts = 0
-                    info.start_ntp = get_timestamp_str(self._base_ntp_time + info.start_pts / 1e9)
-                    info.end_ntp = get_timestamp_str(self._base_ntp_time + info.end_pts / 1e9)
                     info.is_first = True
                     self._on_new_chunk(info)
                     return
@@ -175,10 +161,6 @@ class FileSplitter:
                     info.end_pts = int(cur_pts + min(
                         self._chunk_duration_sec * 1000000000, end_pts - cur_pts
                     ))
-                    info.start_ntp = get_timestamp_str(self._base_ntp_time + info.start_pts / 1e9)
-                    info.end_ntp = get_timestamp_str(self._base_ntp_time + info.end_pts / 1e9)
-                    info.start_ntp_float = ntp_to_unix_timestamp(info.start_ntp)
-                    info.end_ntp_float = ntp_to_unix_timestamp(info.end_ntp)
                     self._on_new_chunk(info)
                     chunkIdx += 1
                     # Get the next chunk start time
@@ -199,61 +181,9 @@ class FileSplitter:
                 srcbin = Gst.ElementFactory.make("urisourcebin")
                 srcbin.set_property(
                     "uri",
-                    (
-                        self._stream
-                        if self._stream.startswith("rtsp://")
-                        else "file://" + os.path.abspath(self._stream)
-                    ),
+                    "file://" + os.path.abspath(self._stream),
                 )
                 pipeline.add(srcbin)
-
-                def cb_ntpquery(pad, info, data):
-                    # Probe callback to handle NTP information from RTSP stream
-                    # This requires RTSP Sender Report support in the source.
-                    query = info.get_query()
-                    if query.type == Gst.QueryType.CUSTOM:
-                        struct = query.get_structure()
-                        if "nvds-ntp-sync" == struct.get_name():
-                            _, data._ntp_epoch = struct.get_uint64("ntp-time-epoch-ns")
-                            _, data._ntp_pts = struct.get_uint64("frame-timestamp")
-                    return Gst.PadProbeReturn.OK
-
-                def cb_newpad_srcbin(srcbin, srcbin_src_pad, parsebin):
-                    # Callback for handling a new elementary stream in source
-                    caps = srcbin_src_pad.query_caps()
-                    if not caps:
-                        return
-
-                    # For video stream, link to the parsebin and add a probe to
-                    # handle NTP information.
-                    if "video" in caps.to_string():
-                        srcbin.link(parsebin)
-                        srcbin_src_pad.add_probe(
-                            Gst.PadProbeType.QUERY_DOWNSTREAM, cb_ntpquery, self
-                        )
-
-                    # Ignore audio stream, link it to a fakesink
-                    if "audio" in caps.to_string():
-                        fsink = Gst.ElementFactory.make("fakesink")
-                        pipeline.add(fsink)
-                        fsink.set_property("async", False)
-                        srcbin.link(fsink)
-                        fsink.set_state(Gst.State.PLAYING)
-
-                def cb_element_added_srcbin(srcbin, bin, elem, spliiter):
-                    # Callback when the source bin gets created
-
-                    # If the stream is RTSP, configure the source element to retrieve
-                    # NTP information as well as set UDP connection timeout to 2 sec.
-                    if "rtspsrc" in elem.get_name():
-                        import pyds
-
-                        pyds.configure_source_for_ntp_sync(hash(elem))
-                        elem.set_property("timeout", 2000000)
-
-                        if self._username and self._password:
-                            elem.set_property("user-id", self._username)
-                            elem.set_property("user-pw", self._password)
 
                 def cb_newpad(parsebin, parser_src_pad, splitmuxsink):
                     # Callback when a new elementary stream is created by parsebin
@@ -293,12 +223,6 @@ class FileSplitter:
                         info.start_pts = info.pts_offset_ns
                         info.end_pts = sample.get_buffer().pts
 
-                        if self._ntp_epoch:
-                            base_time = (self._ntp_epoch - self._ntp_pts) / 1000000000
-                        else:
-                            base_time = self._base_ntp_time
-                        info.start_ntp = get_timestamp_str(base_time + info.start_pts / 1e9)
-                        info.end_ntp = get_timestamp_str(base_time + info.end_pts / 1e9)
 
                         data._on_new_chunk(info)
 
@@ -332,8 +256,6 @@ class FileSplitter:
                 splitmuxsink.set_property("location", self._output_file_prefix + "_%05d.mp4")
                 pipeline.add(splitmuxsink)
 
-                srcbin.connect("pad-added", cb_newpad_srcbin, parsebin)
-                srcbin.connect("deep-element-added", cb_element_added_srcbin, self)
                 parsebin.connect("pad-added", cb_newpad, splitmuxsink)
                 splitmuxsink.connect("format-location-full", cb_format_location, self)
 

@@ -427,34 +427,13 @@ class VideoFileFrameGetter:
         self._audio_support = audio_support
         self._enable_audio = False
         self._pipeline = None
-        self._last_stream_id = ""
-        self._live_stream_frame_selectors: dict[BaseFrameSelector, any] = {}
-        self._live_stream_frame_selectors_lock = Lock()
+        self._last_file = ""
         self._audio_start_cv = Condition()
         self._audio_end_cv = Condition()
         self._audio_present_cv = Condition()
-        self._live_stream_audio_transcripts_lock = Lock()
-        self._live_stream_next_chunk_start_pts = 0
         self._audio_current_pts = 0
-        self._live_stream_next_chunk_idx = 0
-        self._live_stream_chunk_duration = 0
-        self._live_stream_chunk_overlap_duration = 0
-        self._live_stream_ntp_epoch = 0
-        self._live_stream_ntp_pts = 0
-        self._live_stream_request_id = 0
         self._dump_cached_frames = False
         self._last_video_codec = None
-        self._live_stream_chunk_decoded_callback: Callable[
-            [
-                ChunkInfo,
-                torch.Tensor | list[np.ndarray],  # frames
-                list[float],  # frame_times
-                list[dict],  # transcripts
-                Optional[str],  # error_msg
-                dict,  # kwargs
-            ],
-            None,
-        ] = None
         self._first_frame_width = 0
         self._first_frame_height = 0
         self._err_msg = None
@@ -468,8 +447,6 @@ class VideoFileFrameGetter:
         self._vdecodebin = None
         self._vdecodebin_h264 = None
         self._vdecodebin_h265 = None
-        self._rtspsrc = None
-        self._udpsrc = None
         self._audio_eos = False
         self._audio_stop = mp.Event()
         self._audio_error = mp.Event()
@@ -628,7 +605,7 @@ class VideoFileFrameGetter:
             # Upload buffer to MinIO using put_object
             try:
                 # Determine bucket and prefix
-                self._minio_bucket = self._current_stream_id
+                self._minio_bucket = self._current_asset_id
 
                 # Ensure bucket exists
                 try:
@@ -677,207 +654,6 @@ class VideoFileFrameGetter:
             pass
         return Gst.PadProbeReturn.OK
 
-    def _create_video_from_cached_frames(self, chunk_idx):
-        def check_ffmpeg():
-            """Check if FFmpeg is installed."""
-            ffmpeg_path = shutil.which("ffmpeg_for_overlay_video")
-            return ffmpeg_path is not None
-
-
-        video_path = f"{self._cached_frames_dir}/{self._request_id}_{chunk_idx}.ts"
-        images_path = f"{self._cached_frames_dir}/frame_*.jpg"
-        if os.path.exists(self._cached_frames_dir) and check_ffmpeg():
-            # BN TBD : Need better way to handle this
-            # calculate frame rate from number of frames and duration
-            frame_count = len(
-                [f for f in os.listdir(self._cached_frames_dir) if f.endswith(".jpg")]
-            )
-            frame_rate = frame_count / self._live_stream_chunk_duration
-            print(f"Creating cached frames video with frame rate {frame_rate}")
-            command = [
-                "ffmpeg_for_overlay_video",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-framerate",
-                str(frame_rate),
-                "-pattern_type",
-                "glob",
-                "-i",
-                images_path,
-                "-c:v",
-                *(["copy"]),
-                video_path,
-            ]
-            try:
-                # Execute the command
-                subprocess.run(command, check=True)
-                print(f"Cached Frames Video created at {video_path}")
-                # Now delete all jpg files
-                [shutil.os.remove(f) for f in glob.glob(images_path)]
-                return video_path
-            except subprocess.CalledProcessError as e:
-                print(f"FFmpeg command failed: {e}")
-                return None
-        else:
-            return None
-
-    def _process_finished_chunks(self, current_pts=None, flush=False):
-        chunks_processed_fs = []
-
-        for fs, (cached_pts, cached_frames) in self._live_stream_frame_selectors.items():
-            if (
-                (current_pts is not None and current_pts >= fs._chunk.end_pts)
-                or len(fs._selected_pts_array) == 0
-                or flush
-            ):
-                if len(cached_pts) == len(cached_frames) or flush:
-                    self.dump_cached_frame(cached_frames, cached_pts, self._enable_jpeg_output)
-                    cached_frames = self._preprocess(cached_frames)
-                    base_time = (
-                        self._live_stream_ntp_epoch - self._live_stream_ntp_pts
-                    ) / 1000000000
-                    if self._sei_base_time:
-                        base_time = self._sei_base_time / 1000000000
-                    if base_time == 0:
-                        base_time = time.time() - (fs._chunk.end_pts / 1e9)
-                    if flush and self._last_frame_pts >= fs._chunk.start_pts:
-                        fs._chunk.end_pts = self._last_frame_pts
-
-                    fs._chunk.start_ntp = get_timestamp_str(base_time + fs._chunk.start_pts / 1e9)
-                    fs._chunk.end_ntp = get_timestamp_str(base_time + fs._chunk.end_pts / 1e9)
-                    fs._chunk.start_ntp_float = base_time + (fs._chunk.start_pts / 1e9)
-                    fs._chunk.end_ntp_float = base_time + (fs._chunk.end_pts / 1e9)
-
-                    if self._enable_audio:
-                        with self._live_stream_audio_transcripts_lock:
-                            cached_transcripts = [
-                                transcript
-                                for transcript in self._cached_transcripts
-                                if transcript["start"] < fs._chunk.end_pts
-                            ]
-
-                            next_chunk_start = (
-                                fs._chunk.end_pts - self._live_stream_chunk_overlap_duration * 1e9
-                            )
-                            self._cached_transcripts = [
-                                transcript
-                                for transcript in self._cached_transcripts
-                                if transcript["start"] >= next_chunk_start
-                            ]
-                    else:
-                        cached_transcripts = []
-
-                    # create video from cached frames
-                    osd_output_video_file = None
-                    if self._dump_cached_frames:
-                        osd_output_video_file = self._create_video_from_cached_frames(
-                            fs._chunk.chunkIdx
-                        )
-                        fs._chunk.osd_output_video_file = osd_output_video_file
-                        print(f"OSD output video file: {osd_output_video_file}")
-
-                    with self._err_msg_lock:
-                        err_msg = self._err_msg
-                    self._live_stream_chunk_decoded_callback(
-                        fs._chunk,
-                        cached_frames,
-                        cached_pts,
-                        cached_transcripts,
-                        err_msg,
-                    )
-                    chunks_processed_fs.append(fs)
-
-        for fs in chunks_processed_fs:
-            self._live_stream_frame_selectors.pop(fs)
-
-    def _create_live_stream_video_preview_branch(
-        self, pipeline, link_src_elem, link_sink_elem=None
-    ):
-        x264enc = Gst.ElementFactory.make("x264enc")
-        if x264enc is None:
-            return False
-
-        tee = Gst.ElementFactory.make("tee")
-        pipeline.add(tee)
-
-        link_src_elem.link(tee)
-        if link_sink_elem is not None:
-            tee.link(link_sink_elem)
-        # Create preview pipeline branch
-        preview_queue = Gst.ElementFactory.make("queue")
-        pipeline.add(preview_queue)
-        tee.link(preview_queue)
-
-        self._preview_valve = Gst.ElementFactory.make("valve")
-        self._preview_valve.set_property("drop-mode", 2)
-        preview_convert = Gst.ElementFactory.make("nvvideoconvert")
-        preview_convert.set_property("compute-hw", 1)
-        pipeline.add(self._preview_valve)
-        pipeline.add(preview_convert)
-        preview_queue.link(self._preview_valve)
-        self._preview_valve.link(preview_convert)
-
-        x264enc.set_property("bframes", 0)  # Disable B-frames
-        x264enc.set_property("speed-preset", "fast")  # Fastest encoding preset
-        x264enc.set_property("tune", "zerolatency")  # Optimize for low latency
-        x264enc.set_property("key-int-max", 30)
-        pipeline.add(x264enc)
-        preview_convert.link(x264enc)
-
-        h264parse = Gst.ElementFactory.make("h264parse")
-        pipeline.add(h264parse)
-        x264enc.link(h264parse)
-
-        splitmuxsink = Gst.ElementFactory.make("splitmuxsink")
-        splitmuxsink.set_property("muxer-factory", "mpegtsmux")
-        splitmuxsink.set_property("max-size-time", 10 * 1000000000)
-        # os.makedirs(f"/tmp/assets/{self._live_stream_request_id}", exist_ok=True)
-        splitmuxsink.set_property(
-            "location",
-            f"/tmp/assets/{self._live_stream_request_id}/{self._live_stream_request_id}_%d.ts",
-        )
-        splitmuxsink.set_property("max-files", 2)
-        pipeline.add(splitmuxsink)
-        h264parse.link(splitmuxsink)
-
-        def valve_control_thread(self):
-            preview_file = f"/tmp/assets/{self._live_stream_request_id}/.ui_preview"
-            time.sleep(60)
-            while self._pipeline is not None:
-                try:
-                    if os.path.exists(preview_file):
-                        mtime = os.path.getmtime(preview_file)
-                        if time.time() - mtime <= 30:
-                            self._preview_valve.set_property("drop", False)
-                            time.sleep(1)
-                            continue
-                    self._preview_valve.set_property("drop", True)
-                except Exception as e:
-                    logger.error(f"Error in valve control thread: {e}")
-                    self._preview_valve.set_property("drop", True)
-                time.sleep(1)
-
-        threading.Thread(target=valve_control_thread, daemon=True, args=(self,)).start()
-
-        h264parse_src_pad = preview_queue.get_static_pad("sink")
-
-        def on_h264parse_buffer(pad, info):
-            buffer = info.get_buffer()
-            buffer.dts = Gst.CLOCK_TIME_NONE
-            if not hasattr(self, "_prev_pts"):
-                self._prev_pts = -1
-
-            if self._prev_pts >= buffer.pts:
-                return Gst.PadProbeReturn.DROP
-
-            self._prev_pts = buffer.pts
-            return Gst.PadProbeReturn.OK
-
-        h264parse_src_pad.add_probe(Gst.PadProbeType.BUFFER, on_h264parse_buffer)
-        self._splitmuxsink = splitmuxsink
-        return True
-
     def _asr_input_thread(self):
         """Thread that reads audio frames from the cached frames and sends them to the ASR service"""
         while not self._audio_stop.is_set() or len(self._cached_audio_frames) > 0:
@@ -905,25 +681,13 @@ class VideoFileFrameGetter:
                         self._audio_current_pts = start_time
                         self._audio_end_cv.notify()
 
-                    with self._audio_start_cv:
-                        with self._err_msg_lock:
-                            has_error = self._err_msg is not None
-                        if (
-                            (start_time) > self._live_stream_next_chunk_start_pts
-                            and not has_error
-                            and not self._stop_stream
-                        ):
-                            logger.debug("Waiting for next audio chunk start.")
-                            self._audio_start_cv.wait(1)
-
-                    with self._live_stream_audio_transcripts_lock:
-                        self._cached_transcripts.append(
-                            {
-                                "transcript": transcript,
-                                "start": start_time,
-                                "end": end_time,
-                            }
-                        )
+                    self._cached_transcripts.append(
+                        {
+                            "transcript": transcript,
+                            "start": start_time,
+                            "end": end_time,
+                        }
+                    )
                     logger.debug(
                         "Audio transcript: %s, buffer.pts: %d, duration: %d",
                         transcript,
@@ -947,7 +711,7 @@ class VideoFileFrameGetter:
             self._audio_end_cv.notify()
 
     def _create_pipeline(
-        self, file_or_rtsp: str, username="", password="", create_source_elems_only=False
+        self, file_path: str, username="", password="", create_source_elems_only=False
     ):
         # Construct DeepStream pipeline for decoding
         # For raw frames as tensor:
@@ -966,38 +730,6 @@ class VideoFileFrameGetter:
                 elem.set_property("sei-uuid", "NVDS_CUSTOMMETA")
             if "mpeg4videoparse" in elem.get_factory().get_name():
                 elem.set_property("config-interval", -1)
-            if "rtspsrc" == elem.get_factory().get_name():
-                selff._rtspsrc = elem
-                pyds.configure_source_for_ntp_sync(hash(elem))
-                timeout = int(os.environ.get("VSS_RTSP_TIMEOUT", "") or "2000") * 1000
-                latency = int(os.environ.get("VSS_RTSP_LATENCY", "") or "2000")
-                elem.set_property("timeout", timeout)
-                elem.set_property("latency", latency)
-                # Below code need additional review and tests.
-                # Also is a feature - to let users change protocol.
-                # Protocols: Allowed lower transport protocols
-                # Default: 0x00000007, "tcp+udp-mcast+udp"
-                # protocols = int(os.environ.get("VSS_RTSP_PROTOCOLS", "") or "7")
-                # elem.set_property("protocols", protocols)
-
-                if username and password:
-                    elem.set_property("user-id", username)
-                    elem.set_property("user-pw", password)
-
-                if not self._audio_support or not self._enable_audio:
-                    # Ignore audio
-                    elem.connect("select-stream", cb_select_stream)
-
-                # Connect before-send to handle TEARDOWN per:
-                # Unfortunately, going to the NULL state involves going through PAUSED,
-                # so rtspsrc does not know the difference and will send a PAUSE
-                # when you wanted a TEARDOWN. The workaround is to
-                # hook into the before-send signal and return FALSE in this case.
-                # Source: https://gstreamer.freedesktop.org/documentation/rtsp/rtspsrc.html
-                elem.connect("before-send", cb_before_send, selff)
-            if "udpsrc" == elem.get_factory().get_name():
-                logger.debug("udpsrc created")
-                selff._udpsrc = elem
 
         def cb_newpad_decodebin(uridecodebin, uridecodebin_pad, self):
             caps = uridecodebin_pad.get_current_caps()
@@ -1017,7 +749,7 @@ class VideoFileFrameGetter:
         uridecodebin = None
 
         filesrc = Gst.ElementFactory.make("filesrc")
-        filesrc.set_property("location", file_or_rtsp)
+        filesrc.set_property("location", file_path)
         pipeline.add(filesrc)
         self._filesrc = filesrc
 
@@ -1328,25 +1060,13 @@ class VideoFileFrameGetter:
                 self._audio_current_pts = buffer.pts
                 self._audio_end_cv.notify()
 
-            with self._audio_start_cv:
-                with self._err_msg_lock:
-                    has_error = self._err_msg is not None
-                if (
-                    buffer.pts > self._live_stream_next_chunk_start_pts
-                    and not has_error
-                    and not self._stop_stream
-                ):
-                    logger.debug("Wating for next audio chunk start.")
-                    self._audio_start_cv.wait(1)
-
-            with self._live_stream_frame_selectors_lock:
-                self._cached_transcripts.append(
-                    {
-                        "transcript": transcription,
-                        "start": (buffer.pts) / 1000000000.0,
-                        "end": (buffer.pts + buffer.duration) / 1000000000.0,
-                    }
-                )
+            self._cached_transcripts.append(
+                {
+                    "transcript": transcription,
+                    "start": (buffer.pts) / 1000000000.0,
+                    "end": (buffer.pts + buffer.duration) / 1000000000.0,
+                }
+            )
 
             with self._audio_end_cv:
                 self._audio_current_pts = buffer.pts + buffer.duration
@@ -1414,17 +1134,6 @@ class VideoFileFrameGetter:
                         add_audio_to_cache(buffer)
             return Gst.FlowReturn.OK
 
-        def cb_ntpquery(pad, info, data):
-            # Probe callback to handle NTP information from RTSP stream
-            # This requires RTSP Sender Report support in the source.
-            query = info.get_query()
-            if query.type == Gst.QueryType.CUSTOM:
-                struct = query.get_structure()
-                if "nvds-ntp-sync" == struct.get_name():
-                    _, data._live_stream_ntp_epoch = struct.get_uint64("ntp-time-epoch-ns")
-                    _, data._live_stream_ntp_pts = struct.get_uint64("frame-timestamp")
-            return Gst.PadProbeReturn.OK
-
         appsink = Gst.ElementFactory.make("appsink")
         appsink.set_property("async", False)
         appsink.set_property("sync", False)
@@ -1453,28 +1162,6 @@ class VideoFileFrameGetter:
             if uridecodebin:
                 uridecodebin.connect("autoplug-continue", cb_autoplug_continue, None)
 
-        def cb_select_stream(source, idx, caps):
-            if "audio" in caps.to_string():
-                return False
-            return True
-
-        def cb_before_send(rtspsrc, message, selff):
-            """
-            Callback function for the 'before-send' signal.
-
-            This function is called before each RTSP request is sent. It checks if the
-            message is a PAUSE command. If it is, the function returns False to skip
-            sending the message. Otherwise, it returns True to allow the message to be sent.
-            Skipping all msgs including: GstRtsp.RTSPMessage.PAUSE
-            """
-            logger.debug("selff._stop_stream = %s", selff._stop_stream)
-            if selff._stop_stream:
-                logger.debug(
-                    "Intercepting stream:%s " "as we are trying to move pipeline to NULL", message
-                )
-                return False  # Skip sending the PAUSE message
-            return True  # Allow sending the message
-
         if uridecodebin:
             uridecodebin.connect(
                 "deep-element-added",
@@ -1487,8 +1174,7 @@ class VideoFileFrameGetter:
 
         def buffer_probe_event_eos(pad, info, data):
             # Probe callback function to send explicit EOS on audio path
-            # Send EOS for image input (not self._audio_present) or
-            # for RTSP input (wowza stream input needs this).
+            # Send EOS for image input (not self._audio_present).
             event = info.get_event()
 
             if event.type == Gst.EventType.EOS:
@@ -1554,7 +1240,6 @@ class VideoFileFrameGetter:
 
         pad.add_probe(Gst.PadProbeType.BUFFER, buffer_probe, self)
         pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, buffer_probe_event_eos, self)
-        pad.add_probe(Gst.PadProbeType.QUERY_DOWNSTREAM, cb_ntpquery, self)
 
         qvideoconvert.link(videoconvert)
 
@@ -1676,8 +1361,6 @@ class VideoFileFrameGetter:
         self._uridecodebin = None
         self._filesrc = None
         self._parsebin = None
-        self._rtspsrc = None
-        self._udpsrc = None
         self._nvstreammux = None
         self._q1 = None
         self._q2 = None
@@ -1723,7 +1406,7 @@ class VideoFileFrameGetter:
         self._start_pts = chunk.start_pts
         self._chunk_duration = chunk.end_pts - chunk.start_pts
         self._chunkIdx = chunk.chunkIdx
-        self._current_stream_id = getattr(chunk, "streamId", None)
+        self._current_asset_id = getattr(chunk, "streamId", None)
         self._minio_frame_idx = 0
         self._is_warmup = False if request_id else True
         with self._err_msg_lock:
@@ -1749,7 +1432,7 @@ class VideoFileFrameGetter:
                 frame_width != self._previous_frame_width
                 or frame_height != self._previous_frame_height
             )
-            is_file_changed = self._last_stream_id != (chunk.streamId + file)
+            is_file_changed = self._last_file != file
 
             def backup_decodebin():
                 # If codec or resolution has changed, remove the decodebin from the pipeline
@@ -1807,7 +1490,7 @@ class VideoFileFrameGetter:
                 if self._adecodebin and self._enable_audio:
                     self._audio_present = True
 
-            self._last_stream_id = chunk.streamId + file
+            self._last_file = file
             self._frame_width = frame_width
             self._frame_height = frame_height
             self._previous_frame_width = frame_width
@@ -1928,209 +1611,31 @@ class VideoFileFrameGetter:
             logger.error("Couldn't set state to NULL for %s", self._uridecodebin.get_name())
         logger.info("Source removed")
 
-    def stream(
-        self,
-        live_stream_url: str,
-        chunk_duration: int,
-        on_chunk_decoded: Callable[
-            [
-                ChunkInfo,
-                torch.Tensor | list[np.ndarray],  # frames
-                list[float],  # frame_times
-                list[dict],  # transcripts
-                Optional[str],  # error_msg
-                dict,  # kwargs
-            ],
-            None,
-        ],
-        chunk_overlap_duration=0,
-        username="",
-        password="",
-        enable_audio=False,
-        live_stream_id="",
-    ):
-        if self._pipeline:
-            self._pipeline.set_state(Gst.State.NULL)
-            self._pipeline = None
-        self._last_stream_id = ""
-
-        self._live_stream_frame_selectors.clear()
-        self._live_stream_url = live_stream_url
-        self._live_stream_next_chunk_idx = 0
-        self._live_stream_chunk_duration = chunk_duration
-        self._live_stream_chunk_overlap_duration = chunk_overlap_duration
-        self._live_stream_chunk_decoded_callback = on_chunk_decoded
-        self._last_frame_pts = 0
-        self._stop_stream = False
-        self._enable_audio = enable_audio
-        self._is_warmup = False
-        self._current_stream_id = live_stream_id
-
-        if live_stream_id:
-            self._live_stream_request_id = live_stream_id
-        else:
-            self._live_stream_request_id = str(uuid.uuid4())
-        # Rerun the pipeline if it runs into errors like disconnection
-        # Stop if pipeline stops with EOS
-        while not self._stop_stream:
-            with self._err_msg_lock:
-                has_error = self._err_msg is not None
-            if not self._pipeline or has_error:
-                with self._err_msg_lock:
-                    if self._err_msg is not None:
-                        logger.error("Live stream received error. Retrying after 5 seconds")
-                        time.sleep(5)
-                        self._err_msg = None
-            else:
-                break
-            self._live_stream_next_chunk_start_pts = 0
-            self._audio_current_pts = 0
-            self._audio_present = False
-            self._audio_eos = False
-            self._enable_audio = enable_audio
-            self._audio_start_pts = None
-            self._audio_stop.clear()
-            self._audio_error.clear()
-            self._asr_process_finished.clear()
-            self._live_stream_ntp_epoch = 0
-            self._live_stream_ntp_pts = 0
-            self._cached_transcripts = []
-
-            self._pipeline = self._create_pipeline(live_stream_url, username, password)
-
-            # Start input, output audio ASR in a separate process if audio is enabled
-            # and audio stream is present
-            if enable_audio:
-
-                def start_asr_threads():
-                    self._asr_input_queue = mp.Queue()
-                    self._asr_output_queue = mp.Queue()
-                    self._asr_process = mp.Process(
-                        target=streaming_audio_asr,
-                        args=(
-                            self._asr_input_queue,
-                            self._asr_output_queue,
-                            self._asr_config_file,
-                            self._audio_stop,
-                            self._audio_error,
-                            self._asr_process_finished,
-                        ),
-                    )
-
-                    self._asr_input_thread = threading.Thread(
-                        target=self._asr_input_thread, daemon=True
-                    )
-                    self._asr_output_thread = threading.Thread(
-                        target=self._asr_output_thread, daemon=True
-                    )
-                    self._asr_input_thread.start()
-                    self._asr_process.start()
-                    self._asr_output_thread.start()
-
-                def wait_and_start_asr():
-                    while not self._audio_present and not self._audio_stop.is_set():
-                        with self._audio_present_cv:
-                            self._audio_present_cv.wait()
-
-                    if self._audio_present:
-                        start_asr_threads()
-
-                # Wait for audio stream to be found and then start ASR threads
-                threading.Thread(target=wait_and_start_asr, daemon=True).start()
-
-            logger.debug("Pipeline for live stream to PLAYING")
-            self._pipeline.set_state(Gst.State.PLAYING)
-            logger.debug("Pipeline for live stream to loop.run")
-            self._loop.run()
-
-            # Wait for audio streaming thread to complete
-            if enable_audio and self._audio_present:
-                logger.debug("Waiting for audio streaming threads to complete")
-                self._audio_stop.set()
-                self._asr_input_thread.join()
-                self._asr_process.join()
-                self._asr_process_finished.set()
-                self._asr_output_thread.join()
-
-                self._asr_input_queue.close()
-                self._asr_output_queue.close()
-            else:
-                # exit the audio streaming check thread
-                self._audio_stop.set()
-                with self._audio_present_cv:
-                    self._audio_present_cv.notify()
-
-            if self._rtspsrc:
-                logger.debug("forcing EOS; %s", self._last_stream_id)
-                # Send EOS event to the source
-                handled = self._rtspsrc.send_event(Gst.Event.new_eos())
-                # time.sleep(1)
-                logger.debug("EOS forced; %s : %s", handled, self._last_stream_id)
-                self._rtspsrc.set_property("timeout", 0)
-                if self._udpsrc:
-                    logger.debug(
-                        "forcing udpsrc timeout to 0 before teardown; %s", self._last_stream_id
-                    )
-                    self._udpsrc.set_property("timeout", 0)
-
-            # Need to remove source bin and then move pipeline to NULL
-            # to avoid Gst bug:
-            # https://discourse.gstreamer.org/t/gstreamer-1-16-3-setting-rtsp-pipeline-to-null/538/11
-            # TODO: Try latest GStreamer version for any fixes
-            logger.debug("pipe teardown: unlink_source : %s", self._last_stream_id)
-            if self._tee is not None:
-                self._uridecodebin.unlink(self._tee)
-            else:
-                self._uridecodebin.unlink(self._q1)
-
-            if self._audio_q1 is not None:
-                self._uridecodebin.unlink(self._audio_q1)
-            self._pipeline.remove(self._uridecodebin)
-
-            # logger.debug(f"pipe teardown: to READY : {self._last_stream_id}")
-            # self._pipeline.set_state(Gst.State.READY)
-            # time.sleep(1)
-            logger.debug("pipe teardown: to NULL : %s", self._last_stream_id)
-            self.dispose_pipeline_from_separate_thread()
-            logger.debug("pipe teardown: dispose_source : %s", self._last_stream_id)
-            GLib.idle_add(self.dispose_source, self._rtspsrc)
-            GLib.idle_add(self.dispose_source, self._uridecodebin)
-            logger.debug("pipe teardown: done : %s", self._last_stream_id)
-            self._process_finished_chunks(flush=True)
-
-        self._pipeline = None
-        self._live_stream_frame_selectors.clear()
-
-    def stop_stream(self):
-        self._stop_stream = True
-        logger.debug("Force quit loop")
-        self._audio_stop.set()
-        self._loop.quit()
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Video File Frame Getter")
-    parser.add_argument("file_or_rtsp", type=str, help="File / RTSP streams to frames from")
+    parser.add_argument("file_path", type=str, help="Video file path to get frames from")
 
     parser.add_argument(
         "--chunk-duration",
         type=int,
         default=10,
-        help="Chunk duration in seconds to use for live streams",
+        help="Chunk duration in seconds",
     )
     parser.add_argument(
         "--chunk-overlap-duration",
         type=int,
         default=0,
-        help="Chunk overlap duration in seconds to use for live streams",
+        help="Chunk overlap duration in seconds",
     )
     parser.add_argument(
-        "--username", type=str, default=None, help="Username to access the live stream"
+        "--username", type=str, default=None, help="Username for authentication"
     )
     parser.add_argument(
-        "--password", type=str, default=None, help="Password to access the live stream"
+        "--password", type=str, default=None, help="Password for authentication"
     )
 
     parser.add_argument(
@@ -2167,25 +1672,11 @@ if __name__ == "__main__":
         audio_support=args.enable_audio,
     )
 
-    if args.file_or_rtsp.startswith("rtsp://"):
-        frame_getter.stream(
-            args.file_or_rtsp,
-            chunk_duration=args.chunk_duration,
-            chunk_overlap_duration=args.chunk_overlap_duration,
-            username=args.username,
-            password=args.password,
-            on_chunk_decoded=lambda chunk, frames, frame_times, transcripts, error_msg, kwargs: print(
-                f"Picked {len(frames)} frames with times: {frame_times} \
-                for chunk {chunk}\n audio transcripts\n: {transcripts}\n\n\n"
-            ),
-            enable_audio=args.enable_audio,
-        )
-    else:
-        chunk = ChunkInfo()
-        chunk.file = args.file_or_rtsp
-        chunk.start_pts = args.start_time * 1000000000
-        chunk.end_pts = args.end_time * 1000000000 if args.end_time >= 0 else -1
-        frames, frames_pts, audio_frames, error = frame_getter.get_frames(
-            chunk, enable_audio=args.enable_audio
-        )
-        print(f"Picked {len(frames)} frames with times: {frames_pts}")
+    chunk = ChunkInfo()
+    chunk.file = args.file_path
+    chunk.start_pts = args.start_time * 1000000000
+    chunk.end_pts = args.end_time * 1000000000 if args.end_time >= 0 else -1
+    frames, frames_pts, audio_frames, error = frame_getter.get_frames(
+        chunk, enable_audio=args.enable_audio
+    )
+    print(f"Picked {len(frames)} frames with times: {frames_pts}")

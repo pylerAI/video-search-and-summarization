@@ -47,19 +47,6 @@ def convert_seconds_to_string(seconds, need_hour=False, millisec=False):
     return ret_str
 
 
-def format_ntp_timestamp(ntp_timestamp):
-    """Format NTP timestamp to a more readable format for display"""
-    try:
-        # Parse the NTP timestamp (format: 2024-05-30T01:41:25.000Z)
-        from datetime import datetime
-
-        dt = datetime.fromisoformat(ntp_timestamp.replace("Z", "+00:00"))
-        return dt.strftime("%H:%M:%S")
-    except Exception:
-        # Fallback to original format if parsing fails
-        return ntp_timestamp
-
-
 def add_common_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Server Options")
     g.add_argument(
@@ -147,7 +134,7 @@ def get_parser():
 
     summarize = subparsers.add_parser(
         "summarize",
-        help="Trigger summary on an already added file / live stream",
+        help="Trigger summary on an already added file",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     mandatory_args = summarize.add_argument_group("Mandatory Arguments")
@@ -156,7 +143,7 @@ def get_parser():
         required=True,
         action="append",
         type=str,
-        help="ID of the file / live stream to trigger summary on",
+        help="ID of the file to trigger summary on",
     )
     mandatory_args.add_argument(
         "--model", required=True, type=str, help="The VLM model to use for summarizing"
@@ -210,7 +197,7 @@ def get_parser():
     opt_args.add_argument("--model-seed", help="Seed to use while generating from LLM", type=int)
     opt_args.add_argument(
         "--alert",
-        help="Add an alert to be received as a server-sent event for live-streams."
+        help="Add an alert to be received as a server-sent event."
         " Format '<alert_name>:<event1>,<event2>,...'. Can be specified multiple times",
         type=str,
         action="append",
@@ -313,7 +300,7 @@ def get_parser():
 
     generate_vlm_captions = subparsers.add_parser(
         "generate-vlm-captions",
-        help="Generate VLM captions for an already added file / live stream",
+        help="Generate VLM captions for an already added file",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     mandatory_args = generate_vlm_captions.add_argument_group("Mandatory Arguments")
@@ -322,7 +309,7 @@ def get_parser():
         required=True,
         action="append",
         type=str,
-        help="ID of the file / live stream to generate VLM captions for",
+        help="ID of the file to generate VLM captions for",
     )
     mandatory_args.add_argument(
         "--model", required=True, type=str, help="The VLM model to use for generating captions"
@@ -378,119 +365,6 @@ def get_parser():
     )
     add_common_args(generate_vlm_captions)
 
-    add_live_stream = subparsers.add_parser(
-        "add-live-stream",
-        help="Add a live stream",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    mandatory_args = add_live_stream.add_argument_group("Mandatory Arguments")
-    mandatory_args.add_argument("live_stream_url", type=str, help="A Live Stream URL")
-    mandatory_args.add_argument(
-        "--description", help="Description of the live stream", type=str, required=True
-    )
-
-    opt_args = add_live_stream.add_argument_group("Optional Arguments")
-    opt_args.add_argument("--username", help="Username to access the live stream", type=str)
-    opt_args.add_argument("--password", help="Password to access the live stream", type=str)
-
-    add_common_args(add_live_stream)
-
-    list_live_streams = subparsers.add_parser(
-        "list-live-streams",
-        help="List all live streams",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    add_common_args(list_live_streams)
-
-    delete_live_stream = subparsers.add_parser(
-        "delete-live-stream",
-        help="Delete a live stream from the VIA server",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    mandatory_args = delete_live_stream.add_argument_group("Mandatory Arguments")
-    mandatory_args.add_argument("video_id", type=str, help="ID of the live-stream to delete")
-    add_common_args(delete_live_stream)
-
-    add_alert = subparsers.add_parser(
-        "add-alert",
-        help="Add an alert",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    mandatory_args = add_alert.add_argument_group("Mandatory Arguments")
-    mandatory_args.add_argument("--live-stream-id", type=str, help="Live Stream ID", required=True)
-    mandatory_args.add_argument("--callback-url", type=str, help="Callback URL", required=True)
-    mandatory_args.add_argument(
-        "--events",
-        type=str,
-        help="Events to detect. Can be specified multiple times",
-        required=True,
-        action="append",
-    )
-
-    opt_args = add_alert.add_argument_group("Optional Arguments")
-    opt_args.add_argument(
-        "--callback-json-template",
-        help="Json Template to use while posting data to the callback URL."
-        " Supported placeholders {streamId}, {alertId}, {ntpTimestamp}, {alertText}",
-        type=str,
-    )
-    opt_args.add_argument(
-        "--callback-token", help="Bearer token to use while posting to the callback URL", type=str
-    )
-
-    add_common_args(add_alert)
-
-    list_alerts = subparsers.add_parser(
-        "list-alerts",
-        help="List all alerts",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    add_common_args(list_alerts)
-
-    delete_alert = subparsers.add_parser(
-        "delete-alert",
-        help="Delete an alert from the VIA server",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    mandatory_args = delete_alert.add_argument_group("Mandatory Arguments")
-    mandatory_args.add_argument("alert_id", type=str, help="ID of the alert to delete")
-    add_common_args(delete_alert)
-
-    list_recent_alerts = subparsers.add_parser(
-        "list-recent-alerts",
-        help="List recent alerts",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    opt_args = list_recent_alerts.add_argument_group("Optional Arguments")
-    opt_args.add_argument(
-        "--live-stream-id",
-        help="Filter alerts by live stream ID",
-        type=str,
-    )
-    add_common_args(list_recent_alerts)
-
-    alert_callback_server = subparsers.add_parser(
-        "alert-callback-server",
-        help="Start a test server for VIA alert callbacks",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    opt_args = alert_callback_server.add_argument_group("Optional Arguments")
-    opt_args.add_argument(
-        "--host",
-        help="Host to server on",
-        type=str,
-        default="127.0.0.1",
-    )
-    opt_args.add_argument(
-        "--port",
-        help="Port to server on",
-        type=int,
-        default=8500,
-    )
-
-    add_common_args(alert_callback_server)
-
     list_models = subparsers.add_parser(
         "list-models",
         help="List all models",
@@ -518,7 +392,7 @@ def get_parser():
 
     chat = subparsers.add_parser(
         "chat",
-        help="Trigger chat/Q&A on an already added file / live stream",
+        help="Trigger chat/Q&A on an already added file",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     mandatory_args = chat.add_argument_group("Mandatory Arguments")
@@ -527,7 +401,7 @@ def get_parser():
         required=True,
         action="append",
         type=str,
-        help="ID of the file / live stream to trigger chat on",
+        help="ID of the file to trigger chat on",
     )
     mandatory_args.add_argument(
         "--model", required=True, type=str, help="The VLM model to use for summarizing"
@@ -569,7 +443,7 @@ def get_parser():
     opt_args.add_argument("--model-seed", help="Seed to use while generating from LLM", type=int)
     opt_args.add_argument(
         "--alert",
-        help="Add an alert to be received as a server-sent event for live-streams."
+        help="Add an alert to be received as a server-sent event."
         " Format '<alert_name>:<event1>,<event2>,...'. Can be specified multiple times",
         type=str,
         action="append",
@@ -614,7 +488,7 @@ def get_parser():
         "--id", type=str, help="Unique request ID (auto-generated if not provided)"
     )
     opt_args.add_argument(
-        "--timestamp", type=str, help="NTP timestamp (auto-generated if not provided)"
+        "--timestamp", type=str, help="Timestamp (auto-generated if not provided)"
     )
     opt_args.add_argument(
         "--confidence", type=float, default=1.0, help="Confidence score (0.0-1.0)"
@@ -823,8 +697,6 @@ def do_summarize(args):
         req_json["chunk_duration"] = args.chunk_duration
     if args.chunk_overlap_duration is not None:
         req_json["chunk_overlap_duration"] = args.chunk_overlap_duration
-    if args.summary_duration is not None:
-        req_json["summary_duration"] = args.summary_duration
     if args.summarize_batch_size is not None:
         req_json["summarize_batch_size"] = args.summarize_batch_size
     if args.rag_top_k is not None:
@@ -953,8 +825,8 @@ def do_summarize(args):
                         + convert_seconds_to_string(result["media_info"]["end_offset"])
                     )
                 if result.get("media_info", None) and result["media_info"]["type"] == "timestamp":
-                    start_time = format_ntp_timestamp(result["media_info"]["start_timestamp"])
-                    end_time = format_ntp_timestamp(result["media_info"]["end_timestamp"])
+                    start_time = result["media_info"]["start_timestamp"]
+                    end_time = result["media_info"]["end_timestamp"]
                     print(f"Media time range: {start_time} - {end_time}")
                     print(
                         f"Full timestamps: {result['media_info']['start_timestamp']} to "
@@ -969,10 +841,7 @@ def do_summarize(args):
                         alert = result["choices"][0]["message"]["tool_calls"][0]["alert"]
                         print("    Name:", alert["name"])
                         print("    Detected Event:", alert["detectedEvents"])
-                        if "ntpTimestamp" in alert:
-                            print("    NTP Time:", alert["ntpTimestamp"])
-                        else:
-                            print("    Time:", alert["offset"], "seconds")
+                        print("    Time:", alert["offset"], "seconds")
                         print("    Details:", alert["details"])
                 if result["usage"]:
                     print(f"Chunks processed: {result['usage']['total_chunks_processed']}")
@@ -1000,8 +869,8 @@ def do_summarize(args):
                 "Media end offset: " + convert_seconds_to_string(result["media_info"]["end_offset"])
             )
         elif result["media_info"]["type"] == "timestamp":
-            start_time = format_ntp_timestamp(result["media_info"]["start_timestamp"])
-            end_time = format_ntp_timestamp(result["media_info"]["end_timestamp"])
+            start_time = result["media_info"]["start_timestamp"]
+            end_time = result["media_info"]["end_timestamp"]
             print(f"Media time range: {start_time} - {end_time}")
             print(
                 f"Full timestamps: {result['media_info']['start_timestamp']} to "
@@ -1115,9 +984,6 @@ def do_generate_vlm_captions(args):
                     for chunk in result["chunk_responses"]:
                         start_time = chunk["start_time"]
                         end_time = chunk["end_time"]
-                        if "T" in start_time:  # NTP timestamp format
-                            start_time = format_ntp_timestamp(start_time)
-                            end_time = format_ntp_timestamp(end_time)
                         print(f"[{start_time} - {end_time}] {chunk['content']}")
 
                         # Display reasoning if available
@@ -1163,9 +1029,6 @@ def do_generate_vlm_captions(args):
                 # Format timestamps for better readability
                 start_time = chunk["start_time"]
                 end_time = chunk["end_time"]
-                if "T" in start_time:  # NTP timestamp format
-                    start_time = format_ntp_timestamp(start_time)
-                    end_time = format_ntp_timestamp(end_time)
 
                 # Get reasoning description if available
                 reasoning = chunk.get("reasoning_description", "")
@@ -1209,9 +1072,6 @@ def do_generate_vlm_captions(args):
                 for i, chunk in enumerate(reasoning_chunks, 1):
                     start_time = chunk["start_time"]
                     end_time = chunk["end_time"]
-                    if "T" in start_time:  # NTP timestamp format
-                        start_time = format_ntp_timestamp(start_time)
-                        end_time = format_ntp_timestamp(end_time)
 
                     print(f"\nChunk {i} ({start_time} - {end_time}):")
                     print("-" * 40)
@@ -1376,188 +1236,6 @@ def do_review_alert(args):
         print(f"Selected Frame Timestamps: {debug_info['selected_frames_ts']}")
 
 
-def do_add_live_stream(args):
-    req_json = {
-        "liveStreamUrl": args.live_stream_url,
-    }
-    if args.description:
-        req_json["description"] = args.description
-    if args.username:
-        req_json["username"] = args.username
-    if args.password:
-        req_json["password"] = args.password
-
-    if args.print_curl_command:
-        print(f'curl -i -X POST {get_api_url("/live-stream")} \\')
-        print('    -H "Content-Type: application/json" \\')
-        print(f"    --data \\\n'{json.dumps(req_json, indent=2)}'")
-        return
-
-    result = requests.post(get_api_url("/live-stream"), json=req_json)
-    check_err_response(result, True)
-    result_json = result.json()
-    print(f"Live stream added - id: {result_json['id']}")
-
-
-def do_list_live_streams(args):
-    if args.print_curl_command:
-        print(f"""curl -i -X GET {get_api_url("/live-stream")}""")
-        return
-    result = requests.get(get_api_url("/live-stream"))
-    check_err_response(result, True)
-    term_width = shutil.get_terminal_size()[0]
-    live_stream_list = result.json()
-    if not live_stream_list:
-        print("No live streams added to the server")
-        return
-    print(
-        tabulate(
-            [
-                [
-                    live_stream["id"],
-                    live_stream["liveStreamUrl"],
-                    live_stream["description"],
-                    live_stream["chunk_duration"],
-                    live_stream["chunk_overlap_duration"],
-                    live_stream["summary_duration"],
-                ]
-                for live_stream in live_stream_list
-            ],
-            headers=[
-                "ID",
-                "URL",
-                "Description",
-                "Chunk\nDuration",
-                "Chunk\nOverlap\nDuration",
-                "Summary\nDuration",
-            ],
-            tablefmt="simple_grid",
-            maxcolwidths=[36, 50, term_width - 36 - 50 - 8 - 8 - 8 - (1 + 3 * 6), 8, 8, 8],
-        )
-    )
-
-
-def do_delete_live_stream(args):
-    if args.print_curl_command:
-        print(f"""curl -i -X DELETE {get_api_url("/live-stream/" + args.video_id)}""")
-        return
-    result = requests.delete(get_api_url("/live-stream/" + args.video_id))
-    check_err_response(result, True)
-    print("Live stream deleted")
-
-
-def do_add_alert(args):
-    req_json = {
-        "liveStreamId": args.live_stream_id,
-        "callback": args.callback_url,
-        "events": args.events,
-    }
-    if args.callback_token:
-        req_json["callbackToken"] = args.callback_token
-    if args.callback_json_template:
-        req_json["callbackJsonTemplate"] = args.callback_json_template
-
-    if args.print_curl_command:
-        print(f'curl -i -X POST {get_api_url("/alerts")} \\')
-        print('    -H "Content-Type: application/json" \\')
-        print(f"    --data \\\n'{json.dumps(req_json, indent=2)}'")
-        return
-
-    result = requests.post(get_api_url("/alerts"), json=req_json)
-    check_err_response(result, True)
-    result_json = result.json()
-    print(f"Alert added - id: {result_json['id']}")
-
-
-def do_list_alerts(args):
-    if args.print_curl_command:
-        print(f"""curl -i -X GET {get_api_url("/alerts")}""")
-        return
-    result = requests.get(get_api_url("/alerts"))
-    check_err_response(result, True)
-    term_width = shutil.get_terminal_size()[0]
-    alert_list = result.json()
-    if not alert_list:
-        print("No alerts added to the server")
-        return
-    print(
-        tabulate(
-            [
-                [
-                    alert["alertId"],
-                    alert["liveStreamId"],
-                    alert["events"],
-                ]
-                for alert in alert_list
-            ],
-            headers=[
-                "Alert ID",
-                "Live Stream ID",
-                "Events",
-            ],
-            tablefmt="simple_grid",
-            maxcolwidths=[36, 36, term_width - 36 - 36 - (1 + 3 * 3)],
-        )
-    )
-
-
-def do_delete_alert(args):
-    if args.print_curl_command:
-        print(f"""curl -i -X DELETE {get_api_url("/alerts/" + args.alert_id)}""")
-        return
-    result = requests.delete(get_api_url("/alerts/" + args.alert_id))
-    check_err_response(result, True)
-    print("Alert deleted")
-
-
-def do_list_recent_alerts(args):
-    url = get_api_url("/alerts/recent")
-    if args.live_stream_id:
-        url += f"?live_stream_id={args.live_stream_id}"
-    if args.print_curl_command:
-        print(f"""curl -i -X GET {url}""")
-        return
-
-    result = requests.get(url)
-    check_err_response(result, True)
-    term_width = shutil.get_terminal_size()[0]
-    alert_list = result.json()
-    if not alert_list:
-        print("No recent alerts found")
-        return
-    print(
-        tabulate(
-            [
-                [
-                    alert["alert_id"],
-                    alert["live_stream_id"],
-                    alert["detected_events"],
-                    alert["ntp_timestamp"].split("T")[0]
-                    + alert["ntp_timestamp"].split("T")[1].split(".")[0],
-                    alert["alert_text"],
-                ]
-                for alert in alert_list
-            ],
-            headers=["Alert ID", "Live Stream ID", "Events", "Time (UTC)", "Alert Details"],
-            tablefmt="simple_grid",
-            maxcolwidths=[18, 18, 10, 20, term_width - 18 - 18 - 10 - 20 - (1 + 5 * 3)],
-        )
-    )
-
-
-def do_alert_callback_server(args):
-    app = FastAPI()
-
-    @app.post("/via-alert-callback")
-    async def print_alert(data: dict):
-        print("Alert received:")
-        print(json.dumps(data, indent=2))
-
-    print("Server starting. Alert callback handler at path /via-alert-callback")
-
-    uvicorn.run(app, host=args.host, port=args.port)
-
-
 def do_list_models(args):
     if args.print_curl_command:
         print(f"""curl -i -X GET {get_api_url("/models")}""")
@@ -1567,7 +1245,7 @@ def do_list_models(args):
     term_width = shutil.get_terminal_size()[0]
     model_list = result.json()
     if not model_list["data"]:
-        print("No live streams added to the server")
+        print("No models available")
         return
     print(
         tabulate(
@@ -1627,22 +1305,6 @@ def main():
         do_summarize(args)
     if args.request == "generate-vlm-captions":
         do_generate_vlm_captions(args)
-    if args.request == "add-live-stream":
-        do_add_live_stream(args)
-    if args.request == "list-live-streams":
-        do_list_live_streams(args)
-    if args.request == "delete-live-stream":
-        do_delete_live_stream(args)
-    if args.request == "add-alert":
-        do_add_alert(args)
-    if args.request == "list-alerts":
-        do_list_alerts(args)
-    if args.request == "delete-alert":
-        do_delete_alert(args)
-    if args.request == "list-recent-alerts":
-        do_list_recent_alerts(args)
-    if args.request == "alert-callback-server":
-        do_alert_callback_server(args)
     if args.request == "list-models":
         do_list_models(args)
     if args.request == "server-metrics":
