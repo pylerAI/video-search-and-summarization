@@ -35,14 +35,7 @@ RUN --mount=type=bind,source=config,target=/tmp/via-src/config \
 
 RUN mkdir -p /opt/nvidia/via/config/overrides && \
     ln -s -v /workspace/vss/src/vss-engine/config/MOT_EVAL_config_fusion.yml /opt/nvidia/via/config/ && \
-    ln -s /workspace/vss/src/vss-engine/config/config_tracker_NvDCF_accuracy_interval1.yml /opt/nvidia/via/config/default_tracker_config.yml && \
-    ln -s /workspace/vss/src/vss-engine/config/config_tracker_NvDCF_accuracy_SAM2.yml /opt/nvidia/via/config/config_tracker_NvDCF_accuracy_SAM2.yml && \
-    ln -s /workspace/vss/src/vss-engine/config/overrides/overrides_cv_accuracy_mode.yaml /opt/nvidia/via/config/overrides/overrides_cv_accuracy_mode.yaml && \
     ln -s /workspace/vss/src/vss-engine/start_via.sh /opt/nvidia/via/start_via.sh
-
-
-#To allow helm chart start script to copy updated config:
-RUN chmod -R 777 /opt/nvidia/via/guardrails_config/
 ENV PATH=$PATH:/opt/nvidia/via/
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/tritonserver/lib/
 
