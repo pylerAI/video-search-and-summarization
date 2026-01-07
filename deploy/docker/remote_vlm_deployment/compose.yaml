@@ -27,7 +27,6 @@ services:
       - "${ASSET_STORAGE_DIR:-/dummy}${ASSET_STORAGE_DIR:+:/tmp/assets}"
       - "${CA_RAG_CONFIG:-/dummy}${CA_RAG_CONFIG:+:/opt/nvidia/via/default_config.yaml}"
       - "${PROMPT_CONFIG:-/dummy}${PROMPT_CONFIG:+:/opt/nvidia/via/prompt_config.yaml}"
-      - "${GUARDRAILS_CONFIG:-/dummy}${GUARDRAILS_CONFIG:+:/opt/nvidia/via/guardrails_config}"
       - "${EXAMPLE_STREAMS_DIR:-/dummy}${EXAMPLE_STREAMS_DIR:+:/opt/nvidia/via/streams:ro}"
       - "${MILVUS_DATA_DIR:-/dummy}${MILVUS_DATA_DIR:+:/root/.milvus.io/milvus-server/2.3.5}"
       - "${MODEL_ROOT_DIR:-/dummy}${MODEL_ROOT_DIR:+:${MODEL_ROOT_DIR:-}}"
@@ -37,8 +36,6 @@ services:
       - "${VIA_SRC_DIR:-/dummy}${VIA_SRC_DIR:+:/opt/nvidia/via:ro}"
       - "${VIA_LOG_DIR:-/dummy}${VIA_LOG_DIR:+:/tmp/via-logs}"
       - via-hf-cache:/tmp/huggingface
-      - "${CV_PIPELINE_TRACKER_CONFIG:-/dummy}${CV_PIPELINE_TRACKER_CONFIG:+:/opt/nvidia/via/config/default_tracker_config.yml}"
-      - "${ALERT_REVIEW_MEDIA_BASE_DIR:-/dummy}${ALERT_REVIEW_MEDIA_BASE_DIR:+:${ALERT_REVIEW_MEDIA_BASE_DIR:-}}"
 
     environment:
       AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY:-}"
@@ -46,8 +43,6 @@ services:
       BACKEND_PORT: "${BACKEND_PORT?}"
       DISABLE_CA_RAG: "${DISABLE_CA_RAG:-false}"
       DISABLE_FRONTEND: "${DISABLE_FRONTEND:-false}"
-      DISABLE_GUARDRAILS: "${DISABLE_GUARDRAILS:-false}"
-      DISABLE_CV_PIPELINE: "${DISABLE_CV_PIPELINE:-true}"
       FRONTEND_PORT: "${FRONTEND_PORT?}"
       MILVUS_DB_HOST: "${MILVUS_DB_HOST:-milvus-standalone}"
       MILVUS_DB_GRPC_PORT: "${MILVUS_DB_GRPC_PORT:-19530}"
@@ -115,7 +110,6 @@ services:
       VLM_DEFAULT_NUM_FRAMES_PER_CHUNK: "${VLM_DEFAULT_NUM_FRAMES_PER_CHUNK:-}"
       APP_VECTORSTORE_URL: "${APP_VECTORSTORE_URL:-}"
       VSS_NUM_GPUS_PER_VLM_PROC: "${VSS_NUM_GPUS_PER_VLM_PROC:-}"
-      ALERT_REVIEW_MEDIA_BASE_DIR: "${ALERT_REVIEW_MEDIA_BASE_DIR:-}"
       ALERT_REVIEW_SKIP_GUARDRAILS: "${ALERT_REVIEW_SKIP_GUARDRAILS:-true}"
       VLM_SYSTEM_PROMPT: "${VLM_SYSTEM_PROMPT:-}"
       ALERT_REVIEW_DEFAULT_VLM_SYSTEM_PROMPT: "${ALERT_REVIEW_DEFAULT_VLM_SYSTEM_PROMPT:-}"

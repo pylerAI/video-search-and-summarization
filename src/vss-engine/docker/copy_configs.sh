@@ -22,5 +22,4 @@ CONFIGS_DIR="$1"
 OUT_DIR="$2"
 
 ln -s -v "$CONFIGS_DIR/runtime_stats.yaml" "$OUT_DIR/default_runtime_stats.yaml"
-ln -s -v -r "$CONFIGS_DIR/guardrails" "$OUT_DIR/guardrails_config"
 ln -s -v "$CONFIGS_DIR/riva_asr_grpc_conf.yaml" "$OUT_DIR/riva_asr_grpc_conf.yaml"

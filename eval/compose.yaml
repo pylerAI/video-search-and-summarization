@@ -33,7 +33,6 @@ services:
       - "${PATH_TO_REPO}/src/vss-engine/:/opt/nvidia/via/via-engine" #comment this out if you want to mount only the tests directory, and use the src code from the image
       - "${PATH_TO_REPO}/eval:/opt/nvidia/via/via-engine/eval"
       - "${MEDIA_DIRECTORY_PATH:-/dummy}:/opt/nvidia/via/streams/additional/" 
-      - "${CV_PIPELINE_TRACKER_CONFIG:-/dummy}${CV_PIPELINE_TRACKER_CONFIG:+:/opt/nvidia/via/config/default_tracker_config.yml}"
       - "${MODEL_ROOT_DIR:-/dummy}${MODEL_ROOT_DIR:+:${MODEL_ROOT_DIR:-}}"
       - "${MODEL_ROOT_DIR2:-/dummy}${MODEL_ROOT_DIR2:+:${MODEL_ROOT_DIR2:-}}"
       - "${MODEL_ROOT_DIR3:-/dummy}${MODEL_ROOT_DIR3:+:${MODEL_ROOT_DIR3:-}}"
@@ -76,7 +75,6 @@ services:
       VLM_DEFAULT_NUM_FRAMES_PER_CHUNK: "${VLM_DEFAULT_NUM_FRAMES_PER_CHUNK:-}"
       APP_VECTORSTORE_URL: "${APP_VECTORSTORE_URL:-}"
       VSS_NUM_GPUS_PER_VLM_PROC: "${VSS_NUM_GPUS_PER_VLM_PROC:-}"
-      ALERT_REVIEW_MEDIA_BASE_DIR: "${ALERT_REVIEW_MEDIA_BASE_DIR:-}"
       ALERT_REVIEW_SKIP_GUARDRAILS: "${ALERT_REVIEW_SKIP_GUARDRAILS:-true}"
       VLM_SYSTEM_PROMPT: "${VLM_SYSTEM_PROMPT:-}"
       COSMOS_REASON1_USE_VLLM: "${COSMOS_REASON1_USE_VLLM:-}"
