@@ -13,17 +13,14 @@
 from vlm_pipeline import VlmPipeline, VlmRequestParams, VlmChunkResponse  # isort:skip
 import concurrent.futures
 import copy
-import glob
 import json
 import os
 import shutil
-import subprocess
 import time
 import traceback
 import uuid
 from argparse import ArgumentParser
 from copy import deepcopy
-from datetime import datetime, timezone
 from enum import Enum
 from threading import Event, RLock, Thread
 from urllib.parse import urlparse
@@ -2164,3 +2161,198 @@ class ViaStreamHandler:
         if elapsed_time > 0 and req_info._fps_frame_count > 0:
             return req_info._fps_frame_count / elapsed_time
         return 0.0
+
+    def analyze(self, query):
+        """Analyze video content to extract metadata.
+
+        This method extracts metadata from video batch summaries using LLM analysis.
+        It calls the appropriate CA-RAG analysis function based on the configured database type.
+
+        Args:
+            query: AnalysisQuery object with analysis parameters (including collection_name)
+
+        Returns:
+            tuple: (AnalysisMetadata, analysis_id)
+        """
+        from vss_api_models import AnalysisMetadata
+
+        collection_name = query.collection_name
+        logger.info(
+            f"Analyzing collection {collection_name}, clear: {query.clear}, "
+            f"has_prompt: {bool(query.prompt)}, has_schema: {bool(query.schema)}"
+        )
+
+        try:
+            # Get or create context manager
+            with self._lock:
+                self._create_ctx_mgr_pool(self._ca_rag_config)
+                if len(self._ctx_mgr_pool) == 0:
+                    raise ViaException("No context manager available", "", 503)
+                ctx_mgr = self._ctx_mgr_pool[0]  # Use first available without popping
+
+            # Lightweight configure: update only collection_name
+            ctx_mgr.configure({
+                "collection_name_only": True,
+                "collection_name": collection_name,
+            })
+
+            # Build the call parameters
+            call_params = {"clear": query.clear}
+            if query.prompt:
+                call_params["prompt"] = query.prompt
+            if query.schema:
+                call_params["schema"] = query.schema
+            if query.model:
+                call_params["model"] = query.model
+            if query.max_tokens:
+                call_params["max_tokens"] = query.max_tokens
+            if query.temperature is not None:
+                call_params["temperature"] = query.temperature
+
+            logger.info(f"Calling analysis_function with params: {call_params}")
+            result = ctx_mgr.call({"analysis_function": call_params})
+
+            # Extract the analysis result
+            func_result = result.get("analysis_function", {})
+            if func_result.get("status") == "error":
+                error_msg = func_result.get("error", "Unknown error during analysis")
+                logger.error(f"Analysis function error: {error_msg}")
+                raise ViaException(error_msg, "", 500)
+
+            # Get analysis_id and results
+            analysis_id = func_result.get("analysis_id", "")
+            results = func_result.get("results", [])
+            
+            # Get the first result for the response (or aggregate if needed)
+            analysis_result = {}
+            if results:
+                # Use the first batch result
+                analysis_result = results[0].get("result", {})
+
+            # Build AnalysisMetadata from the result
+            metadata = AnalysisMetadata(
+                streamId=collection_name,
+                doc_type="caption_summary",
+                source="",
+                scene_id=0,
+                start_time="00:00:00",
+                end_time="00:00:00",
+                # Analysis fields from LLM result
+                locations=analysis_result.get("locations", []),
+                genre=analysis_result.get("genre", ""),
+                keywords=analysis_result.get("keywords", []),
+                confidence_score=analysis_result.get("confidence_score", 0.0),
+                iab_categories=analysis_result.get("iab_categories", []),
+                emotions=analysis_result.get("emotions", []),
+                themes=analysis_result.get("themes", []),
+                actions=analysis_result.get("actions", []),
+                objects=analysis_result.get("objects", []),
+                characters=analysis_result.get("characters", []),
+                weather=analysis_result.get("weather", []),
+                brands=analysis_result.get("brands", []),
+                # Default fields
+                odk_id="None",
+                ad_marker_type="SCTE-35",
+                ad_marker_position="start",
+            )
+
+            logger.info(f"Analysis completed for collection {collection_name}, analysis_id: {analysis_id}")
+            return metadata, analysis_id
+
+        except ViaException:
+            raise
+        except Exception as e:
+            logger.error(f"Analysis failed with error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise ViaException(f"Analysis failed: {str(e)}", "", 500)
+
+    def list_analyses(self, collection_name: str):
+        """List all analyses for a collection.
+
+        Args:
+            collection_name: Milvus collection name
+
+        Returns:
+            list: List of analysis info dicts with analysis_id, batch_i, created_at, model
+        """
+        logger.info(f"Listing analyses for collection {collection_name}")
+
+        try:
+            # Get or create context manager
+            with self._lock:
+                self._create_ctx_mgr_pool(self._ca_rag_config)
+                if len(self._ctx_mgr_pool) == 0:
+                    raise ViaException("No context manager available", "", 503)
+                ctx_mgr = self._ctx_mgr_pool[0]
+
+            # Lightweight configure: update only collection_name
+            ctx_mgr.configure({
+                "collection_name_only": True,
+                "collection_name": collection_name,
+            })
+
+            # Call analysis_function with list_only=True
+            result = ctx_mgr.call({
+                "analysis_function": {
+                    "list_only": True
+                }
+            })
+
+            func_result = result.get("analysis_function", {})
+            if func_result.get("status") == "error":
+                raise ViaException(func_result.get("error", "Unknown error"), "", 500)
+
+            analyses = func_result.get("analyses", [])
+            return analyses
+
+        except ViaException:
+            raise
+        except Exception as e:
+            logger.error(f"List analyses failed: {str(e)}")
+            raise ViaException(f"List analyses failed: {str(e)}", "", 500)
+
+    def delete_analyses(self, collection_name: str):
+        """Delete all analyses for a collection.
+
+        Args:
+            collection_name: Milvus collection name
+
+        Returns:
+            int: Number of analyses deleted
+        """
+        logger.info(f"Deleting analyses for collection {collection_name}")
+
+        try:
+            # Get or create context manager
+            with self._lock:
+                self._create_ctx_mgr_pool(self._ca_rag_config)
+                if len(self._ctx_mgr_pool) == 0:
+                    raise ViaException("No context manager available", "", 503)
+                ctx_mgr = self._ctx_mgr_pool[0]
+
+            # Lightweight configure: update only collection_name
+            ctx_mgr.configure({
+                "collection_name_only": True,
+                "collection_name": collection_name,
+            })
+
+            # Call analysis_function with delete_all=True
+            result = ctx_mgr.call({
+                "analysis_function": {"delete_all": True}
+            })
+
+            func_result = result.get("analysis_function", {})
+            if func_result.get("status") == "error":
+                raise ViaException(func_result.get("error", "Unknown error"), "", 500)
+
+            deleted_count = func_result.get("deleted_count", 0)
+            return deleted_count
+
+        except ViaException:
+            raise
+        except Exception as e:
+            logger.error(f"Delete analyses failed with error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise ViaException(f"Delete analyses failed: {str(e)}", "", 500)
