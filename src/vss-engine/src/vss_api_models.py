@@ -1334,3 +1334,287 @@ class VlmQuery(ViaBaseModel):
         description="Enable reasoning for VLM captions generation",
         examples=[True, False],
     )
+
+
+# ===================== Models required by /analyze API
+
+
+class AnalysisQuery(ViaBaseModel):
+    """Analysis Query Request Fields."""
+
+    collection_name: str = Field(
+        description="Name of the Milvus collection containing video summaries to analyze",
+        examples=["my_video_collection"],
+        max_length=256,
+    )
+
+    clear: bool = Field(
+        default=False,
+        description="If true, delete all existing analyses for this video before adding new ones",
+    )
+
+    prompt: str = Field(
+        default="",
+        max_length=10000,
+        description="Custom prompt for analysis. Use {content} and {schema} placeholders. If not provided, default prompt will be used.",
+        pattern=ANY_CHAR_PATTERN,
+        examples=[
+            "Analyze the following video content and extract metadata.\n\n{content}\n\nSchema: {schema}\n\nRespond in JSON format.",
+        ],
+    )
+
+    schema: dict = Field(
+        default=None,
+        description="Schema with field definitions including type and description for metadata extraction",
+        examples=[
+            {
+                "locations": {
+                    "type": "list[string]",
+                    "description": "Geographic locations or places mentioned or shown in the video"
+                },
+                "genre": {
+                    "type": "string",
+                    "description": "The primary genre or category of the video content"
+                },
+                "keywords": {
+                    "type": "list[string]",
+                    "description": "Key terms and topics that best describe the video content"
+                }
+            }
+        ],
+    )
+
+    # LLM parameters (optional override)
+    model: str = Field(
+        default=None,
+        description="LLM model to use for analysis. If not provided, uses default configured model.",
+        examples=["gpt-4o", "gpt-4o-mini"],
+        max_length=256,
+        pattern=FILE_NAME_PATTERN,
+    )
+
+    max_tokens: int = Field(
+        default=None,
+        examples=[4096],
+        ge=1,
+        le=16384,
+        description="Maximum tokens for LLM response",
+        json_schema_extra={"format": "int32"},
+    )
+
+    temperature: float = Field(
+        default=None,
+        examples=[0.1],
+        ge=0,
+        le=1,
+        description="Sampling temperature for LLM. Lower values produce more deterministic outputs.",
+    )
+
+    top_p: float = Field(
+        default=None,
+        examples=[1],
+        ge=0,
+        le=1,
+        description="Top-p sampling for LLM",
+    )
+
+
+class AnalysisMetadata(ViaBaseModel):
+    """Complete analysis metadata result."""
+
+    # Metadata fields (from Milvus)
+    streamId: str = Field(
+        default="",
+        description="Unique identifier for the video stream or file",
+        max_length=256,
+    )
+    doc_type: str = Field(
+        default="",
+        description="Type of document: 'caption' or 'caption_summary'",
+        max_length=64,
+    )
+    source: str = Field(
+        default="",
+        description="Original source or origin of the video content",
+        max_length=256,
+    )
+    scene_id: int = Field(
+        default=0,
+        description="Sequential identifier for the scene or chunk within the video",
+        ge=0,
+    )
+    start_time: str = Field(
+        default="00:00:00",
+        description="Start timestamp of the segment in HH:MM:SS format",
+        max_length=12,
+    )
+    end_time: str = Field(
+        default="00:00:00",
+        description="End timestamp of the segment in HH:MM:SS format",
+        max_length=12,
+    )
+
+    # Analysis fields (LLM predicted)
+    locations: list[str] = Field(
+        default=[],
+        description="Geographic locations or places mentioned or shown in the video",
+        max_length=50,
+    )
+    genre: str = Field(
+        default="",
+        description="The primary genre or category of the video content",
+        max_length=128,
+    )
+    keywords: list[str] = Field(
+        default=[],
+        description="Key terms and topics that best describe the video content",
+        max_length=100,
+    )
+    confidence_score: float = Field(
+        default=0.0,
+        description="Confidence level of the prediction from 0.0 to 1.0",
+        ge=0.0,
+        le=1.0,
+    )
+    iab_categories: list[str] = Field(
+        default=[],
+        description="IAB content taxonomy categories for advertising targeting",
+        max_length=50,
+    )
+    emotions: list[str] = Field(
+        default=[],
+        description="Emotional tones or feelings conveyed in the video",
+        max_length=50,
+    )
+    themes: list[str] = Field(
+        default=[],
+        description="Central themes or messages of the video content",
+        max_length=50,
+    )
+    actions: list[str] = Field(
+        default=[],
+        description="Key actions or activities shown in the video",
+        max_length=50,
+    )
+    objects: list[str] = Field(
+        default=[],
+        description="Notable objects or items appearing in the video",
+        max_length=50,
+    )
+    characters: list[str] = Field(
+        default=[],
+        description="Types of characters or people featured",
+        max_length=50,
+    )
+    weather: list[str] = Field(
+        default=[],
+        description="Weather conditions shown in the video",
+        max_length=50,
+    )
+    brands: list[str] = Field(
+        default=[],
+        description="Brand names or logos visible or mentioned in the video",
+        max_length=50,
+    )
+
+    # Default fields
+    odk_id: str = Field(
+        default="None",
+        description="Unique identifier for the ODK prediction result",
+        max_length=256,
+    )
+    ad_marker_type: str = Field(
+        default="SCTE-35",
+        description="Type of ad marker standard used for ad insertion signaling",
+        max_length=64,
+    )
+    ad_marker_position: str = Field(
+        default="start",
+        description="Position of the ad marker relative to the content segment",
+        max_length=32,
+    )
+
+
+class AnalysisResponse(ViaBaseModel):
+    """Analysis API Response."""
+
+    collection_name: str = Field(description="Milvus collection name")
+    analysis_id: str = Field(
+        default="",
+        description="Generated analysis ID",
+        max_length=64,
+    )
+    status: str = Field(
+        description="Analysis status: 'success' or 'error'",
+        examples=["success", "error"],
+        max_length=32,
+    )
+    result: Optional[AnalysisMetadata] = Field(
+        default=None,
+        description="Analysis result with extracted metadata. None if error occurred.",
+    )
+    error: str = Field(
+        default="",
+        max_length=1024,
+        description="Error message if analysis failed",
+        pattern=ANY_CHAR_PATTERN,
+    )
+    created: int = Field(
+        json_schema_extra={"format": "int64"},
+        ge=0,
+        le=4000000000,
+        examples=[1717405636],
+        description="Unix timestamp when the analysis was created",
+    )
+
+
+class AnalysisInfo(ViaBaseModel):
+    """Individual analysis info for listing."""
+
+    analysis_id: str = Field(
+        description="Unique identifier for the analysis",
+        max_length=64,
+    )
+    batch_i: int = Field(
+        description="Batch index of the analyzed summary",
+        ge=0,
+    )
+    created_at: int = Field(
+        json_schema_extra={"format": "int64"},
+        ge=0,
+        description="Unix timestamp when the analysis was created",
+    )
+    model: str = Field(
+        default="unknown",
+        description="LLM model used for analysis",
+        max_length=256,
+    )
+
+
+class AnalysisListResponse(ViaBaseModel):
+    """Response for listing analyses."""
+
+    collection_name: str = Field(description="Milvus collection name")
+    analyses: list[AnalysisInfo] = Field(
+        default=[],
+        description="List of analysis info for this video",
+    )
+    count: int = Field(
+        description="Total number of analyses",
+        ge=0,
+    )
+    message: str = Field(
+        default="",
+        description="Additional message (e.g., when no analyses found)",
+        max_length=256,
+    )
+
+
+class AnalysisDeleteResponse(ViaBaseModel):
+    """Response for deleting analyses."""
+
+    collection_name: str = Field(description="Milvus collection name")
+    deleted_count: int = Field(
+        description="Number of analyses deleted",
+        ge=0,
+    )

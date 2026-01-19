@@ -52,6 +52,11 @@ from via_exception import ViaException
 from via_logger import LOG_PERF_LEVEL, TimeMeasure, logger
 from vss_api_models import (
     UUID_LENGTH,
+    AnalysisDeleteResponse,
+    AnalysisInfo,
+    AnalysisListResponse,
+    AnalysisQuery,
+    AnalysisResponse,
     ChatCompletionQuery,
     CompletionResponse,
     CompletionUsage,
@@ -1132,6 +1137,166 @@ class ViaServer:
             }
 
         # ======================= Q&A API
+
+        # ======================= Analysis API
+
+        @self._app.post(
+            f"{API_PREFIX}/analyze",
+            summary="Analyze video content metadata",
+            description=(
+                "Extracts structured metadata from video summaries using LLM analysis.\n\n"
+                "This endpoint analyzes batch summaries from the specified collection "
+                "and extracts metadata such as locations, keywords, emotions, themes, "
+                "IAB categories, and more.\n\n"
+                "**Custom Schema:**\n"
+                "You can provide a custom schema to define which metadata fields to extract. "
+                "Each field should include a `type` and `description`.\n\n"
+                "**Custom Prompt:**\n"
+                "You can provide a custom prompt using `{content}` and `{schema}` placeholders."
+            ),
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+            },
+            tags=["Analysis"],
+        )
+        async def analyze_video(query: AnalysisQuery, request: Request) -> AnalysisResponse:
+            logger.info(
+                "Received analyze request - collection_name: %s, clear: %s, has_prompt: %s, has_schema: %s",
+                query.collection_name,
+                query.clear,
+                bool(query.prompt),
+                bool(query.schema),
+            )
+
+            loop = asyncio.get_event_loop()
+
+            try:
+                # Call ViaStreamHandler.analyze()
+                result, analysis_id = await loop.run_in_executor(
+                    self._async_executor,
+                    self._stream_handler.analyze,
+                    query,
+                )
+
+                return AnalysisResponse(
+                    collection_name=query.collection_name,
+                    analysis_id=analysis_id or "",
+                    status="success",
+                    result=result,
+                    error="",
+                    created=int(time.time()),
+                )
+
+            except ViaException as e:
+                # Already logged in stream_handler, just return error response
+                return AnalysisResponse(
+                    collection_name=query.collection_name,
+                    analysis_id="",
+                    status="error",
+                    result=None,
+                    error=e.message,
+                    created=int(time.time()),
+                )
+            except Exception as e:
+                logger.error(f"Analysis failed with unexpected error: {str(e)}")
+                return AnalysisResponse(
+                    collection_name=query.collection_name,
+                    analysis_id="",
+                    status="error",
+                    result=None,
+                    error=str(e),
+                    created=int(time.time()),
+                )
+
+        @self._app.get(
+            f"{API_PREFIX}/analyze/list",
+            summary="List all analyses for a collection",
+            description=(
+                "Retrieve a list of all analysis results for a specific collection.\n\n"
+                "Returns analysis IDs, batch indices, creation timestamps, and model info."
+            ),
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+            },
+            tags=["Analysis"],
+        )
+        async def list_analyses(collection_name: str, request: Request) -> AnalysisListResponse:
+            logger.info(f"Received list analyses request for collection_name: {collection_name}")
+
+            loop = asyncio.get_event_loop()
+
+            try:
+                analyses = await loop.run_in_executor(
+                    self._async_executor,
+                    self._stream_handler.list_analyses,
+                    collection_name,
+                )
+
+                analysis_list = [
+                    AnalysisInfo(
+                        analysis_id=a.get("analysis_id", ""),
+                        batch_i=a.get("batch_i", 0),
+                        created_at=a.get("created_at", 0),
+                        model=a.get("model", "unknown"),
+                    )
+                    for a in analyses
+                ]
+                message = "" if analysis_list else "No analyses found. Please run analysis first."
+
+                return AnalysisListResponse(
+                    collection_name=collection_name,
+                    analyses=analysis_list,
+                    count=len(analysis_list),
+                    message=message,
+                )
+
+            except ViaException as e:
+                # Already logged in stream_handler
+                raise e
+            except Exception as e:
+                logger.error(f"List analyses failed: {str(e)}")
+                raise ViaException(str(e), "", 500)
+
+        @self._app.delete(
+            f"{API_PREFIX}/analyze",
+            summary="Delete all analyses for a collection",
+            description=(
+                "Delete all analysis results for a specific collection.\n\n"
+                "This permanently removes all stored analysis data for the collection."
+            ),
+            responses={
+                200: {"description": "Successful Response."},
+                **add_common_error_responses(),
+            },
+            tags=["Analysis"],
+        )
+        async def delete_analyses(collection_name: str, request: Request) -> AnalysisDeleteResponse:
+            logger.info(f"Received delete analyses request for collection_name: {collection_name}")
+
+            loop = asyncio.get_event_loop()
+
+            try:
+                deleted_count = await loop.run_in_executor(
+                    self._async_executor,
+                    self._stream_handler.delete_analyses,
+                    collection_name,
+                )
+
+                return AnalysisDeleteResponse(
+                    collection_name=collection_name,
+                    deleted_count=deleted_count,
+                )
+
+            except ViaException as e:
+                logger.error(f"Delete analyses failed: {e.message}")
+                raise e
+            except Exception as e:
+                logger.error(f"Delete analyses failed with unexpected error: {str(e)}")
+                raise ViaException(str(e), "", 500)
+
+        # ======================= Analysis API
 
     def _setup_exception_handlers(self):
         # Handle incorrect request schema (user error)
