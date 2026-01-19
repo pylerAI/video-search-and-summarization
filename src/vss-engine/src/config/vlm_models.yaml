@@ -11,7 +11,16 @@ vlm_models:
     deployment_name: "gpt-4o"
     enabled: true
     description: "OpenAI GPT-4o model with vision capabilities"
-      
+
+  gpt-4o-mini:
+    type: "openai-compat"
+    api_key_env: "OPENAI_API_KEY"  # Environment variable containing the API key
+    endpoint: "https://api.openai.com/v1/"
+    deployment_name: "gpt-4o-mini"  # Valid OpenAI model name
+    enabled: true
+    description: "OpenAI GPT-4o model with vision capabilities (mapped from gpt-4o-mini)"
+
+
   # Local/On-premise OpenAI-compatible endpoint (cosmos-reason-1-7b)
   cosmos-reason-1-7b:
     type: "openai-compat"
@@ -20,9 +29,6 @@ vlm_models:
     deployment_name: "cosmos-reason-1-7b"  # Updated to match run_240.sh
     enabled: true  # Enabled for Phase 3A testing
     description: "Local on-premise Cosmos Reason1-7B model with OpenAI-compatible API"
-
-# Default model configuration
-default_model: "gpt-4o"  # This will be used if no model is specified in API calls
 
 # Global settings for all OpenAI-compatible models
 global_settings:

@@ -697,31 +697,11 @@ class ViaServer:
             if not self._model_registry:
                 raise ViaException("Model registry not available", "InternalServerError", 500)
                 
-                    model_data = self._model_registry.get_model_info_for_api()
-                    logger.info(f"Received list models request. Responding with {len(model_data)} models from registry")
-                    return {
-                        "object": "list",
-                        "data": model_data,
-                    }
-                else:
-                    logger.warning("Model registry not available, falling back to pipeline model info")
-            except Exception as e:
-                logger.error(f"Error getting models from registry: {e}, falling back to pipeline")
-            
-            # Fallback to original logic
-            minfo = self._stream_handler.get_models_info()
-            logger.info("Received list models request. Responding with 1 models info (fallback)")
+            model_data = self._model_registry.get_model_info_for_api()
+            logger.info(f"Received list models request. Responding with {len(model_data)} models from registry")
             return {
                 "object": "list",
-                "data": [
-                    {
-                        "id": minfo.id,
-                        "created": int(minfo.created),
-                        "object": "model",
-                        "owned_by": minfo.owned_by,
-                        "api_type": minfo.api_type,
-                    }
-                ],
+                "data": model_data,
             }
 
         # ======================= Models API
@@ -1519,10 +1499,10 @@ class ViaServer:
             openapi_schema["components"]["schemas"]["Body_add_video_file_files_post"]["properties"][
                 "file"
             ]["maxLength"] = 100e9
-            openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["id"][
+            openapi_schema["components"]["schemas"]["SummarizationQuery"]["properties"]["asset_id"][
                 "anyOf"
             ][1]["maxItems"] = 50
-            openapi_schema["components"]["schemas"]["ChatCompletionQuery"]["properties"]["id"][
+            openapi_schema["components"]["schemas"]["ChatCompletionQuery"]["properties"]["asset_id"][
                 "anyOf"
             ][1]["maxItems"] = 50
 

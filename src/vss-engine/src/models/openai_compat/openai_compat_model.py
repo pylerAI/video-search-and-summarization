@@ -16,7 +16,7 @@ import sys
 
 import numpy
 import torch
-from langchain_openai import AzureChatOpenAI
+
 
 from via_logger import TimeMeasure, logger
 
@@ -68,93 +68,11 @@ def tensor_to_base64_jpeg(tensor, idx=0):
 
 
 class CompOpenAIModel:
-    def configure_azure_openai(
-        self, key=None, azureEndpointConfigured=False, nvSecretConfigured=False
-    ):
 
-        # Configure endpoint
-        self._endpoint = ""
-        if azureEndpointConfigured:
-            # The environment variable is set to a valid string
-            self._endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
-            logger.info(f"Azure OpenAI Endpoint: {self._endpoint}")
 
-            # Run your code here if the environment variable is set
-            # ...
-        elif nvSecretConfigured:
-            from models.openai_compat.internal.util import endpoint
 
-            self._endpoint = endpoint
-        else:
-            # The environment variable is not set or is an empty string
-            logger.info("Azure OpenAI Endpoint environment variable is not set or is empty.")
-        os.environ["AZURE_OPENAI_ENDPOINT"] = self._endpoint
 
-        # configure key
-        if nvSecretConfigured:
-            if key is None:
-                from models.openai_compat.internal.util import get_nv_oauth_token
 
-                self._key = get_nv_oauth_token(120)
-                os.environ["AZURE_OPENAI_API_KEY"] = self._key
-            else:
-                self._key = key
-                os.environ["AZURE_OPENAI_API_KEY"] = self._key
-
-        if self._model_name:
-            self._model = AzureChatOpenAI(model=self._model_name, deployment_name=self._model_name)
-
-    # Configure common environments between Azure Open AI and Open AI APIs
-    def configure_openai_common(self):
-        if "OPENAI_API_VERSION" in os.environ and os.environ["OPENAI_API_VERSION"]:
-            self._openai_api_version = os.environ["OPENAI_API_VERSION"]
-        else:
-            logger.warning(
-                "OPENAI_API_VERSION is not configured;"
-                " May be required for certain model deployments;"
-            )
-        if "AZURE_OPENAI_API_VERSION" in os.environ and os.environ["AZURE_OPENAI_API_VERSION"]:
-            self._azure_openai_api_version = os.environ["AZURE_OPENAI_API_VERSION"]
-        else:
-            logger.info(
-                "AZURE_OPENAI_API_VERSION is not configured;"
-                " May be required for certain model deployments;"
-            )
-        # Model config:
-        if (
-            "VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME" in os.environ
-            and os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-        ):
-            self._model_name = os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-        else:
-            logger.error("VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME is not configured")
-
-    def configure_openai(self):
-        from openai import OpenAI
-
-        if "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]:
-            logger.info("OPENAI_API_KEY configured")
-        else:
-            logger.error("OPENAI_API_KEY not configured")
-        if self._model_name:
-            if "VIA_VLM_ENDPOINT" in os.environ and os.environ["VIA_VLM_ENDPOINT"]:
-                self._endpoint = base_url = os.environ["VIA_VLM_ENDPOINT"]
-                logger.info(f"VIA_VLM_ENDPOINT is configured to {base_url}")
-                if "VIA_VLM_API_KEY" in os.environ and os.environ["VIA_VLM_API_KEY"]:
-                    logger.info("VIA_VLM_API_KEY is configured")
-                    self._key = os.environ["VIA_VLM_API_KEY"]
-                    self._client = OpenAI(
-                        base_url=base_url, api_key=self._key, max_retries=OPENAI_RECONNECT_ATTEMPTS
-                    )
-                else:
-                    logger.info("VIA_VLM_API_KEY is not configured; will try use OPENAI_API_KEY")
-                    self._client = OpenAI(base_url=base_url, max_retries=OPENAI_RECONNECT_ATTEMPTS)
-            else:
-                logger.info("VIA_VLM_ENDPOINT is not configured; using OpenAI() default")
-                self._client = OpenAI(max_retries=OPENAI_RECONNECT_ATTEMPTS)
-                self._endpoint = "https://api.openai.com/v1/"  # default
-                if not os.environ.get("OPENAI_API_KEY", ""):
-                    raise Exception("OPENAI_API_KEY not configured")
 
     def init_with_dynamic_config(self, model_config):
         """Initialize with dynamic model configuration from model registry"""
@@ -164,71 +82,87 @@ class CompOpenAIModel:
         
         logger.info(f"Dynamic config - Model: {self._model_name}, Endpoint: {self._endpoint}")
         
+        # Validate required fields
+        if not self._key:
+            raise Exception(f"Invalid dynamic model configuration: missing api_key")
+        if not self._endpoint:
+            raise Exception(f"Invalid dynamic model configuration: missing endpoint")
+        if not self._model_name:
+            raise Exception(f"Invalid dynamic model configuration: missing deployment_name")
+        
         # Configure client with dynamic settings
         from openai import OpenAI
         
-        if self._key and self._endpoint and self._model_name:
-            self._client = OpenAI(
-                base_url=self._endpoint,
-                api_key=self._key,
-                max_retries=OPENAI_RECONNECT_ATTEMPTS
-            )
-            logger.info(f"Initialized OpenAI client with dynamic config for {self._model_name}")
-        else:
-            raise Exception(f"Invalid dynamic model configuration: missing required fields")
-    
-    def init_gpt_4(self, key=None):
-        self._key = key
-
-        # Model config:
-        if (
-            "VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME" in os.environ
-            and os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-        ):
-            self._model_name = os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-
-        self.configure_openai_common()
-        self._azureEndpointConfigured = (
-            "AZURE_OPENAI_ENDPOINT" in os.environ and os.environ["AZURE_OPENAI_ENDPOINT"]
+        self._client = OpenAI(
+            base_url=self._endpoint,
+            api_key=self._key,
+            max_retries=OPENAI_RECONNECT_ATTEMPTS
         )
-
+        logger.info(f"Initialized OpenAI client with dynamic config for {self._model_name}")
+        
+        # Perform a validation call to ensure the model configuration works
+        # This will catch invalid model names early
+        logger.info(f"Validating model configuration for {self._model_name}...")
         try:
-            from models.openai_compat.internal.util import is_nv_secret_configured
-
-            self._nvSecretConfigured = is_nv_secret_configured()
-        except ModuleNotFoundError:
-            self._nvSecretConfigured = False
-
-        if self._azureEndpointConfigured or self._nvSecretConfigured:
-            self.configure_azure_openai(
-                key,
-                azureEndpointConfigured=self._azureEndpointConfigured,
-                nvSecretConfigured=self._nvSecretConfigured,
+            # Make a minimal test call to validate the model exists
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=1
             )
-        else:
-            self.configure_openai()
+            logger.info(f"Model validation successful for {self._model_name}")
+        except Exception as e:
+            # Extract more specific error information from OpenAI API
+            error_msg = str(e)
+            if "does not exist" in error_msg.lower() or "not found" in error_msg.lower():
+                raise Exception(f"Invalid model name '{self._model_name}': Model does not exist or is not accessible")
+            elif "invalid api key" in error_msg.lower() or "unauthorized" in error_msg.lower():
+                raise Exception(f"Invalid API key for model '{self._model_name}': Authentication failed")
+            elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+                raise Exception(f"Rate limit exceeded for model '{self._model_name}': {error_msg}")
+            else:
+                logger.error(f"Model validation failed for {self._model_name}: {e}")
+                raise Exception(f"Invalid model configuration for '{self._model_name}': {error_msg}")
+    
 
     def __init__(self, test_api_call=False, model_config=None) -> None:
         self._model_name = None
         self._model = None
         self._client = None
         self._endpoint = ""
+        self._key = None
         self._model_config = model_config  # Store dynamic model configuration
+        
+        # Initialize Azure and NV Secret attributes (needed for compatibility if kept)
+        self._azureEndpointConfigured = False
+        self._nvSecretConfigured = False
         
         if model_config:
             # Use dynamic configuration
-            logger.info(f"Using dynamic model configuration for {model_config.get('model_id', 'unknown')}")
-            self.init_with_dynamic_config(model_config)
+            model_id = model_config.get('model_id', 'unknown')
+            deployment_name = model_config.get('deployment_name', 'None')
+            logger.info(f"Using dynamic model configuration for {model_id}")
+            logger.info(f"Dynamic model details: deployment_name='{deployment_name}', endpoint='{model_config.get('endpoint', 'None')}'")
+            
+            try:
+                self.init_with_dynamic_config(model_config)
+                logger.info(f"Successfully initialized with dynamic config: model_name='{self._model_name}'")
+            except Exception as e:
+                logger.error(f"Failed to initialize with dynamic config for {model_id}: {e}")
+                raise
         else:
-            # Fallback to environment variables (existing behavior)
-            logger.info("Using environment variables for model configuration")
-            self.init_gpt_4()
+            # Legacy fallback removed - enforce model config
+            logger.warning("No model configuration provided to CompOpenAIModel. Model is uninitialized.")
+            # We allow uninitialized state because VlmProcess checks for dynamic config later
+            # But we log a warning as it shouldn't really happen in the new flow
         
-        # Overwrite environment with final selected endpoint
-        logger.info(f"endpoint is {self._endpoint}")
-        os.environ["VIA_VLM_ENDPOINT"] = self._endpoint
-        if test_api_call:
+        if self._endpoint:
+             os.environ["VIA_VLM_ENDPOINT"] = self._endpoint
+             
+        if test_api_call and self._client:
             self.generate("", [[]], [[]], None, None)
+
+
 
     @property
     def model_name(self):
@@ -243,25 +177,12 @@ class CompOpenAIModel:
 
     @staticmethod
     def get_model_info():
+        # Updated to remove legacy env var usage.
+        # This might need to rely on dynamic instances, but since it's static,
+        # it probably was used for some global info. Returning placeholders.
         api_type = "openai"
-        if (
-            "VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME" in os.environ
-            and os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-        ):
-            id = os.environ["VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME"]
-        else:
-            id = "ModelNotLoaded"
-            logger.error("VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME is not configured")
-        if "VIA_VLM_ENDPOINT" in os.environ and os.environ["VIA_VLM_ENDPOINT"]:
-            owned_by = os.environ["VIA_VLM_ENDPOINT"]
-            owned_by = "".join(
-                char.replace(".", "-").replace("/", "-")
-                for char in owned_by
-                if char.isalnum() or char in "./"
-            )
-        else:
-            owned_by = "ModelNotLoaded"
-            logger.info("VIA_VLM_ENDPOINT is not configured")
+        id = "ConfiguredDynamically"
+        owned_by = "ExternalEndpoint"
         return id, api_type, owned_by
 
     def generate(
@@ -361,16 +282,7 @@ class CompOpenAIModel:
                     0, {"role": "system", "content": generation_config["system_prompt"]}
                 )
 
-            if self._nvSecretConfigured:
-                from models.openai_compat.internal.util import get_nv_oauth_token
 
-                new_key = get_nv_oauth_token(120)
-                if self._key != new_key:
-                    logger.info("NV key changed:")
-                    # re-initialize azure:
-                    self.init_gpt_4(new_key)
-                else:
-                    logger.info("No change in NV key")
 
             with TimeMeasure("OpenAI model inference"):
                 logger.debug("Invoke call")
@@ -428,16 +340,30 @@ class CompOpenAIModel:
                     token_usages.append(token_usage)
                 except Exception as ex:
                     import traceback
+                    import sys
 
+                    # Extract more specific error information from OpenAI API errors
+                    error_message = str(ex)
+                    if hasattr(ex, 'response') and hasattr(ex.response, 'json'):
+                        try:
+                            error_details = ex.response.json()
+                            if 'error' in error_details and 'message' in error_details['error']:
+                                error_message = f"OpenAI API Error: {error_details['error']['message']}"
+                        except:
+                            pass  # Fall back to string representation
+                    elif "model" in error_message.lower() and "not found" in error_message.lower():
+                        error_message = f"Model Configuration Error: {error_message}"
+                    
                     exc_type, exc_value, exc_traceback = sys.exc_info()
                     error_string = "".join(
                         traceback.format_exception(exc_type, exc_value, exc_traceback)
                     )
-                    logger.info(error_string)
-                    response = error_string
+                    logger.error(f"VLM Model Error: {error_message}")
+                    logger.debug(error_string)
+                    response = error_message  # Use the specific error message
                     # Add default token usage for error case
                     token_usages.append({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                    raise ex from None
+                    raise Exception(error_message) from ex
                 finally:
                     responses.append(response)
         return responses, token_usages

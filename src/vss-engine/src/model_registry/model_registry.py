@@ -50,17 +50,28 @@ class ModelConfig:
             
         return True
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API responses"""
-        return {
+    def to_dict(self, include_endpoint: bool = False) -> Dict[str, Any]:
+        """Convert to dictionary for API responses.
+        
+        Args:
+            include_endpoint: When True, include the endpoint URL in the
+                returned dictionary. This should only be enabled for
+                trusted/admin contexts.
+        """
+        data: Dict[str, Any] = {
             "id": self.model_id,
             "type": self.model_type,
-            "endpoint": self.endpoint,
             "deployment_name": self.deployment_name,
             "enabled": self.enabled,
             "description": self.description,
             "has_api_key": self.api_key is not None
         }
+        
+        # Only include endpoint in trusted/admin contexts
+        if include_endpoint:
+            data["endpoint"] = self.endpoint
+            
+        return data
 
 
 class ModelRegistry:
@@ -74,7 +85,6 @@ class ModelRegistry:
             config_path: Path to the YAML configuration file
         """
         self._models: Dict[str, ModelConfig] = {}
-        self._default_model: Optional[str] = None
         self._global_settings: Dict[str, Any] = {}
         self._default_parameters: Dict[str, Any] = {}
         
@@ -102,7 +112,6 @@ class ModelRegistry:
             # Load global settings
             self._global_settings = config.get('global_settings', {})
             self._default_parameters = config.get('default_parameters', {})
-            self._default_model = config.get('default_model')
             
             # Load model configurations
             vlm_models = config.get('vlm_models', {})
@@ -146,18 +155,6 @@ class ModelRegistry:
         model = self._models.get(model_id)
         if model and model.is_valid():
             return model
-        return None
-    
-    def get_default_model_config(self) -> Optional[ModelConfig]:
-        """Get the default model configuration"""
-        if self._default_model:
-            return self.get_model_config(self._default_model)
-        
-        # If no default specified, return the first enabled model
-        for model in self._models.values():
-            if model.is_valid():
-                return model
-        
         return None
     
     def list_available_models(self) -> List[str]:
@@ -226,8 +223,7 @@ class ModelRegistry:
                     "id": model.model_id,
                     "created": 0,  # Static value for compatibility
                     "object": "model",
-                    "owned_by": "external",
-                    "api_type": "external"  # All registry models are external
+                    "owned_by": "external"  # All registry models are external
                 }
                 models.append(model_info)
         

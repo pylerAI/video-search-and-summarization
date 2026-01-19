@@ -19,27 +19,23 @@ logger = logging.getLogger(__name__)
 
 
 def test_summarization_query_model_selection():
-    """Test SummarizationQuery supports both legacy 'model' and new 'model_id' fields"""
+    """Test SummarizationQuery supports 'model' field"""
     from vss_api_models import SummarizationQuery
     
-    # Test legacy model field (backward compatibility)
+    # Test model field
     query1 = SummarizationQuery(
         asset_id="test_asset",
         prompt="Test prompt", 
         model="vila-1.5"
     )
     assert query1.model == "vila-1.5"
-    assert query1.model_id is None
     
-    # Test new model_id field for external models
-    query2 = SummarizationQuery(
-        asset_id="test_asset",
-        prompt="Test prompt",
-        model="vila-1.5",  # Still required for validation
-        model_id="gpt-4o"   # New field for external model selection
-    )
-    assert query2.model == "vila-1.5" 
-    assert query2.model_id == "gpt-4o"
+    # Verify model_id field does not exist (checking strict schema)
+    try:
+        getattr(query1, 'model_id')
+        assert False, "model_id field should not exist"
+    except AttributeError:
+        pass
     
     logger.info("✓ SummarizationQuery model selection works")
 
@@ -135,23 +131,7 @@ def test_server_model_endpoint_integration():
         pytest.skip(f"Server integration not available: {e}")
 
 
-def test_external_model_priority_logic():
-    """Test that model_id takes precedence over model field"""
-    from vss_api_models import SummarizationQuery
-    
-    # When both model and model_id are provided, model_id should take precedence
-    query = SummarizationQuery(
-        asset_id="test_asset",
-        prompt="Test prompt",
-        model="vila-1.5",     # Legacy field
-        model_id="gpt-4o"     # New field - should take precedence
-    )
-    
-    # In the server logic, model_id takes precedence
-    selected_model = query.model_id if query.model_id else query.model
-    assert selected_model == "gpt-4o"
-    
-    logger.info("✓ Model selection priority logic works")
+
 
 
 if __name__ == "__main__":
@@ -162,8 +142,7 @@ if __name__ == "__main__":
         test_summarization_query_model_selection,
         test_vlm_request_params_model_config,
         test_model_registry_integration,
-        test_server_model_endpoint_integration, 
-        test_external_model_priority_logic
+        test_server_model_endpoint_integration
     ]
     
     passed = 0

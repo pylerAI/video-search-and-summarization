@@ -95,6 +95,8 @@ class VlmRequestParams:
                 and self.model_id == other.model_id
                 and self.model_endpoint == other.model_endpoint
                 and self.model_deployment_name == other.model_deployment_name
+                and self.model_api_key == other.model_api_key
+                and self.model_additional_headers == other.model_additional_headers
             )
         return False
     
@@ -657,9 +659,23 @@ class VlmProcess(ViaProcessBase):
         elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.openai_compat.openai_compat_model import CompOpenAIModel
 
-            # Check if we have dynamic model configuration
+            # Check if we have dynamic model configuration from arguments
             model_config = getattr(self, '_dynamic_model_config', None)
+            
+            if model_config:
+                logger.info(f"VlmProcess initialization: Using dynamic model configuration for {model_config.get('model_id', 'unknown')}")
+                logger.info(f"Dynamic config details: deployment_name='{model_config.get('deployment_name', 'None')}', endpoint='{model_config.get('endpoint', 'None')}'")
+            else:
+                logger.info("VlmProcess initialization: No dynamic model configuration provided. Waiting for first request to configure model.")
+            
             self._model = CompOpenAIModel(True, model_config=model_config)
+            
+            # Verify the model was initialized with correct configuration
+            if hasattr(self._model, '_model_name') and self._model._model_name:
+                logger.info(f"VlmProcess initialization complete: Model name set to '{self._model._model_name}'")
+            else:
+                logger.warning("VlmProcess initialization: Model name not set or empty")
+                
             self._batch_size = 1
         elif self._vlm_model_type is None:
             loader = CustomModuleLoader(self._model_path)
@@ -667,25 +683,7 @@ class VlmProcess(ViaProcessBase):
             self._batch_size = 1
         return True
     
-    def set_dynamic_model_config(self, model_config):
-        """Set dynamic model configuration for this VLM process"""
-        self._dynamic_model_config = model_config
-        logger.info(f"Set dynamic model config for VLM process: {model_config.get('model_id', 'unknown')}")
-        
-        # For OpenAI compatible models, reinitialize with new configuration if model is already loaded
-        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
-            current_model = getattr(self, '_model', None)
-            if current_model is not None:
-                try:
-                    from models.openai_compat.openai_compat_model import CompOpenAIModel
-                    logger.info(f"Reinitializing OpenAI model with dynamic config: {model_config.get('model_id')}")
-                    self._model = CompOpenAIModel(True, model_config=model_config)
-                    logger.info(f"Successfully reinitialized model for {model_config.get('model_id')}")
-                except Exception as e:
-                    logger.error(f"Failed to reinitialize model with dynamic config: {e}")
-                    raise
-            else:
-                logger.info(f"Model not yet initialized, dynamic config will be used during initialization")
+
 
     def _deinitialize(self):
         self._model = None
@@ -714,6 +712,47 @@ class VlmProcess(ViaProcessBase):
         if hasattr(self._model, "warmup"):
             self._model.warmup()
 
+    def _update_model_config_if_needed(self, request_params):
+        """
+        Check if model configuration needs update and apply it.
+        This runs inside the worker process.
+        """
+        # Only applicable for OpenAI compatible models that support dynamic config
+        if self._vlm_model_type != VlmModelType.OPENAI_COMPATIBLE:
+            return
+
+        new_config = {
+            'model_id': request_params.model_id,
+            'endpoint': request_params.model_endpoint,
+            'api_key': request_params.model_api_key,
+            'deployment_name': request_params.model_deployment_name,
+            'additional_headers': request_params.model_additional_headers or {}
+        }
+
+        # Check if config has changed
+        current_config = getattr(self, "_current_model_config", None)
+        if current_config == new_config:
+            return
+
+        logger.info(f"VlmProcess (pid={os.getpid()}): Updating model configuration for {new_config['model_id']}")
+        
+        # We need to re-initialize the model with the new configuration
+        # This will trigger the validation logic inside CompOpenAIModel init
+        try:
+            from models.openai_compat.openai_compat_model import CompOpenAIModel
+            
+            # Force reinitialization with new configuration
+            # This call will RAISE an exception if the model is invalid (connection failed, etc.)
+            self._model = CompOpenAIModel(True, model_config=new_config)
+            
+            # Update current config only after successful initialization
+            self._current_model_config = new_config
+            logger.info(f"VlmProcess (pid={os.getpid()}): Successfully updated model to {new_config['model_id']}")
+            
+        except Exception as e:
+            logger.error(f"VlmProcess (pid={os.getpid()}): Failed to update model config: {e}")
+            raise Exception(f"Failed to configure model '{new_config['model_id']}': {str(e)}")
+
     def _process(
         self, chunk: list[ChunkInfo], request_params: list[VlmRequestParams | None], **kwargs
     ):
@@ -723,6 +762,25 @@ class VlmProcess(ViaProcessBase):
             for chunk_ in chunk:
                 logger.log(LOG_STATUS_LEVEL, "Skipping VLM response generation for (%s)", chunk_)
             return
+
+        # Check for dynamic model configuration updates
+        # This is the fix for invalid model selection silent failure
+        try:
+            current_request_params = request_params[0]
+            if current_request_params and current_request_params.has_model_config():
+                self._update_model_config_if_needed(current_request_params)
+        except Exception as e:
+            logger.error(f"Model configuration update failed: {e}")
+            # Propagate error immediately
+            error_response = {
+                "chunk": chunk,
+                "request_params": request_params,
+                "error": [str(e)] * len(chunk) if self._supports_batching() else str(e),
+                "vlm_start_time": [time.time()] * len(chunk),
+                "vlm_end_time": [time.time()] * len(chunk),
+                **kwargs,
+            }
+            return error_response
 
         vlm_start_time = time.time()
         nvtx_vlm_process_start = nvtx.start_range(message="VLM Process-" + str(chunk), color="blue")
@@ -778,11 +836,26 @@ class VlmProcess(ViaProcessBase):
                 [{"input_tokens": 0, "output_tokens": 0}],
             )
         else:
-            vlm_response_stats = ctx.ask(
-                request_params[0].vlm_prompt,
-                generation_config=request_params[0].vlm_generation_config,
-                chunk=chunk,
-            )
+            try:
+                vlm_response_stats = ctx.ask(
+                    request_params[0].vlm_prompt,
+                    generation_config=request_params[0].vlm_generation_config,
+                    chunk=chunk,
+                )
+            except Exception as e:
+                # Ensure model configuration errors are properly propagated
+                logger.error(f"VLM processing failed for chunks {[str(c) for c in chunk]}: {str(e)}")
+                # Create error response that will be handled by the error handling chain
+                error_response = {
+                    "chunk": chunk,
+                    "request_params": [request_params[0]] * len(chunk),
+                    "error": [str(e)] * len(chunk) if self._supports_batching() else str(e),
+                    "vlm_start_time": [vlm_start_time] * len(chunk),
+                    "vlm_end_time": [time.time()] * len(chunk),
+                    **kwargs,
+                }
+                nvtx.end_range(nvtx_vlm_process_start)
+                return error_response
 
         def process_vlm_response(
             chunk,
@@ -1618,18 +1691,11 @@ class VlmPipeline:
         decode_only=False,
     ):
         # Configure VLM processes with dynamic model config if available
-        if request_params and request_params.has_model_config():
-            model_config = {
-                'model_id': request_params.model_id,
-                'endpoint': request_params.model_endpoint,
-                'api_key': request_params.model_api_key,
-                'deployment_name': request_params.model_deployment_name,
-                'additional_headers': request_params.model_additional_headers or {}
-            }
-            # Set dynamic config on all VLM processes
-            for vlm_proc in self._vlm_procs:
-                vlm_proc.set_dynamic_model_config(model_config)
-            logger.info(f"Configured VLM processes for model: {request_params.model_id}")
+        # CRITICAL FIX: The logic to apply dynamic configuration has been moved to VlmProcess._process
+        # because multiprocessing spawn context (default on some platforms and used here) prevents
+        # instance state changes in the parent process from propagating to running child processes.
+        # We now rely on request_params to carry the configuration to the worker process.
+        pass
         
         with self._enqueue_lock:
             curr_chunk_counter = self._chunk_counter

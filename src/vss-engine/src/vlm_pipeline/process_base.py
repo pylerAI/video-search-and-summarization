@@ -138,7 +138,8 @@ class ViaProcessBase(mp_ctx.Process):
 
         if isinstance(result, BaseException):
             logger.error("".join(traceback.format_exception(result)))
-            error_str = "An unknown error occurred"
+            # Use the actual exception message instead of generic error
+            error_str = str(result) if str(result) else f"{type(result).__name__}: An unknown error occurred"
             result = {
                 "chunk": kwargs["chunk"],
                 "chunk_id": kwargs["chunk_id"],

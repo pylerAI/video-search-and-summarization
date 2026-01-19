@@ -16,7 +16,7 @@ Translates between requests/responses and ViaStreamHandler and AssetManager meth
 import os
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, List, Literal, Optional, Union, Any
 from uuid import UUID
 
 from pydantic import (
@@ -26,6 +26,7 @@ from pydantic import (
     Field,
     HttpUrl,
     field_validator,
+    model_validator,
 )
 from via_exception import ViaException
 
@@ -172,12 +173,6 @@ class ModelInfo(ViaBaseModel):
         max_length=10000,
         pattern=DESCRIPTION_PATTERN,
     )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-    )
 
 
 class ListModelsResponse(ViaBaseModel):
@@ -247,6 +242,8 @@ class StreamOptions(ViaBaseModel):
 
 class SummarizationQuery(ViaBaseModel):
     """Summarization Query Request Fields."""
+    
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     asset_id: Union[str, List[str]] = Field(
         description="Asset ID or list of Asset IDs to summarize",
@@ -296,17 +293,10 @@ class SummarizationQuery(ViaBaseModel):
         examples=["Write a concise and clear dense caption for the provided warehouse video"],
     )
     model: str = Field(
-        description="Model to use for this query.",
-        examples=["vila-1.5", "nvila", "llava-1.5"],
+        description="Model identifier (ID from external model registry or internal model name).",
+        examples=["gpt-4o", "vila-1.5", "cosmos-reason-1-7b"],
         max_length=256,
         pattern=FILE_NAME_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-        default="",
     )
     response_format: ResponseFormat = Field(
         description="An object specifying the format that the model must output.",
@@ -639,6 +629,8 @@ class ChatMessage(ViaBaseModel):
 
 class ChatCompletionQuery(ViaBaseModel):
     """A chat completion query."""
+    
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     asset_id: Union[str, List[str]] = Field(
         description="Asset ID or list of Asset IDs of the file(s) to query"
@@ -675,17 +667,10 @@ class ChatCompletionQuery(ViaBaseModel):
         description="The list of chat messages.", max_length=1000000
     )
     model: str = Field(
-        description="Model to use for this query.",
-        examples=["vila-1.5"],
+        description="Model identifier (ID from external model registry or internal model name).",
+        examples=["gpt-4o", "vila-1.5"],
         max_length=256,
         pattern=FILE_NAME_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-        default="",
     )
     response_format: ResponseFormat = Field(
         description="An object specifying the format that the model must output.",
@@ -1170,6 +1155,8 @@ class VssParams(ViaBaseModel):
 
 class VlmQuery(ViaBaseModel):
     """VLM Captions Query Request Fields."""
+    
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     id: Union[UUID, List[UUID]] = Field(
         description="Unique ID or list of IDs of the file(s) to generate VLM captions for",
@@ -1217,17 +1204,10 @@ class VlmQuery(ViaBaseModel):
         examples=["Write a concise and clear dense caption for the provided warehouse video"],
     )
     model: str = Field(
-        description="Model to use for this query.",
-        examples=["vila-1.5", "nvila", "llava-1.5"],
+        description="Model identifier (ID from external model registry or internal model name).",
+        examples=["gpt-4o", "vila-1.5"],
         max_length=256,
         pattern=FILE_NAME_PATTERN,
-    )
-    api_type: str = Field(
-        description="API used to access model.",
-        examples=["internal"],
-        max_length=32,
-        pattern=r"^[A-Za-z]*$",
-        default="",
     )
     response_format: ResponseFormat = Field(
         description="An object specifying the format that the model must output.",
