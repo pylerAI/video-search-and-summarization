@@ -477,7 +477,25 @@ milvus:
     pyler.io/group: dgx
   namespace: vss-240  
   storageClassName: gpfs
-
+  defaultVolumeMounts:
+  - mountPath: /opt/workload-config
+    name: workload-cm-volume
+  - mountPath: /milvus/configs/user.yaml
+    subPath: config.yaml
+    name: configs-volume
+  - mountPath: /opt/scripts
+    name: scripts-cm-volume
+  
+  configs:
+    config.yaml:
+      log:
+        level: warn
+        format: text
+        stdout: true
+      grpc:
+        log:
+          level: WARNING
+          
 neo4j:
   nodeSelector: 
     pyler.io/group: dgx
