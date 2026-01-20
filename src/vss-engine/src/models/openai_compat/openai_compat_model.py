@@ -175,6 +175,10 @@ class CompOpenAIModel:
     def get_conv(self):
         return self._conv.copy()
 
+    def can_enqueue_requests(self):
+        # External models handle their own queueing and concurrency
+        return True
+
     @staticmethod
     def get_model_info():
         # Updated to remove legacy env var usage.

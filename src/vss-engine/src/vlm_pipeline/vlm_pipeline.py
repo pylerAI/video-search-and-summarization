@@ -31,7 +31,6 @@ import torch
 import yaml
 from chunk_info import ChunkInfo
 from grpc._channel import _MultiThreadedRendezvous
-from models.custom.custom_model import CustomModelContext, CustomModuleLoader
 from via_logger import LOG_STATUS_LEVEL, TimeMeasure, logger
 
 from .embedding_helper import EmbeddingHelper
@@ -47,24 +46,13 @@ FORCE_TRT = True
 
 
 class VlmModelType(Enum):
-    VILA_15 = "vila-1.5"
-    NVILA = "nvila"
     OPENAI_COMPATIBLE = "openai-compat"  # Any OpenAI API compatible on NIM/OpenAI/Azure-OpenAI
-    COSMOS_REASON1 = "cosmos-reason1"
 
     def __str__(self):
         return self.value
 
 
-class TrtLlmMode(Enum):
-    FP16 = "fp16"
-    FP8 = "fp8"
-    INT8 = "int8"
-    INT4 = "int4"
-    INT4_AWQ = "int4_awq"
 
-    def __str__(self):
-        return self.value
 
 
 class VlmModelInfo:
@@ -78,6 +66,21 @@ class VlmModelInfo:
 
 
 class VlmRequestParams:
+    """Request parameters for VLM processing, including dynamic model selection.
+    
+    This class carries both inference parameters (prompt, generation config) and
+    model configuration (for dynamic model switching). Each request can specify
+    a different model from the registry, enabling multi-tenant and adaptive scenarios.
+    
+    Attributes:
+        vlm_generation_config: Generation parameters (temperature, max_tokens, etc.)
+        vlm_prompt: User prompt for inference
+        model_id: Model identifier from registry (e.g., 'gpt-4o', 'claude-3.5-sonnet')
+        model_endpoint: API endpoint URL for external model
+        model_api_key: Authentication key for model API
+        model_deployment_name: Deployment-specific model name
+        model_additional_headers: Optional HTTP headers for API calls
+    """
     vlm_generation_config: Optional[dict] = None
     vlm_prompt: Optional[str] = None
     # Model configuration for dynamic model selection
@@ -101,7 +104,15 @@ class VlmRequestParams:
         return False
     
     def has_model_config(self) -> bool:
-        """Check if this request has model configuration"""
+        """Check if this request has complete model configuration.
+        
+        Used to determine whether dynamic model switching should be attempted.
+        All three fields (model_id, model_endpoint, model_deployment_name) must
+        be present for a valid configuration.
+        
+        Returns:
+            bool: True if all required model config fields are present, False otherwise.
+        """
         return bool(self.model_id and self.model_endpoint and self.model_deployment_name)
 
 
@@ -142,130 +153,14 @@ class DecoderProcess(ViaProcessBase):
         self._height = 0
         self._data_type_int8 = False
 
-        # Populate model-specific frame pre-processing parameters
-        if self._vlm_model_type is None:
-            # use custom module load if model type is not specified
-            module_loader = CustomModuleLoader(self._model_path)
-            manifest = module_loader.manifest()
-            input_spec = manifest.pop("input", None)
-            if input_spec:
-                if not self._nfrms:
-                    self._nfrms = input_spec.pop("number_of_frames", 1)
-                crop_size = input_spec.pop("crop_size", None)
-                if crop_size:
-                    self._crop_width = crop_size[0]
-                    self._crop_height = crop_size[1]
-                self._enable_jpeg_tensors = input_spec.pop("jpeg_encoded", False)
-                vlm_input_resolution = input_spec.pop("vlm_input_resolution", None)
-                if vlm_input_resolution:
-                    logger.info(
-                        f"VLM input resolution from manifest file: "
-                        f"width {vlm_input_resolution[0]}, height {vlm_input_resolution[1]}"
-                    )
-                    self._width = vlm_input_resolution[0]
-                    self._height = vlm_input_resolution[1]
-            self._minframes = 1
-        elif self._vlm_model_type in [VlmModelType.VILA_15]:
-            if not self._nfrms:
-                self._nfrms = 8
-            self._minframes = 1
-
-            sys.path.append(os.path.dirname(os.path.dirname(__file__)) + "/models/vila15/VILA")
-            import llava.model.language_model.llava_llama  # noqa: F401
-            from llava.model.multimodal_encoder.intern_encoder import (
-                InternVisionPreprocessor,
-            )
-            from transformers import AutoModel
-            from transformers.models.siglip.image_processing_siglip import (
-                SiglipImageProcessor,
-            )
-
-            # Load the model to pseudo memory (meta). This is required to get
-            # the image preprocessor without acutally loading the model
-            with TimeMeasure("VILA decoder Model load"):
-                device_map = {
-                    "model.vision_tower": "meta",
-                    "model.embed_tokens": "meta",
-                    "model.layers": "meta",
-                    "model.norm": "meta",
-                    "lm_head": "meta",
-                    "model.mm_projector": "meta",
-                }
-                model = AutoModel.from_pretrained(
-                    self._model_path,
-                    low_cpu_mem_usage=True,
-                    device_map=device_map,
-                )
-
-                # Load the image preprocessor
-                image_processor = model.get_vision_tower().image_processor
-
-                # Populate the image preprocessing parameters for VILA 1.5
-                if isinstance(image_processor, InternVisionPreprocessor):
-                    self._shortest_edge = [
-                        image_processor.size["height"],
-                        image_processor.size["width"],
-                    ]
-                    self._rescale_factor = 1 / 255.0
-                    self._image_mean = (0.485, 0.456, 0.406)
-                    self._image_std = (0.229, 0.224, 0.225)
-                    self._do_preprocess = True
-                    # self._run_image_processor = True
-                    # self._image_processor = image_processor
-                elif isinstance(image_processor, SiglipImageProcessor):
-                    self._image_mean = image_processor.image_mean
-                    self._rescale_factor = image_processor.rescale_factor
-                    self._image_std = image_processor.image_std
-                    if hasattr(image_processor, "crop_size"):
-                        self._crop_height = image_processor.crop_size["height"]
-                        self._crop_width = image_processor.crop_size["width"]
-                    if "shortest_edge" in image_processor.size:
-                        self._shortest_edge = image_processor.size["shortest_edge"]
-                    elif "width" in image_processor.size and "height" in image_processor.size:
-                        self._shortest_edge = [
-                            image_processor.size["height"],
-                            image_processor.size["width"],
-                        ]
-                    self._do_preprocess = True
-                    self._image_aspect_ratio = model.config.image_aspect_ratio
-
-                else:
-                    raise Exception("Unsupported image preprocessor")
-
-            del model
-            torch.cuda.empty_cache()
-        elif self._vlm_model_type in [VlmModelType.NVILA]:
-            with open(self._model_path + "/config.json") as f:
-                config = json.load(f)
-            if not self._nfrms:
-                self._nfrms = config.get("num_video_frames", 8)
-            self._minframes = 1
-            self._data_type_int8 = True
-
-        elif self._vlm_model_type in [VlmModelType.COSMOS_REASON1]:
-            with open(self._model_path + "/config.json") as f:
-                config = json.load(f)
-            if not self._nfrms:
-                self._nfrms = config.get("num_video_frames", 20)
-            self._minframes = 1
-            self._data_type_int8 = True
-            # 2K vision tokens
-            self._width = 532
-            self._height = 280
-
-        elif self._vlm_model_type in [VlmModelType.OPENAI_COMPATIBLE]:
+        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             if not self._nfrms:
                 self._nfrms = 10
             self._minframes = 1
             # For OpenAI compatible models, JPEG images are used
             self._enable_jpeg_tensors = True
-
         else:
-            self._width = 224
-            self._height = 224
-            if not self._nfrms:
-                self._nfrms = 8
-            self._minframes = 8
+            raise Exception(f"Unsupported VLM model type for decoder: {self._vlm_model_type}")
 
         if (
             "VLM_INPUT_WIDTH" in os.environ
@@ -408,12 +303,7 @@ class DecoderProcess(ViaProcessBase):
 
     def _process(self, **kwargs):
         """Decode a chunk and return selected frames as raw frames / JPEG images"""
-        if self._vlm_model_type == VlmModelType.NVILA:
-            return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
-            return self._file_thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
-        else:
-            return self._thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
+        return self._thread_pool.submit(self._decode_chunk, self._fgetters.pop(), **kwargs)
 
 
 class EmbeddingProcess(ViaProcessBase):
@@ -431,8 +321,6 @@ class EmbeddingProcess(ViaProcessBase):
         )
         self._vlm_model_type = args.vlm_model_type
         self._model_path = args.model_path
-        self._use_trt = args.use_trt
-        self._trt_engine_dir = args.trt_engine_dir
         self._asset_dir = asset_dir
 
     def _initialize(self):
@@ -440,18 +328,7 @@ class EmbeddingProcess(ViaProcessBase):
         self._emb_helper = EmbeddingHelper(self._asset_dir)
 
         # Model specific embedding generator
-        if self._vlm_model_type == VlmModelType.VILA_15:
-            from models.vila15.vila15_embedding_generator import (
-                Vila15EmbeddingGenerator,
-            )
-
-            self._emb_generator = Vila15EmbeddingGenerator(
-                self._model_path,
-                use_trt=self._use_trt,
-                trt_engine_dir=self._trt_engine_dir,
-                async_output=True,
-            )
-        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.common.frame_jpeg_tensor_generator import (
                 FrameJPEGTensorGenerator,
             )
@@ -464,9 +341,8 @@ class EmbeddingProcess(ViaProcessBase):
                 debug_save_frames=debug_save_frames,
                 debug_output_dir=debug_output_dir
             )
-        elif self._vlm_model_type is None:
-            model = CustomModuleLoader(self._model_path).load_model()
-            self._emb_generator = model.get_embedding_generator()
+        else:
+            raise Exception(f"Unsupported VLM model type for embedding: {self._vlm_model_type}")
 
         return True
 
@@ -593,8 +469,6 @@ class VlmProcess(ViaProcessBase):
         )
         self._vlm_model_type = args.vlm_model_type
         self._model_path = args.model_path
-        self._use_trt = args.use_trt
-        self._trt_engine_dir = args.trt_engine_dir
         self._args = args
         self._asset_dir = asset_dir
         self._num_gpus = args.num_gpus
@@ -602,61 +476,14 @@ class VlmProcess(ViaProcessBase):
 
     def _initialize(self):
         # Create an instance of EmbeddingHelper to retrieve chunk embeddings
-        use_gpu_mem_for_embedding_load = True
         # Embedding sent to network; can avoid GPU mem
-        # Also: torch.cuda_init() from parallel threads without as may GPUs
-        # give error:
-        # RuntimeError: No CUDA GPUs are available
-        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
-            use_gpu_mem_for_embedding_load = False
+        use_gpu_mem_for_embedding_load = False
         self._emb_helper = EmbeddingHelper(
             self._asset_dir, use_gpu_mem=use_gpu_mem_for_embedding_load
         )
 
-        # Model specific initialization
-        if self._vlm_model_type == VlmModelType.VILA_15:
-            from models.vila15.vila15_model import Vila15
-
-            self._model = Vila15(
-                self._model_path,
-                use_trt=self._use_trt,
-                trt_engine_dir=self._trt_engine_dir,
-                max_batch_size=self._batch_size,
-                async_output=True,
-            )
-            if self._model.TRTLLM_EXECUTOR_INFLIGHT_BATCHING:
-                self._batch_size = 1
-        elif self._vlm_model_type == VlmModelType.NVILA:
-            from models.nvila.nvila_model import NVila
-
-            self._model = NVila(
-                self._model_path,
-                use_trt=self._use_trt,
-                trt_engine_dir=self._trt_engine_dir,
-                max_batch_size=self._batch_size,
-                async_output=True,
-            )
-            self._batch_size = 1
-
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
-
-            # Check for debug mode environment variables
-            debug_save_frames = os.environ.get('VSS_DEBUG_FRAME_OVERLAY', '').lower() == 'true'
-            debug_output_dir = os.environ.get('VSS_DEBUG_FRAME_OUTPUT_DIR', '/tmp/vss_debug_frames_cosmos')
-
-            self._model = CosmosReason1(
-                self._model_path,
-                use_trt=self._use_trt,
-                trt_engine_dir=self._trt_engine_dir,
-                max_batch_size=self._batch_size,
-                async_output=True,
-                debug_save_frames=debug_save_frames,
-                debug_output_dir=debug_output_dir,
-            )
-            self._batch_size = 1
-
-        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+        # Only OpenAI compatible model registry approach is supported
+        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.openai_compat.openai_compat_model import CompOpenAIModel
 
             # Check if we have dynamic model configuration from arguments
@@ -664,26 +491,14 @@ class VlmProcess(ViaProcessBase):
             
             if model_config:
                 logger.info(f"VlmProcess initialization: Using dynamic model configuration for {model_config.get('model_id', 'unknown')}")
-                logger.info(f"Dynamic config details: deployment_name='{model_config.get('deployment_name', 'None')}', endpoint='{model_config.get('endpoint', 'None')}'")
             else:
                 logger.info("VlmProcess initialization: No dynamic model configuration provided. Waiting for first request to configure model.")
             
             self._model = CompOpenAIModel(True, model_config=model_config)
-            
-            # Verify the model was initialized with correct configuration
-            if hasattr(self._model, '_model_name') and self._model._model_name:
-                logger.info(f"VlmProcess initialization complete: Model name set to '{self._model._model_name}'")
-            else:
-                logger.warning("VlmProcess initialization: Model name not set or empty")
-                
             self._batch_size = 1
-        elif self._vlm_model_type is None:
-            loader = CustomModuleLoader(self._model_path)
-            self._model = loader.load_model()
-            self._batch_size = 1
+        else: 
+            raise Exception(f"Unsupported VLM model type: {self._vlm_model_type}")
         return True
-    
-
 
     def _deinitialize(self):
         self._model = None
@@ -692,30 +507,41 @@ class VlmProcess(ViaProcessBase):
         return True
 
     def _can_batch(self, item1, item2):
-        # For VLM, batching can be performed only if number of frames used
-        # for embedding generation is equal.
-        return (
-            (self._vlm_model_type == VlmModelType.VILA_15)
-            and self._emb_helper.get_num_frames_embedding(item1["chunk"])
-            == self._emb_helper.get_num_frames_embedding(item2["chunk"])
-            and item1["request_params"] == item2["request_params"]
-        )
+        # Batching only supported if request params are identical
+        return item1["request_params"] == item2["request_params"]
 
     def _is_busy(self):
-        return (
-            self._vlm_model_type == VlmModelType.VILA_15
-            or self._vlm_model_type == VlmModelType.NVILA
-            or self._vlm_model_type == VlmModelType.COSMOS_REASON1
-        ) and not self._model.can_enqueue_requests()
+        if self._model and hasattr(self._model, "can_enqueue_requests"):
+            return not self._model.can_enqueue_requests()
+        return False
 
     def _warmup(self):
         if hasattr(self._model, "warmup"):
             self._model.warmup()
 
     def _update_model_config_if_needed(self, request_params):
-        """
-        Check if model configuration needs update and apply it.
-        This runs inside the worker process.
+        """Dynamically switch VLM model based on request parameters.
+        
+        This method enables per-request model selection - each user request can specify
+        a different model from the registry, and this method will reinitialize the
+        CompOpenAIModel client only when the configuration actually changes.
+        
+        Smart Caching: Compares the new configuration to the current configuration and
+        skips reinitialization if unchanged. This optimizes the common case where
+        consecutive requests use the same model.
+        
+        Multiprocessing: This runs inside the worker process, which owns the model
+        instance. Configuration flows through VlmRequestParams (serializable).
+        
+        Args:
+            request_params (VlmRequestParams): Request containing model configuration.
+        
+        Raises:
+            Exception: If model initialization fails (invalid config, connection error, etc.).
+                      Failures are propagated to the client as error responses.
+        
+        Note:
+            Only applicable for OpenAI-compatible models. Internal models ignore this.
         """
         # Only applicable for OpenAI compatible models that support dynamic config
         if self._vlm_model_type != VlmModelType.OPENAI_COMPATIBLE:
@@ -789,33 +615,17 @@ class VlmProcess(ViaProcessBase):
             logger.log(LOG_STATUS_LEVEL, "Generating VLM response for (%s)", chunk_)
 
         # Model specific context handlers
-        if self._vlm_model_type == VlmModelType.VILA_15:
-            from models.vila15.vila15_context import Vila15Context
-
-            ctx = Vila15Context(self._model)
-        elif self._vlm_model_type == VlmModelType.NVILA:
-            from models.nvila.nvila_context import NVilaContext
-
-            ctx = NVilaContext(self._model)
-        elif self._vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_context import (
-                CosmosReason1Context,
-            )
-
-            ctx = CosmosReason1Context(self._model)
-        elif self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+        if self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.common.model_context_frame_input import ModelContextFrameInput
 
             ctx = ModelContextFrameInput(self._model)
-        elif self._vlm_model_type is None:
-            ctx = CustomModelContext(self._model)
+        else:
+            raise Exception(f"Unsupported VLM model type for context: {self._vlm_model_type}")
 
         embeds = []
         frame_times = []
         if (
-            (self._vlm_model_type is not None or self._model.get_embedding_generator() is not None)
-            and self._vlm_model_type != VlmModelType.NVILA
-            and self._vlm_model_type != VlmModelType.COSMOS_REASON1
+            self._vlm_model_type == VlmModelType.OPENAI_COMPATIBLE
         ):
             # Model supports explicit embeddings, fetch the embedding for each chunk
             # in the input batch
@@ -1187,33 +997,7 @@ class VlmChunkResponse:
         )
 
 
-def check_peer_access():
-    """
-    Checks if all GPU pairs have peer access enabled.
-    Returns False if any pair cannot access each other, True if all pairs have access.
-    """
-    try:
-        # Get number of available GPUs
-        num_gpus = torch.cuda.device_count()
 
-        # If less than 2 GPUs, peer access is not relevant
-        if num_gpus < 2:
-            return True
-
-        # Check all pairs of GPUs
-        for i in range(num_gpus):
-            for j in range(i + 1, num_gpus):
-                # Check peer access in both directions
-                if not torch.cuda.can_device_access_peer(
-                    i, j
-                ) or not torch.cuda.can_device_access_peer(j, i):
-                    return False
-
-        return True
-
-    except Exception as e:
-        print(f"Error checking peer access: {e}")
-        return False
 
 
 class VlmPipeline:
@@ -1236,33 +1020,13 @@ class VlmPipeline:
 
         mp_ctx = multiprocessing.get_context("spawn")
 
-        self._have_emb_gen = False
-        if args.vlm_model_type is None:
-            if self._args.model_path:
-                inference_class = CustomModuleLoader(self._args.model_path)._module.Inference
-                if hasattr(inference_class, "get_embeddings"):
-                    self._have_emb_gen = True
-        elif (
-            args.vlm_model_type != VlmModelType.NVILA
-            and args.vlm_model_type != VlmModelType.COSMOS_REASON1
-        ):
-            self._have_emb_gen = True
-
+        self._have_emb_gen = True
         self._dec_q = mp_ctx.Queue()
         self._dec_q_lock = mp_ctx.Lock()
-        have_peer_access = check_peer_access()
-        logger.info(f"Have peer access: {have_peer_access}")
-        if (
-            args.vlm_model_type == VlmModelType.NVILA
-            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
-        ) and not have_peer_access:
-            self._vlm_q = None
-            self._vlm_q_lock = None
-        else:
-            self._vlm_q = mp_ctx.Queue(
-                maxsize=(0 if self._have_emb_gen else 3 * self._args.num_gpus)
-            )
-            self._vlm_q_lock = mp_ctx.Lock()
+        
+        # All models now use this queue
+        self._vlm_q = mp_ctx.Queue()
+        self._vlm_q_lock = mp_ctx.Lock()
 
         self._asr_q = mp_ctx.Queue()
         self._asr_q_lock = mp_ctx.Lock()
@@ -1273,172 +1037,9 @@ class VlmPipeline:
 
         self._enqueue_lock = Lock()
 
-        if args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
-            from models.openai_compat.openai_compat_model import CompOpenAIModel
+        from models.openai_compat.openai_compat_model import CompOpenAIModel
 
-            CompOpenAIModel()
-
-        # Model path is required for locally executed models like VILA
-        if args.vlm_model_type != VlmModelType.OPENAI_COMPATIBLE and not args.model_path:
-            raise Exception("model-path not provided")
-
-        if args.model_path and args.model_path.startswith("ngc:"):
-            # NGC model path provided, download the model if not found in cache
-
-            # Workaround for some asyncio issue
-            def download_thread_func(ngc_model_path, download_prefix, model_path_):
-                try:
-                    model_path = download_model(
-                        ngc_model_path, download_prefix, args.vlm_model_type.value
-                    )
-                except Exception as ex:
-                    model_path_[1] = ex
-                    return
-                model_path_[0] = model_path
-
-            model_path_ = ["", ""]
-            download_thread = Thread(
-                target=download_thread_func,
-                args=(args.model_path[4:], NGC_MODEL_CACHE, model_path_),
-            )
-            download_thread.start()
-            download_thread.join()
-            if model_path_[1]:
-                raise model_path_[1] from None
-            args.model_path = model_path_[0]
-        if args.model_path and args.model_path.startswith("git:"):
-            args.model_path = download_model_git(args.model_path[4:], NGC_MODEL_CACHE)
-
-        if FORCE_TRT and (args.vlm_model_type == VlmModelType.VILA_15):
-            # TRT inference forced for locally executed models
-
-            # Infer the TRT engine directory if not specified
-            trt_engine_dir = args.trt_engine_dir
-            if not trt_engine_dir:
-                trt_engine_dir = os.path.join(
-                    args.model_path, f"trt-engines/{args.trt_llm_mode}/0-gpu"
-                )
-            config_file = os.path.join(trt_engine_dir, "config.json")
-            rank0_file = os.path.join(trt_engine_dir, "rank0.engine")
-            visual_engines_dir = os.path.join(trt_engine_dir, "visual_engines")
-
-            # Check if engine already exists
-            build_engine = False
-            if os.environ.get("VILA_FORCE_ENGINE_BUILD", "false") == "true" or (
-                not os.path.isfile(config_file)
-                or not os.path.isfile(rank0_file)
-                or not os.path.isfile(os.path.join(visual_engines_dir, "visual_encoder.engine"))
-            ):
-                logger.info("TRT-LLM Engine not found. Generating engines ...")
-                build_engine = True
-
-            if build_engine:
-                vila_ngc_engine = os.environ.get("VILA_ENGINE_NGC_RESOURCE", "")
-                if vila_ngc_engine:
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        # Download the engine from NGC if user has provided NGC path
-                        def download_thread_func(ngc_model_path, download_prefix, model_path_):
-                            try:
-                                model_path = download_model(ngc_model_path, download_prefix)
-                            except Exception as ex:
-                                model_path_[1] = ex
-                                return
-                            model_path_[0] = model_path
-
-                        model_path_ = ["", ""]
-                        download_thread = Thread(
-                            target=download_thread_func,
-                            args=(vila_ngc_engine, temp_dir, model_path_),
-                        )
-                        download_thread.start()
-                        download_thread.join()
-                        if model_path_[1]:
-                            raise model_path_[1] from None
-
-                        # Move engine files from downloaded path to trt_engine_dir
-                        downloaded_path = model_path_[0]
-
-                        # Create trt_engine_dir if it doesn't exist
-                        os.makedirs(trt_engine_dir, exist_ok=True)
-
-                        # Move config.json
-                        src_config = os.path.join(downloaded_path, "config.json")
-                        if os.path.exists(src_config):
-                            shutil.move(src_config, config_file)
-                            logger.debug(f"Moved config.json from {src_config} to {config_file}")
-
-                        # Move rank0.engine
-                        src_rank0 = os.path.join(downloaded_path, "rank0.engine")
-                        if os.path.exists(src_rank0):
-                            shutil.move(src_rank0, rank0_file)
-                            logger.debug(f"Copied rank0.engine from {src_rank0} to {rank0_file}")
-
-                        # Move visual_engines directory
-                        src_visual = os.path.join(downloaded_path, "visual_engines")
-                        if os.path.exists(src_visual):
-                            if os.path.exists(visual_engines_dir):
-                                shutil.rmtree(visual_engines_dir)
-                            shutil.move(src_visual, visual_engines_dir)
-                            logger.debug(
-                                f"Copied visual_engines from {src_visual} to {visual_engines_dir}"
-                            )
-
-                        logger.info(f"Using prebuilt TRT-LLM engine from NGC: {vila_ngc_engine}")
-
-                        build_engine = False
-
-            if not build_engine:
-                # Check if the engine can support user configured batch size
-                with open(os.path.join(trt_engine_dir, "config.json")) as f:
-                    config = json.load(f)
-                    if config["build_config"]["max_batch_size"] < args.vlm_batch_size:
-                        logger.info(
-                            f"Existing TRT-LLM engine at {trt_engine_dir} has lower"
-                            f" max-batch-size({config['build_config']['max_batch_size']}) than"
-                            f" requested ({args.vlm_batch_size}). Re-generating engines ..."
-                        )
-                        build_engine = True
-                    if (
-                        os.environ.get("VILA_LORA_PATH", "")
-                        and not config["build_config"]["plugin_config"]["lora_plugin"]
-                    ):
-                        logger.info(
-                            f"Existing TRT-LLM engine at {trt_engine_dir} built"
-                            f" without lora support however lora has been configured."
-                            f" Re-generating engines ..."
-                        )
-                        build_engine = True
-
-            if build_engine:
-                # Still need to build engine. Run the build_engine script automatically
-                base_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-                model_dir = "vila15"
-                result = subprocess.run(
-                    [
-                        "bash",
-                        os.path.join(base_path, f"models/{model_dir}/trt_helper/build_engine.sh"),
-                        args.model_path,
-                        str(args.vlm_batch_size),
-                        args.trt_llm_mode.value,
-                        trt_engine_dir,
-                    ]
-                )
-                if result.returncode:
-                    raise Exception("Failed to generate TRT-LLM engine")
-
-                logger.info("Generated TRT-LLM engines")
-
-            args.use_trt = True
-            args.trt_engine_dir = trt_engine_dir
-
-        if args.use_trt and not args.trt_engine_dir:
-            raise Exception("TRT mode selected but TRT engine directory not set")
-
-        if FORCE_TRT and (
-            args.vlm_model_type == VlmModelType.NVILA
-            or args.vlm_model_type == VlmModelType.COSMOS_REASON1
-        ):
-            args.use_trt = True
+        CompOpenAIModel()
 
         self._processed_chunk_queue = mp_ctx.Queue()
         self._processed_chunk_queue_watcher_stop_event = Event()
@@ -1649,26 +1250,14 @@ class VlmPipeline:
         api_type = ""
         id = ""
         owned_by = ""
-        if self._args.vlm_model_type == VlmModelType.VILA_15:
-            from models.vila15.vila15_model import Vila15
-
-            id, api_type, owned_by = Vila15.get_model_info()
-        elif self._args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
+        if self._args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             from models.openai_compat.openai_compat_model import CompOpenAIModel
 
             id, api_type, owned_by = CompOpenAIModel.get_model_info()
-        elif self._args.vlm_model_type == VlmModelType.NVILA:
-            from models.nvila.nvila_model import NVila
-
-            id, api_type, owned_by = NVila.get_model_info()
-        elif self._args.vlm_model_type == VlmModelType.COSMOS_REASON1:
-            from models.cosmos_reason1.cosmos_reason1_model import CosmosReason1
-
-            id, api_type, owned_by = CosmosReason1.get_model_info()
         else:
-            id = os.path.basename(os.path.abspath(self._args.model_path))
-            api_type = "internal"
-            owned_by = "custom"
+            id = "unknown"
+            api_type = "unknown"
+            owned_by = "unknown"
 
         info = VlmModelInfo()
         info.api_type = api_type
@@ -1755,14 +1344,7 @@ class VlmPipeline:
             "--vlm-model-type",
             type=VlmModelType,
             choices=list(VlmModelType),
-            default=None,
-            help="Vision Language Model to use",
-        )
-        parser.add_argument(
-            "--trt-llm-mode",
-            type=TrtLlmMode,
-            choices=list(TrtLlmMode),
-            default=TrtLlmMode.INT4_AWQ,
+            default=VlmModelType.OPENAI_COMPATIBLE,
             help="Vision Language Model to use",
         )
         parser.add_argument(
@@ -1796,21 +1378,7 @@ class VlmPipeline:
             required=False,
             help="Location of the model",
         )
-        parser.add_argument(
-            "--trt-build-int8",
-            action="store_true",
-            help="Build TRTLLM engine in int8 mode",
-        )
-        parser.add_argument(
-            "--use-trt",
-            action="store_true",
-            help="Use TensorRT",
-        )
-        parser.add_argument(
-            "--trt-engine-dir",
-            type=str,
-            help="Path to TRT engine directory",
-        )
+
         parser.add_argument(
             "--num-frames-per-chunk",
             type=int,

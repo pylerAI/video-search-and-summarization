@@ -25,7 +25,6 @@ MODE="${MODE:-release}"
 
 MODEL_PATH="${MODEL_PATH:-/opt/models/vila-llama-3-8b-lita-im-se-didemo-charades-warehouse-medical-short-e031/}"
 NUM_GPUS="${NUM_GPUS:-`nvidia-smi --query-gpu=name --format=csv,noheader | wc -l`}"
-TRT_LLM_MODE=${TRT_LLM_MODE:-int4_awq}
 
 EXAMPLE_STREAMS_DIR="${EXAMPLE_STREAMS_DIR:-/opt/nvidia/via/streams}"
 
@@ -38,13 +37,6 @@ ENABLE_NSYS_PROFILER="${ENABLE_NSYS_PROFILER:-false}"
 SM_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0)
 
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-
-# Override TRT_LLM_MODE to fp16 for sm 10.x GPUs when int4_awq is selected
-if [[ $SM_ARCH =~ ^10\. ]] && [[ $TRT_LLM_MODE != "fp16" ]]; then
-    echo "Overriding TRT_LLM_MODE from $TRT_LLM_MODE to fp16 for compute capability $SM_ARCH"
-    TRT_LLM_MODE="fp16"
-fi
-
 
 if [[ $NUM_GPUS -eq 0 ]]; then
     echo "Error: No GPUs were found"
@@ -299,9 +291,6 @@ start_via_server() {
 	    echo "Starting VIA server in development mode"
 	    EXE="python3 -Wignore src/via_server.py"
     fi
-    if [ ! -z $TRT_ENGINE_PATH ]; then
-        EXTRA_ARGS+=" --trt-engine-dir $TRT_ENGINE_PATH"
-    fi
     if [ $VLM_MODEL_TO_USE != "custom" ]; then
         EXTRA_ARGS+=" --vlm-model-type $VLM_MODEL_TO_USE"
     fi
@@ -328,7 +317,7 @@ start_via_server() {
         --model-path "$MODEL_PATH" --num-gpus $NUM_GPUS \
         --vlm-batch-size $VLM_BATCH_SIZE --ca-rag-config $CA_RAG_CONFIG \
         --asset-dir $ASSET_STORAGE_DIR --num-decoders-per-gpu $(( NUM_NVDEC_ENGINES + 1)) \
-        --trt-llm-mode $TRT_LLM_MODE $EXTRA_ARGS &
+        $EXTRA_ARGS &
     check_via_process_status
 }
 
