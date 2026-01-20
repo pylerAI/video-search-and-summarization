@@ -1158,7 +1158,7 @@ class VlmQuery(ViaBaseModel):
     
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
-    id: Union[str, List[str]] = Field(
+    asset_id: Union[str, List[str]] = Field(
         description="Asset ID or list of Asset IDs to generate VLM captions for",
         examples=[
             "asset_id_string",
@@ -1166,15 +1166,21 @@ class VlmQuery(ViaBaseModel):
         ],
     )
 
-    @field_validator("id", mode="after")
+    @field_validator("asset_id", mode="after")
     def check_ids(cls, v, info):
         if isinstance(v, list) and len(v) > 50:
-            raise ValueError("List of ids must not exceed 50 items")
+            raise ValueError("List of asset_ids must not exceed 50 items")
         return v
 
     @property
     def id_list(self) -> List[str]:
-        return [self.id] if isinstance(self.id, str) else self.id
+        return [self.asset_id] if isinstance(self.asset_id, str) else self.asset_id
+
+    chunk_type: Literal["uniform", "segment"] = Field(
+        default="uniform",
+        description="Chunk type (uniform, segment).",
+        examples=["uniform", "segment"],
+    )
 
     @property
     def get_query_json(self: ViaBaseModel) -> dict:

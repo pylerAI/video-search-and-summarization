@@ -919,11 +919,22 @@ class ViaServer:
 
             videoIdList = query.id_list
             assetList = []
+            segment_file_path = None
 
+            for videoId in videoIdList:
+                asset = self._asset_manager.get_asset(videoId)
+                
+                # If not image, force video path (needed for segment assets or video assets)
+                if asset.media_type != "image":
+                    video_file_path = os.path.join(self._asset_manager._asset_dir, videoId, "video.mp4")
+                    if os.path.exists(video_file_path):
+                        asset._path = video_file_path
+                
+                assetList.append(asset)
+
+            # Validate multi-file request (only images supported)
             if len(videoIdList) > 1:
-                for videoId in videoIdList:
-                    asset = self._asset_manager.get_asset(videoId)
-                    assetList.append(asset)
+                for asset in assetList:
                     if asset.media_type != "image":
                         raise ViaException(
                             "Multi-file summarize: Only image files supported."
@@ -932,10 +943,22 @@ class ViaServer:
                             400,
                         )
 
-            videoId = videoIdList[
-                0
-            ]  # Note: Other files processed only for multi-image summarize() below
-            asset = self._asset_manager.get_asset(videoId)
+            # Segment file logic
+            if query.chunk_type == "segment":
+                main_asset_id = videoIdList[0]
+                possible_segment_path = os.path.join(self._asset_manager._asset_dir, main_asset_id, "segment.json")
+                if os.path.exists(possible_segment_path):
+                    segment_file_path = possible_segment_path
+                    logger.info(f"Using segment-based sampling with file: {segment_file_path}")
+                else:
+                    raise ViaException(
+                        f"Segment file (segment.json) not found for asset: {main_asset_id}",
+                        "ResourceNotFound", 404
+                    )
+
+            videoId = videoIdList[0]
+            # Use the asset from the list which might have the updated path
+            asset = assetList[0]
 
             media_info_start = None
             media_info_end = None
@@ -993,13 +1016,14 @@ class ViaServer:
             # Convert VlmQuery to SummarizationQuery for internal processing
             # Build the query dict with only non-None values
             query_dict = {
-                "id": query.id,
+                "asset_id": query.asset_id,
                 "prompt": query.prompt,
                 "model": query.model,
                 "response_format": query.response_format,
                 "stream": query.stream,
                 "chunk_duration": query.chunk_duration,
                 "chunk_overlap_duration": query.chunk_overlap_duration,
+                "chunk_type": query.chunk_type,
                 "user": query.user,
                 "num_frames_per_chunk": query.num_frames_per_chunk,
                 "vlm_input_width": query.vlm_input_width,
@@ -1039,6 +1063,7 @@ class ViaServer:
                 self._stream_handler.generate_vlm_captions,
                 assetList,
                 summarization_query,
+                segment_file_path,
             )
             logger.info("Created video file query %s for videoId %s", request_id, videoId)
             logger.info("Waiting for results of query %s", request_id)

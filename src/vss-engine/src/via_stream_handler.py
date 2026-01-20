@@ -1393,7 +1393,7 @@ class ViaStreamHandler:
 
         return req_info.request_id
 
-    def generate_vlm_captions(self, assets: list[Asset], query: SummarizationQuery):
+    def generate_vlm_captions(self, assets: list[Asset], query: SummarizationQuery, segment_file_path: str = None):
         """Run VLM captions generation on a file.
         This reuses the query function since they have identical logic.
         """
@@ -1415,6 +1415,7 @@ class ViaStreamHandler:
             query=query,
             is_summarization=False,
             skip_ca_rag=True,
+            segment_file_path=segment_file_path,
         )
 
         return req_id
