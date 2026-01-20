@@ -137,6 +137,11 @@ class RequestInfo:
         self.user_specified_collection_name = None
         self.custom_metadata = None
         self.delete_external_collection = False
+        self.aggregated_token_stats = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
         self.error_message = ""
 
 
@@ -579,6 +584,11 @@ class ViaStreamHandler:
             output_tokens = response.vlm_stats.get("output_tokens", 0)
             self._metrics.vlm_input_tokens.observe(input_tokens)
             self._metrics.vlm_output_tokens.observe(output_tokens)
+            
+            # Aggregate token stats
+            req_info.aggregated_token_stats["input_tokens"] += input_tokens
+            req_info.aggregated_token_stats["output_tokens"] += output_tokens
+            req_info.aggregated_token_stats["total_tokens"] += (input_tokens + output_tokens)
 
         # Per-chunk ASR latency
         if hasattr(response, "asr_start_time") and hasattr(response, "asr_end_time"):
