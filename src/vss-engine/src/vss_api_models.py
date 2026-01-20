@@ -1158,18 +1158,12 @@ class VlmQuery(ViaBaseModel):
     
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
-    id: Union[UUID, List[UUID]] = Field(
-        description="Unique ID or list of IDs of the file(s) to generate VLM captions for",
+    id: Union[str, List[str]] = Field(
+        description="Asset ID or list of Asset IDs to generate VLM captions for",
         examples=[
-            "123e4567-e89b-12d3-a456-426614174000",
-            ["123e4567-e89b-12d3-a456-426614174000", "987fcdeb-51a2-43d1-b567-537725285111"],
+            "asset_id_string",
+            ["asset_id_string_1", "asset_id_string_2"],
         ],
-        json_schema_extra={
-            "anyOf": [
-                {"type": "string", "format": "uuid"},
-                {"type": "array", "items": {"type": "string", "format": "uuid"}, "maxItems": 50},
-            ]
-        },
     )
 
     @field_validator("id", mode="after")
@@ -1179,8 +1173,8 @@ class VlmQuery(ViaBaseModel):
         return v
 
     @property
-    def id_list(self) -> List[UUID]:
-        return [self.id] if isinstance(self.id, UUID) else self.id
+    def id_list(self) -> List[str]:
+        return [self.id] if isinstance(self.id, str) else self.id
 
     @property
     def get_query_json(self: ViaBaseModel) -> dict:

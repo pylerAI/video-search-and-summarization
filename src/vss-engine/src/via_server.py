@@ -917,8 +917,7 @@ class ViaServer:
             query: VlmQuery, request: Request
         ) -> VlmCaptionsCompletionResponse:
 
-            videoIdListUUID = query.id_list
-            videoIdList = [str(uuid_obj) for uuid_obj in videoIdListUUID]
+            videoIdList = query.id_list
             assetList = []
 
             if len(videoIdList) > 1:
@@ -1002,7 +1001,6 @@ class ViaServer:
                 "chunk_duration": query.chunk_duration,
                 "chunk_overlap_duration": query.chunk_overlap_duration,
                 "user": query.user,
-                "tools": query.tools,
                 "num_frames_per_chunk": query.num_frames_per_chunk,
                 "vlm_input_width": query.vlm_input_width,
                 "vlm_input_height": query.vlm_input_height,
