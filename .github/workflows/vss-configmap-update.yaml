@@ -46,18 +46,18 @@ jobs:
           kubectl apply -f deploy/k8s/dev/vss-configs-cm.yaml
           
           echo "=== 현재 VSS Script ConfigMap 상태 ==="
-          kubectl get configmap vss-configs-cm -n vss-240 -o yaml
+          kubectl get configmap vss-configs-cm -n vss -o yaml
 
       - name: Restart VSS deployment
         run: |
           # Wait for deployment to be ready
-          kubectl rollout restart deployment/vss-vss-deployment -n vss-240
+          kubectl rollout restart deployment/vss-vss-deployment -n vss
       
       - name: Verify deployment
         run: |
           echo "=== VSS 서비스 상태 ==="
-          kubectl get pods -n vss-240
-          kubectl get svc -n vss-240
+          kubectl get pods -n vss
+          kubectl get svc -n vss
           
           echo "=== VSS VLM ConfigMap 내용 확인 ==="
-          kubectl get configmap vss-configs-cm -n vss-240 -o yaml
+          kubectl get configmap vss-configs-cm -n vss -o yaml
