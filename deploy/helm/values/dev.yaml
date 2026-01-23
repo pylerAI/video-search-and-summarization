@@ -13,7 +13,7 @@ global:
 vss:
   nodeSelector:
     kubernetes.io/hostname: dgx-b200-08
-  namespace: vss-240
+  namespace: vss
   storageClassName: gpfs
   applicationSpecs:
     vss-deployment:
@@ -57,7 +57,7 @@ vss:
             value: 'true'
           # multi-language support
           - name: RIVA_ASR_SERVER_URI
-            value: riva-multilang-service.vss.svc.cluster.local
+            value: riva-multilang-service
           - name: ENABLE_VIA_HEALTH_EVAL
             value: "true"
           - name: VIA_CTX_RAG_ENABLE_OTEL
@@ -92,7 +92,7 @@ vss:
         imagePullPolicy: IfNotPresent
         name: check-neo4j-up
       - args:
-        - "while ! curl -s -f -o /dev/null http://llm-openai-svc.vss.svc.cluster.local:8000/v1/health/live;\
+        - "while ! curl -s -f -o /dev/null http://llm-openai-svc:8000/v1/health/live;\
           \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
         command:
         - sh
@@ -162,7 +162,7 @@ vss:
       tools:
         chat_llm:
           params:
-            base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
+            base_url: http://llm-openai-svc:8000/v1
             max_tokens: 2048
             model: ${LLM_MODEL}
             temperature: 0.2
@@ -180,17 +180,17 @@ vss:
 
         nvidia_embedding:
           params:
-            base_url: http://nemo-embedding-embedding-deployment-embedding-service.vss.svc.cluster.local:8000/v1
+            base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
             model: nvidia/llama-3.2-nv-embedqa-1b-v2
           type: embedding
         nvidia_reranker:
           params:
-            base_url: http://nemo-rerank-ranking-deployment-ranking-service.vss.svc.cluster.local:8000/v1
+            base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
             model: nvidia/llama-3.2-nv-rerankqa-1b-v2
           type: reranker
         summarization_llm:
           params:
-            base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
+            base_url: http://llm-openai-svc:8000/v1
             max_tokens: 2048
             model: ${LLM_MODEL}
             temperature: 0.2
@@ -208,12 +208,12 @@ vss:
       - engine: nim
         model: openai/gpt-oss-120b
         parameters:
-          base_url: http://llm-openai-svc.vss.svc.cluster.local:8000/v1
+          base_url: http://llm-openai-svc:8000/v1
         type: main
       - engine: nim
         model: nvidia/llama-3.2-nv-embedqa-1b-v2
         parameters:
-          base_url: http://nemo-embedding-embedding-deployment-embedding-service.vss.svc.cluster.local:8000/v1
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
         type: embeddings
 
     prompt_config.yaml:
@@ -333,10 +333,10 @@ vss:
   egress:
     # multi-language support
     riva-api:
-      address: riva-multilang-service.vss.svc.cluster.local
+      address: riva-multilang-service
       port: 9000
     llm-openai-api:
-      address: llm-openai-svc.vss.svc.cluster.local
+      address: llm-openai-svc
       port: 8000
 
   resources:
@@ -426,13 +426,13 @@ vss:
 etcd:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss-240
+  namespace: vss
   storageClassName: gpfs
 
 minio:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss-240  
+  namespace: vss 
   storageClassName: gpfs
   applicationSpecs:
     minio-deployment:
@@ -475,13 +475,31 @@ minio:
 milvus:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss-240  
+  namespace: vss
   storageClassName: gpfs
-
+  defaultVolumeMounts:
+  - mountPath: /opt/workload-config
+    name: workload-cm-volume
+  - mountPath: /milvus/configs/user.yaml
+    subPath: config.yaml
+    name: configs-volume
+  - mountPath: /opt/scripts
+    name: scripts-cm-volume
+  
+  configs:
+    config.yaml:
+      log:
+        level: warn
+        format: text
+        stdout: true
+      grpc:
+        log:
+          level: WARNING
+          
 neo4j:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss-240  
+  namespace: vss
   storageClassName: gpfs
 
   extraPodVolumes:
@@ -507,103 +525,126 @@ neo4j:
     subPath: db-password
     readOnly: true
 
-# nim-llm:
-#   profile: f17543bf1ee65e4a5c485385016927efe49cbc068a6021573d83eacb32537f76
-#   nodeSelector: 
-#     pyler.io/group: dgx
-#   namespace: vss 
-#   storageClassName: gpfs
-#   persistence:
-#     storageClass: gpfs
-#   image:
-#     repository: nvcr.io/nim/openai/gpt-oss-120b
-#     tag: 1.10.1
-#   model:
-#     name: openai/gpt-oss-120b
-#     ngcAPISecret: infisical-managed-secrets
-#     tag: 1.10.1
-#   resources:
-#     limits:
-#       nvidia.com/gpu: 4
-#   startupProbe:
-#     failureThreshold: 360
+nim-llm:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss 
+  storageClassName: gpfs
+  persistence:
+    storageClass: gpfs
+  image:
+    repository: nvcr.io/nim/meta/llama-3.1-70b-instruct
+    tag: 1.10.1
+  model:
+    name: meta/llama-3.1-70b-instruct
+    ngcAPISecret: infisical-managed-secrets
+  resources:
+    limits:
+      nvidia.com/gpu: 4
 
+nemo-embedding:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss  
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
+        value: '1'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
 
-# nemo-embedding:
-#   nodeSelector: 
-#     pyler.io/group: dgx
-#   namespace: vss  
-#   storageClassName: gpfs
-#   applicationSpecs:
-#     embedding-deployment:
-#       containers:
-#         embedding-container:
-#           livenessProbe:
-#             initialDelaySeconds: 300
-#   workloadSpecs:
-#     wl-env:
-#       wl_env:
-#       - name: NGC_API_KEY
-#         valueFrom:
-#           secretKeyRef:
-#             key: NGC_API_KEY
-#             name: infisical-managed-secrets
-#       - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
-#         value: '1'
-#       - name: NIM_CACHE_PATH
-#         value: /mnt/nim-cache
-#       wl_units: 1
-#   resources:
-#     limits:
-#       nvidia.com/gpu: 1
-
-# nemo-rerank:
-#   namespace: vss  
-#   nodeSelector: 
-#     pyler.io/group: dgx
-#   storageClassName: gpfs
-#   workloadSpecs:
-#     wl-env:
-#       wl_env:
-#       - name: NGC_API_KEY
-#         valueFrom:
-#           secretKeyRef:
-#             key: NGC_API_KEY
-#             name: infisical-managed-secrets
-#       - name: NIM_CACHE_PATH
-#         value: /mnt/nim-cache
-#       wl_units: 1
-#   resources:
-#     limits:
-#       nvidia.com/gpu: 1
+nemo-rerank:
+  namespace: vss  
+  nodeSelector: 
+    pyler.io/group: dgx
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
 
 riva:
-  enabled: false
-  # namespace: vss  
-  # nodeSelector: 
-  #   pyler.io/group: dgx
-  # storageClassName: gpfs
-  # workloadSpecs:
-  #   dummy: {}
-  #   wl-env:
-  #     wl_env:
-  #     - name: NGC_API_KEY
-  #       valueFrom:
-  #         secretKeyRef:
-  #           key: NGC_API_KEY
-  #           name: infisical-managed-secrets
-  #     - name: NIM_HTTP_API_PORT
-  #       value: '9000'
-  #     - name: NIM_GRPC_API_PORT
-  #       value: '50051'
-  #     - name: NIM_CACHE_PATH
-  #       value: /mnt/nim-cache
-  #     wl_units: 1
+  enabled: true
+  namespace: vss
+  nodeSelector: 
+    pyler.io/group: dgx
+  storageClassName: gpfs
+  applicationSpecs:
+    riva-deployment:
+      containers:
+        riva-container:
+          env:
+          - name: NIM_TAGS_SELECTOR
+            # value: name=parakeet-0-6b-ctc-riva-en-us,mode=all
+            value: mode=all
+          image:
+            repository: nvcr.io/nim/nvidia/parakeet-1-1b-rnnt-multilingual
+            tag: 1
+      services:
+        riva-multi-service:
+          fullNameOverride: true
+          ports:
+          - name: http-api
+            port: 9000
+            targetPort: 9000
+          - name: grpc-api
+            port: 50051
+            targetPort: 50051
+      volumes:
+      - name: riva-cache
+        persistentVolumeClaim:
+          claimName: riva-multi-nim-cache-pvc
+  workloadSpecs:
+    dummy: {}
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_HTTP_API_PORT
+        value: '9000'
+      - name: NIM_GRPC_API_PORT
+        value: '50051'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+
+      - name: DISABLE_RIVA_HTTP_SERVER
+        value: "False"
+      # gRPC(50051) 쓰려면
+      - name: NIM_DISABLE_GRPC_STARTUP
+        value: "False"
+      # 내부 Triton을 같이 써야 모델 서빙이 정상 동작
+      - name: NIM_DISABLE_TRITON_STARTUP
+        value: "False"
+      wl_units: 1
 
 arango-db:
   nodeSelector: 
     pyler.io/group: dgx
-  namespace: vss-240  
+  namespace: vss
   storageClassName: gpfs
   applicationSpecs:
     arango-db-deployment:

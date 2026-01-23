@@ -11,7 +11,11 @@ on:
       - 'vlm_deploy/Qwen/**'
       - 'vlm_deploy/VILA/**'
       - 'deploy/helm/values/dev.yaml'
-      - '.github/workflows/**'
+      - '.github/workflows/vlm-config-update.yaml'
+      - '.github/workflows/vlm-deploy.yaml'
+      - '.github/workflows/vss-config-update.yaml'
+      - '.github/workflows/vss-configmap-update.yaml'
+      - '.github/workflows/vss-dev-container.yaml'
       - 'deploy/k8s/dev/vss-configs-cm.yaml'
 
   workflow_call:
@@ -115,24 +119,21 @@ jobs:
       - name: Deploy vss app to Onprem
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
-          kubectl scale deployment vss-vss-deployment -n vss-240 --replicas=0
+          kubectl scale deployment vss-vss-deployment -n vss --replicas=0
           find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
-          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.0.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss-240 --install
+          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.0.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
           # apply configmap
-          kubectl apply -f deploy/k8s/dev/vss-configs-cm.yaml -n vss-240
+          kubectl apply -f deploy/k8s/dev/vss-configs-cm.yaml -n vss
 
       - name: Patch schedulerName for deployments
         run: |
-          kubectl patch deployment nemo-embedding-embedding-deployment -n vss-240 -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
-          kubectl patch deployment nemo-rerank-ranking-deployment -n vss-240 -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
-          kubectl patch deployment vss-vss-deployment -n vss-240 -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment nemo-embedding-embedding-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment nemo-rerank-ranking-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment vss-vss-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
 
       - name: scale down not use service
         run: |
           # engine scale down
-          kubectl scale deployment vss-vss-deployment -n vss-240 --replicas=0
+          kubectl scale deployment vss-vss-deployment -n vss --replicas=0
           # llm server scale down (not use)
-          kubectl scale statefulset vss -n vss-240 --replicas=0
-          # embedding and reranker scale down
-          kubectl scale deployment nemo-embedding-embedding-deployment -n vss-240 --replicas=0
-          kubectl scale deployment nemo-rerank-ranking-deployment -n vss-240 --replicas=0
+          kubectl scale statefulset vss -n vss --replicas=0

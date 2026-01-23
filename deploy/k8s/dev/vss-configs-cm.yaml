@@ -281,7 +281,7 @@ kind: ConfigMap
 metadata:
   annotations:
     meta.helm.sh/release-name: vss
-    meta.helm.sh/release-namespace: vss-240
+    meta.helm.sh/release-namespace: vss
   labels:
     app.kubernetes.io/instance: vss
     app.kubernetes.io/managed-by: Helm
@@ -289,7 +289,7 @@ metadata:
     app.kubernetes.io/version: 2.4.0
     generated_with: helm_builder
     hb_version: 1.0.0
-    helm.sh/chart: vss-2.4.0
+    helm.sh/chart: vss
     msb_version: 2.5.0
   name: vss-configs-cm
-  namespace: vss-240
+  namespace: vss
