@@ -1,0 +1,89 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-redis
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "redis" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "redis" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "redis" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          command: ["redis-server", "/config/redis.conf"]
+          ports:
+            - containerPort: {{ .Values.redis.port }}
+              name: redis
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /config
+      volumes:
+        - name: redis-data
+          {{- if .Values.redis.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vss-base.fullname" . }}-redis
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: redis-config
+          configMap:
+            name: {{ include "vss-base.fullname" . }}-redis-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-redis
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.redis.port }}
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "redis" "root" .) | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vss-base.fullname" . }}-redis-config
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    {{- .Values.redis.config | nindent 4 }}
+---
+{{- if .Values.redis.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-redis
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.redis.persistence.storageClass }}
+  storageClassName: {{ .Values.redis.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+{{- end }}
+{{- end }}

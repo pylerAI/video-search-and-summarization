@@ -1,0 +1,9 @@
+include:
+  - path: ./foundational/mdx-foundational.yml
+  - path: ./vst/compose.yml
+  - path: ./agents/compose.yml
+  - path: ./vlm-as-verifier/compose.yml
+  - path: ./rtvi/compose.yml
+  - path: ./lvs/compose.yml
+  - path: ./nim/compose.yml
+  - path: ./developer-workflow/compose.yml

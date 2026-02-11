@@ -1,0 +1,93 @@
+<!--
+Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+
+NVIDIA Corporation and its licensors retain all intellectual property
+and proprietary rights in and to this software, related documentation
+and any modifications thereto.  Any use, reproduction, disclosure or
+distribution of this software and related documentation without an express
+license agreement from NVIDIA Corporation is strictly prohibited.
+-->
+
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>WebRTC example</title>
+        <link rel="shortcut icon" href="#">
+        <link rel="stylesheet" type="text/css" href="css/styles.css" />
+        <link rel="stylesheet" type="text/css" href="css/modal.css" />
+        <link rel="stylesheet" type="text/css" href="css/toast.css" />
+        <script type="text/javascript" src="js/modal.js"></script>
+        <script type="text/javascript" src="js/utility.js"></script>
+        <script type="text/javascript" src="js/webrtc.js"></script>
+    </head>
+    <body>
+        <div id="wrapper">
+            <div id="simpleToast">
+            </div>
+            <div id="headerwrap">
+                <div id="header">
+                    <p>VST webRTC example application</p>
+                </div>
+            </div>
+            <div id="contentliquid">
+                <div id="contentwrap">
+                    <div id="content">
+                        <!-- The Modal -->
+                        <div id="myModal" class="modal">
+                            <!-- Modal content -->
+                            <div class="modal-content">
+                                <span class="close" onclick="onCloseModal()">&times</span>
+                                <p>Authenticate camera</p>
+                                1. Username <input type="text" class="input-style" id="username" name="username"><br/>
+                                2. Password <input type="password" class="input-style" id="password" name="password"><br/>
+                                <button onclick="onAuthenticate()">Submit</button>
+                            </div>
+                        </div>
+                        <div id="userinput">
+                            1.
+                            <select class="select-style" id="selectCamera" onchange="checkCameraAuth()">
+                                <option>Select a camera</option>
+                            </select>
+                            <img src="res/lock.png" alt="lock" id="lockIcon" height="20px" onclick="onLockIconClick()">
+                            <br/>
+                            2.
+                            <select class="select-style" id="selectPlaybackType" onchange="onPlaybackType()">
+                                <option>Select playback type</option>
+                                <option>Live</option>
+                                <option>Recorded</option>
+                            </select>
+                            <br/>
+                            <div id="recordDetails">
+                                3. Start time <input type="text" class="input-style" id="startTime" name="startTime" placeholder="YYYY-MM-DDTHH:mm:ss.sssZ" onchange="onStartTimeChange()"><br/>
+                                4. End time <input type="text" class="input-style" id="endTime" name="endTime" placeholder="YYYY-MM-DDTHH:mm:ss.sssZ" onchange="onEndTimeChange()">
+                            </div>
+                        </div>
+                        <button class="start-button" id="startButton" onClick="beginConnection()">Start</button>
+                        <button class="stop-button" id="stopButton" disabled onClick="stopConnection()">Stop</button>
+                        WebRTC Stream
+                        <div id="videoContainer">
+                            <div id="loadingIcon">
+                                <img src="res/loading.gif" alt="loading" width="50" height="50">
+                            </div>                  
+                        </div>
+                        <div id="videoControls">
+                            <button class="video-controls-always-show" disabled onclick="onPlay()">Play</button>
+                            <button class="video-controls-always-show" disabled onclick="onPause()">Pause</button>
+                            <button class="video-controls" disabled onclick="onFF()">FF</button>
+                            <button class="video-controls" disabled onclick="onRewind()">Rewind</button>
+                            <button class="video-controls" disabled onclick="onSeekForward()">Seek +10</button>
+                            <button class="video-controls" disabled onclick="onSeekBackward()">Seek -10</button>
+                            <button class="video-controls-always-show" disabled onclick="onVolumeUp()">Volume +</button>
+                            <button class="video-controls-always-show" disabled onclick="onVolumeDown()">Volume -</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="footerwrap">
+                <div id="footer">
+                    <p>Application version 1.0</p>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

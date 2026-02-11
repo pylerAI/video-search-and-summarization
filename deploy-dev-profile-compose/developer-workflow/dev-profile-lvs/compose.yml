@@ -1,0 +1,10 @@
+services:
+  kibana-init-container-lvs:
+    build:
+      context: $MDX_SAMPLE_APPS_DIR/developer-workflow/dev-profile-lvs
+      dockerfile: $MDX_SAMPLE_APPS_DIR/developer-workflow/dev-profile-lvs/Dockerfiles/kibana-dashboard.Dockerfile
+    network_mode: "host"
+    profiles: ["bp_developer_lvs_2d"]
+    container_name: mdx-kibana-init-lvs
+    command: bash /opt/mdx/init-scripts/kibana-import-dashboard.sh
+    restart: on-failure

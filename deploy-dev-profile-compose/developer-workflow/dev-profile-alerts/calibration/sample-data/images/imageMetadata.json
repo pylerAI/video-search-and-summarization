@@ -1,0 +1,34 @@
+{
+  "images": [
+    {
+      "sensorId": "Camera",
+      "fileName": "Top.png",
+      "view": "warped-camera-view"
+    },
+    {
+      "sensorId": "Camera",
+      "fileName": "Camera.png",
+      "view": "camera-view"
+    },
+    {
+      "sensorId": "Camera_01",
+      "fileName": "Top.png",
+      "view": "warped-camera-view"
+    },
+    {
+      "sensorId": "Camera_01",
+      "fileName": "Camera_01.png",
+      "view": "camera-view"
+    },
+    {
+      "sensorId": "Camera_02",
+      "fileName": "Top.png",
+      "view": "warped-camera-view"
+    },
+    {
+      "sensorId": "Camera_02",
+      "fileName": "Camera_02.png",
+      "view": "camera-view"
+    }
+  ]
+}

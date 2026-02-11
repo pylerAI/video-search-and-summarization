@@ -1,0 +1,162 @@
+# Docker Compose for VSS Agent
+
+services:
+  vss-va-mcp:
+    image: nvcr.io/nvidia/vss-core/vss-agent:${VSS_AGENT_VERSION}
+    container_name: vss-va-mcp
+    network_mode: host
+    profiles: ["bp_wh_2d","bp_smc_2d","bp_ps_2d","bp_developer_alerts_2d_cv", "bp_developer_alerts_2d_vlm"]
+    volumes:
+      - ${MDX_SAMPLE_APPS_DIR}:/vss-agent/deployments:ro
+    environment:
+      - HOST_IP=${HOST_IP}
+      - VST_MCP_URL=${VST_MCP_URL}
+      - VSS_AGENT_HOST=${VSS_AGENT_HOST}
+      - VSS_VA_MCP_PORT=${VSS_VA_MCP_PORT}
+      - VSS_ES_PORT=${VSS_ES_PORT}
+      # HuggingFace token for authenticated downloads (higher rate limits)
+      - HF_TOKEN=${HF_TOKEN:-}
+    command: ["mcp", "serve", "--config_file", "${VSS_VA_MCP_CONFIG_FILE}", "--host", "${VSS_AGENT_HOST}", "--port", "${VSS_VA_MCP_PORT}"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/python3", "-c", "import urllib.request; import sys; sys.exit(0 if urllib.request.urlopen('http://${VSS_AGENT_HOST}:${VSS_VA_MCP_PORT}/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    depends_on:
+      vst-mcp-2d:
+        condition: service_started
+        required: false
+      vst-mcp-3d:
+        condition: service_started
+        required: false
+      vst-mcp-smc:
+        condition: service_started
+        required: false
+      vst-mcp-dev:
+        condition: service_started
+        required: false
+
+  vss-agent:
+    # for release, change this to the versioned image from the registry
+    image: nvcr.io/nvidia/vss-core/vss-agent:${VSS_AGENT_VERSION}
+    container_name: vss-agent
+    network_mode: host
+    profiles: ["bp_wh_2d","bp_smc_2d","bp_ps_2d","bp_developer_base_2d","bp_developer_search_2d","bp_developer_lvs_2d","bp_developer_alerts_2d_cv", "bp_developer_alerts_2d_vlm"]
+    environment:
+      # URL rewriting configuration
+      EXTERNAL_IP: ${EXTERNALLY_ACCESSIBLE_IP}
+      INTERNAL_IP: ${HOST_IP}
+      LLM_MODE: ${LLM_MODE} # remote / local / local_shared
+      VLM_MODE: ${VLM_MODE} # remote / local / local_shared
+
+      # NAT Configuration
+      HOST_IP: ${HOST_IP}
+      VSS_AGENT_VERSION: ${VSS_AGENT_VERSION}
+      VSS_AGENT_CONFIG_FILE: ${VSS_AGENT_CONFIG_FILE}
+      VSS_AGENT_HOST: ${VSS_AGENT_HOST}
+      VSS_AGENT_PORT: ${VSS_AGENT_PORT}
+      LVS_BACKEND_URL: ${LVS_BACKEND_URL}
+      RTVI_EMBED_PORT: ${RTVI_EMBED_PORT}
+      VSS_ES_PORT: ${VSS_ES_PORT}
+      
+      # Phoenix Telemetry
+      PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT}
+      
+      # VST (Video Storage Tool)
+      VST_INTERNAL_URL: ${VST_INTERNAL_URL}
+      VST_EXTERNAL_URL: ${VST_EXTERNAL_URL}
+      VST_MCP_URL: ${VST_MCP_URL}
+      
+      # MCP Server
+      VIDEO_ANALYSIS_MCP_URL: http://${VSS_AGENT_HOST}:${VSS_VA_MCP_PORT}
+      
+      # LLM Endpoints
+      LLM_NAME: ${LLM_NAME}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://${HOST_IP}:${LLM_PORT}}
+      VLM_NAME: ${VLM_NAME}
+      VLM_BASE_URL: ${VLM_BASE_URL:-http://${HOST_IP}:${VLM_PORT}}
+      EVAL_LLM_JUDGE_NAME: ${EVAL_LLM_JUDGE_NAME}
+      EVAL_LLM_JUDGE_BASE_URL: ${EVAL_LLM_JUDGE_BASE_URL}
+      RTVI_VLM_BASE_URL: ${RTVI_VLM_BASE_URL}
+      
+      # NVIDIA API Key (for remote NIM)
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY}
+      
+      # Object Store & Report Generation
+      VSS_AGENT_OBJECT_STORE_TYPE: ${VSS_AGENT_OBJECT_STORE_TYPE}
+      VSS_AGENT_REPORTS_BASE_URL: ${VSS_AGENT_REPORTS_BASE_URL}
+      VSS_AGENT_TEMPLATE_PATH: ${VSS_AGENT_TEMPLATE_PATH}
+      VSS_AGENT_TEMPLATE_NAME: ${VSS_AGENT_TEMPLATE_NAME}
+      
+      # Cosmos Embed & ElasticSearch (for search profile)
+      COSMOS_EMBED_ENDPOINT: ${COSMOS_EMBED_ENDPOINT}
+      ELASTIC_SEARCH_ENDPOINT: ${ELASTIC_SEARCH_ENDPOINT}
+      ELASTIC_SEARCH_INDEX: ${ELASTIC_SEARCH_INDEX}
+      
+    volumes:
+      - ${MDX_SAMPLE_APPS_DIR}:/vss-agent/deployments:ro
+      
+    command: ["serve", "--config_file", "${VSS_AGENT_CONFIG_FILE}", "--host", "${VSS_AGENT_HOST}", "--port", "${VSS_AGENT_PORT}"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/python3", "-c", "import urllib.request; import sys; sys.exit(0 if urllib.request.urlopen('http://${VSS_AGENT_HOST}:${VSS_AGENT_PORT}/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 240s
+    restart: unless-stopped
+
+    depends_on:
+      nvidia-nemotron-nano-9b-v2:
+        condition: service_healthy
+        required: false
+      nemotron-3-nano:
+        condition: service_healthy
+        required: false
+      llama-3.3-nemotron-super-49b-v1.5:
+        condition: service_healthy
+        required: false
+      gpt-oss-20b:
+        condition: service_healthy
+        required: false
+      nvidia-nemotron-nano-9b-v2-shared-gpu:
+        condition: service_healthy
+        required: false
+      nemotron-3-nano-shared-gpu:
+        condition: service_healthy
+        required: false
+      llama-3.3-nemotron-super-49b-v1.5-shared-gpu:
+        condition: service_healthy
+        required: false
+      gpt-oss-20b-shared-gpu:
+        condition: service_healthy
+        required: false
+      cosmos-reason1-7b:
+        condition: service_healthy
+        required: false
+      cosmos-reason1-7b-shared-gpu:
+        condition: service_healthy
+        required: false
+      cosmos-reason2-8b:
+        condition: service_healthy
+        required: false
+      cosmos-reason2-8b-shared-gpu:
+        condition: service_healthy
+        required: false
+      qwen3-vl-8b-instruct:
+        condition: service_healthy
+        required: false
+      qwen3-vl-8b-instruct-shared-gpu:
+        condition: service_healthy
+        required: false
+      rtvi-vlm:
+        condition: service_healthy
+        required: false
+      vss-va-mcp:
+        condition: service_healthy
+        required: false
+      lvs-server:
+        condition: service_healthy
+        required: false
+

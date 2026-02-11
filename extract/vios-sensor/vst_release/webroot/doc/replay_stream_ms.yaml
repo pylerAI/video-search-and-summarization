@@ -1,0 +1,1367 @@
+openapi: 3.0.3
+info:
+  title: VST Replay Stream
+  description: |-
+    VST Replay Stream MS is used to manage replay streams
+  version: 1.0.0
+  license:
+    name: Copyright (c) 2021-2023, NVIDIA CORPORATION.  All rights reserved.
+servers:
+  - url: https://localhost/api
+  - url: http://localhost/api
+tags:
+  - name: v1
+    description: VST Replay Stream API Schema v1
+paths:
+  /v1/replay/streams:
+    get:
+      tags:
+        - v1
+      summary: Get list of available replay streams
+      operationId: getReplayStream
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StreamInfoWrapper'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/settings:
+    get:
+      tags:
+        - v1
+      summary: Get stream settings
+      operationId: getStreamSettings
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: query
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamSettings'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Get stream settings
+      operationId: postStreamSettings
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                streamId:
+                  type: string
+
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamSettings'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/query:
+    get:
+      tags:
+        - v1
+      summary: Get stream last played timestamp and related metadata, if available
+      operationId: getReplayStreamQuery
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: metadata
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: qos stats of each device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metadata:
+                    $ref: '#/components/schemas/Metadata'
+                  ts:
+                    type: integer
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/start:
+    post:
+      tags:
+        - v1
+      summary: Start webrtc streaming
+      operationId: postReplayStreamStart
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StreamStartRequest'
+        required: true
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamStartResponse'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v1/replay/stream/swap:
+    post:
+      tags:
+      - v1
+      summary: Switch stream type from live to recorded
+      operationId: postStreamSwap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+              - peerid
+              - streamId
+              type: object
+              properties:
+                peerId:
+                  type: string
+                  example: "0.8595207664173294"
+                streamId:
+                  type: string
+                  example: 0b6b62ea-b49a-49dc-906a-0010be31b7d7
+                startTime:
+                  type: string
+                  format: date-time
+                endTime:
+                  type: string
+                  format: date-time
+        required: true
+      responses:
+        200:
+          description: boolean value
+          content:
+            application/json:
+              schema:
+                type: boolean
+        default:
+          description: error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/stop:
+    post:
+      tags:
+        - v1
+      summary: Stop webrtc streaming
+      operationId: postReplayStreamStop
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+                - peerId
+                - mediaSessionId
+              type: object
+              properties:
+                peerId:
+                  type: string
+                  example: '0.8595207664173294'
+                mediaSessionId:
+                  type: string
+                  example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/pause:
+    post:
+      tags:
+        - v1
+      summary: Pause the recorded stream playback
+      operationId: postReplayStreamPause
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+                - peerId
+                - mediaSessionId
+              type: object
+              properties:
+                peerId:
+                  type: string
+                  example: '0.8595207664173294'
+                mediaSessionId:
+                  type: string
+                  example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/resume:
+    post:
+      tags:
+        - v1
+      summary: Resume the recorded stream playback
+      operationId: postReplayStreamResume
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+                - peerId
+                - mediaSessionId
+              type: object
+              properties:
+                peerId:
+                  type: string
+                  example: '0.8595207664173294'
+                mediaSessionId:
+                  type: string
+                  example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/seek:
+    post:
+      tags:
+        - v1
+      summary: Seek forward (+10s), seek backward (-10s), rewind and fast forward
+      operationId: postReplayStreamSeek
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: json object containing seek information
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StreamSeek'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags:
+        - v1
+      summary: Get current position
+      operationId: getReplayStreamSeek
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: mediaSessionId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - position
+                properties:
+                  position:
+                    type: integer
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/status:
+    get:
+      tags:
+        - v1
+      summary:
+        Get stream error status and playback status like PLAYING, PAUSED, NOT
+        PLAYING
+      operationId: getReplayStreamStatus
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: mediaSessionId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamStatus'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/{streamId}/picture:
+    get:
+      tags:
+        - v1
+      summary: Get picture (jpeg) from device
+      operationId: getReplayStreamPicture
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startTime
+          in: query
+          schema:
+            type: string
+            format: date-time
+          example: 2021-06-21T06:51:00.000Z
+        - name: width
+          in: query
+          schema:
+            type: string
+          example: '1920'
+        - name: height
+          in: query
+          schema:
+            type: string
+          example: '1080'
+      responses:
+        200:
+          description: Success
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: Unexpected error
+          content:
+            image/jpeg:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/stream/stats:
+    get:
+      tags:
+        - v1
+      summary: Get stream stats like frame rate, total encoded and decoded frames
+      operationId: getReplayStreamStats
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: mediaSessionId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamStats'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/setAnswer:
+    post:
+      tags:
+        - v1
+      summary: Share SDP with replay stream service
+      operationId: postReplaySetAnswer
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              required:
+                - sessionDescription
+                - mediaSessionId
+              type: object
+              properties:
+                sessionDescription:
+                  type: string
+                  example: 'v=0
+                    o=mhandley 2890844526 2890842807 IN IP4 126.16.64.4
+                    s=SDP Seminar
+                    i=A Seminar on the session description protocol
+                    c=IN IP4 224.2.17.12/127
+                    t=2873397496 2873404696
+                    a=recvonly
+                    m=audio 49170 RTP/AVP 0
+                    m=video 51372 RTP/AVP 31
+                    m=application 32416 udp wb
+                    a=orient:portrait'
+                mediaSessionId:
+                  type: string
+                  example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/iceCandidate:
+    get:
+      tags:
+        - v1
+      summary: Get list of ICE Candidates
+      operationId: getReplayGetIceCandidate
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success array
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetIceCandidate'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Add new remote candidate to the RTCPeerConnection's remote description
+      operationId: postReplayAddIceCandidate
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddIceCandidate'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/iceServers:
+    get:
+      tags:
+        - v1
+      summary:
+        Get URL or URLs of the servers to be used for ICE negotiations. These
+        are typically STUN and/or TURN servers
+      operationId: getReplayGetIceServers
+      parameters:
+        - name: peerId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IceServersResponse'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/configuration:
+    get:
+      tags:
+        - v1
+      summary: Get Replay Stream service configuration
+      operationId: getSensorConfiguration
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetConfiguration'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Set Replay Stream service configuration
+      operationId: postSensorConfiguration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetConfiguration'
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/replay/version:
+    get:
+      tags:
+        - v1
+      summary: Get MS version
+      operationId: getVersion
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/replay/help:
+    get:
+      tags:
+        - v1
+      summary: Get supported API list
+      operationId: gethelp
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Options:
+      required:
+        - rtptransport
+        - timeout
+        - quality
+        - overlay
+      type: object
+      properties:
+        rtptransport:
+          type: string
+          enum:
+            - udp
+            - tcp
+        timeout:
+          type: integer
+          example: 60
+        quality:
+          type: string
+          enum: ['low', 'medium', 'high', 'auto']
+        overlay:
+          type: object
+          required:
+            - enabled
+            - color
+            - thickness
+          properties:
+            enabled:
+              type: boolean
+              example: true
+            objectId:
+              type: array
+              items:
+                type: number
+                example: 23
+            color:
+              type: string
+              example: 'red'
+            thickness:
+              type: number
+              example: 6
+            debug:
+              type: boolean
+              example: false
+
+    StreamStartRequest:
+      required:
+        - options
+        - peerId
+        - sessionDescription
+        - streamId
+      type: object
+      properties:
+        streamId:
+          type: string
+          example: 'e95bb592-06c7-11ee-be56-0242ac120002'
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        peerId:
+          type: string
+          example: '35f2363f-3cac-4d4c-9547-d05db195535f'
+        options:
+          $ref: '#/components/schemas/Options'
+        sessionDescription:
+          required:
+            - sdp
+            - type
+          type: object
+          properties:
+            type:
+              type: string
+              example: offer
+            sdp:
+              type: string
+              example: 'v=0
+                o=mhandley 2890844526 2890842807 IN IP4 126.16.64.4
+                s=SDP Seminar
+                i=A Seminar on the session description protocol
+                c=IN IP4 224.2.17.12/127
+                t=2873397496 2873404696
+                a=recvonly
+                m=audio 49170 RTP/AVP 0
+                m=video 51372 RTP/AVP 31
+                m=application 32416 udp wb
+                a=orient:portrait'
+
+    StreamStartResponse:
+      required:
+        - sdp
+        - type
+      type: object
+      properties:
+        sdp:
+          type: string
+          example: 'v=0
+            o=mhandley 2890844526 2890842807 IN IP4 126.16.64.4
+            s=SDP Seminar
+            i=A Seminar on the session description protocol
+            c=IN IP4 224.2.17.12/127
+            t=2873397496 2873404696
+            a=recvonly
+            m=audio 49170 RTP/AVP 0
+            m=video 51372 RTP/AVP 31
+            m=application 32416 udp wb
+            a=orient:portrait'
+        type:
+          type: string
+          example: answer
+        mediaSessionId:
+          type: string
+          example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+
+    IceServer:
+      type: object
+      properties:
+        urls:
+          type: string
+      required:
+        - urls
+
+    IceServersResponse:
+      type: object
+      properties:
+        iceServers:
+          type: array
+          items:
+            $ref: '#/components/schemas/IceServer'
+      required:
+        - iceServers
+
+    StreamStatus:
+      type: object
+      properties:
+        error:
+          type: boolean
+        state:
+          type: string
+          enum:
+            - PLAYING
+            - NOT PLAYING
+            - PAUSED
+            - ERROR
+
+    StreamSeek:
+      required:
+        - action
+        - peerId
+        - value
+        - mediaSessionId
+      type: object
+      properties:
+        mediaSessionId:
+          type: string
+          example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+        peerId:
+          type: string
+          example: '0.8595207664173294'
+        action:
+          type: string
+          enum:
+            - seekForward
+            - seekBackward
+            - fastForward
+            - rewind
+        value:
+          type: string
+          example: '0'
+
+    StreamQuery:
+      type: object
+      properties:
+        ts:
+          type: string
+          example: 00:00:06.666
+        metadata:
+          type: object
+
+    StreamInfoWrapper:
+      type: object
+      properties:
+        additionalProperties:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamInfo'
+
+    StreamInfo:
+      type: object
+      properties:
+        streamId:
+          type: string
+          example: '7927cbbc-cba6-4f22-b65d-46f7382f5f65'
+        isMain:
+          type: boolean
+          example: true
+        name:
+          type: string
+          example: 'HIKVISION%20DS-2CD2T43G0-I5'
+        metadata:
+          type: object
+          properties:
+            bitrate:
+              type: string
+              example: '8000'
+            codec:
+              type: string
+              example: 'H264'
+            framerate:
+              type: string
+              example: '30'
+            govlength:
+              type: string
+              example: '60'
+            resolution:
+              type: string
+              example: '1920x1080'
+
+    StreamSettings:
+      required:
+        - framerate
+        - resolution
+        - overlay
+      type: object
+      properties:
+        framerate:
+          type: integer
+        resolution:
+          type: string
+          example: 60
+        overlay:
+          $ref: '#/components/schemas/Overlay'
+
+    Overlay:
+      required:
+        - enabled
+        - objectId
+        - color
+        - thickness
+        - debug
+      properties:
+        enabled:
+          type: boolean
+          example: true
+        objectId:
+          type: array
+          items:
+            type: number
+            example: 23
+        color:
+          type: string
+          example: 'red'
+        thickness:
+          type: number
+          example: 6
+        debug:
+          type: boolean
+          example: false
+
+    AddIceCandidate:
+      required:
+        - candidate
+        - peerId
+      type: object
+      properties:
+        peerId:
+          type: string
+          example: 'bbbbb2ea-b49a-49dc-906a-0010be31b7d7'
+        candidate:
+          required:
+            - candidate
+            - sdpMLineIndex
+            - sdpMid
+          type: object
+          properties:
+            candidate:
+              type: string
+              example: candidate:878186389 1 udp 2122260223 192.168.55.1 43519
+                typ host generation 0 ufrag IUnY network-id 2 network-cost
+                50
+            sdpMLineIndex:
+              type: integer
+              example: 0
+            sdpMid:
+              type: string
+              example: '0'
+
+    GetIceCandidate:
+      type: array
+      items:
+        required:
+          - candidate
+          - sdpMLineIndex
+          - sdpMid
+        type: object
+        properties:
+          candidate:
+            type: string
+            example: candidate:878186389 1 udp 2122260223 192.168.55.1 43519
+              typ host generation 0 ufrag IUnY network-id 2 network-cost
+              50
+          sdpMLineIndex:
+            type: integer
+            example: 0
+          sdpMid:
+            type: string
+            example: '0'
+
+    GetConfiguration:
+      type: object
+      required:
+        - coturnTurnUrlListWithSecret
+        - gpuIndices
+        - httpPort
+        - maxStreamsSupported
+        - maxWebrtcInConnections
+        - maxWebrtcOutConnections
+        - enableFrameDrop
+        - prometheusPort
+        - stunUrlList
+        - useTwilioStunTurn
+        - twilioAccountSid
+        - twilioAuthToken
+        - useReverseProxy
+        - reverseProxyServerAddress
+        - staticTurnUrlList
+        - useCoturnAuthSecret
+        - useHttpDigestAuthentication
+        - useHttps
+        - enablePerfLogging
+        - useSoftwarePath
+        - useVideoMetadataProtobuf
+        - videoMetadataQueryBatchSizeNumFrames
+        - videoMetadataServer
+        - vstDataPath
+        - webrtcLatencyMs
+        - webrtcMaxBirate
+        - webrtcMinBirate
+        - webrtcOutEnableInsertSpsPps
+        - webrtcOutMinDrcInterval
+        - webrtcOutSetIdrInterval
+        - webrtcOutSetIframeInterval
+        - webrtcStartBirate
+        - webserviceAccessControlList
+        - enableGstDebugProbes
+        - enableUserCleanup
+        - multiUserExtraOptions
+        - useMultiUser
+        - vstIp
+      properties:
+        coturnTurnUrlListWithSecret:
+          type: array
+          items:
+            type: string
+        gpuIndices:
+          type: string
+          default: ''
+        httpPort:
+          type: string
+          default: '30000'
+        maxStreamsSupported:
+          type: integer
+          default: 16
+        maxWebrtcInConnections:
+          type: integer
+          default: 1
+        maxWebrtcOutConnections:
+          type: integer
+          default: 8
+        enableFrameDrop:
+          type: boolean
+          default: false
+        prometheusPort:
+          type: string
+          default: '8080'
+        stunUrlList:
+          type: array
+          items:
+            type: string
+          example:
+            - stun.l.google.com:19302
+            - stun1.l.google.com:19302
+        useTwilioStunTurn:
+          type: boolean
+          default: false
+        twilioAccountSid:
+          type: string
+          default: ''
+        twilioAuthToken:
+          type: string
+        useReverseProxy:
+          type: boolean
+          default: false
+        reverseProxyServerAddress:
+          type: string
+        staticTurnUrlList:
+          type: array
+          items:
+            type: string
+        useCoturnAuthSecret:
+          type: boolean
+          default: false
+        useHttpDigestAuthentication:
+          type: boolean
+          default: false
+        useHttps:
+          type: boolean
+          default: false
+        enablePerfLogging:
+          type: boolean
+          default: true
+        useSoftwarePath:
+          type: boolean
+          default: false
+        useVideoMetadataProtobuf:
+          type: boolean
+          default: true
+        videoMetadataQueryBatchSizeNumFrames:
+          type: integer
+          default: 300
+        videoMetadataServer:
+          type: string
+        vstDataPath:
+          type: string
+        webrtcLatencyMs:
+          type: integer
+          default: 500
+        webrtcMaxBirate:
+          type: integer
+          default: 10000
+        webrtcMinBirate:
+          type: integer
+          default: 2000
+        webrtcOutEnableInsertSpsPps:
+          type: boolean
+          default: false
+        webrtcOutMinDrcInterval:
+          type: integer
+          default: 5
+        webrtcOutSetIdrInterval:
+          type: integer
+          default: 0
+        webrtcOutSetIframeInterval:
+          type: integer
+          default: 0
+        webrtcStartBirate:
+          type: integer
+          default: 4000
+        webserviceAccessControlList:
+          type: string
+        enableGstDebugProbes:
+          type: boolean
+          default: true
+        enableUserCleanup:
+          type: boolean
+          default: false
+        multiUserExtraOptions:
+          type: string
+          default: 'Secure, SameSite=none'
+        useMultiUser:
+          type: boolean
+          default: false
+        vstIp:
+          type: string
+
+    SetConfiguration:
+      type: object
+      properties:
+        coturnTurnUrlListWithSecret:
+          type: array
+          items:
+            type: string
+        stunUrlList:
+          type: array
+          items:
+            type: string
+          example:
+            - stun.l.google.com:19302
+            - stun1.l.google.com:19302
+        useTwilioStunTurn:
+          type: boolean
+          default: false
+        twilioAccountSid:
+          type: string
+          default: ''
+        twilioAuthToken:
+          type: string
+        useReverseProxy:
+          type: boolean
+          default: false
+        reverseProxyServerAddress:
+          type: string
+        staticTurnUrlList:
+          type: array
+          items:
+            type: string
+        useCoturnAuthSecret:
+          type: boolean
+          default: false
+
+    BoundingBox:
+      type: object
+      properties:
+        bottomY:
+          type: number
+        leftX:
+          type: number
+        rightX:
+          type: number
+        topY:
+          type: number
+    Object:
+      type: object
+      properties:
+        bbox:
+          $ref: '#/components/schemas/BoundingBox'
+        confidence:
+          type: number
+        coordinate:
+          type: object
+        dir:
+          type: array
+          items:
+            type: string
+        embedding:
+          type: object
+        gaze:
+          type: object
+        id:
+          type: string
+        info:
+          type: object
+        lipActivity:
+          type: object
+        location:
+          type: object
+        pose:
+          type: object
+        speed:
+          type: number
+        type:
+          type: string
+    Metadata:
+      type: object
+      properties:
+        epocTime:
+          type: number
+        id:
+          type: string
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Object'
+
+    StreamStatsSettings:
+      type: object
+      properties:
+        Encoding:
+          type: string
+        Resolution:
+          type: object
+          properties:
+            height:
+              type: string
+            width:
+              type: string
+        streamId:
+          type: string
+        encodingProfile:
+          type: string
+        framerate:
+          type: string
+    NetworkBandwidth:
+      type: object
+      properties:
+        interfaceList:
+          type: string
+    StreamStats:
+      type: object
+      properties:
+        streamSettings:
+          $ref: '#/components/schemas/StreamStatsSettings'
+        frameRetrievalAccuracy:
+          type: string
+        networkBandwidth:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkBandwidth'
+        streamStats:
+          type: object
+          properties:
+            currentFrameRate:
+              type: string
+            decode:
+              type: string
+            encode:
+              type: string
+            inboundAudio:
+              type: string
+            inboundVideo:
+              type: string
+        timestamp:
+          type: string
+
+    Error:
+      required:
+        - error_code
+        - error_message
+      type: object
+      properties:
+        error_code:
+          type: string
+          example: VMSInternalError
+        error_message:
+          type: string
+          example: VMS internal processing error

@@ -1,0 +1,167 @@
+/*
+* Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+*
+* NVIDIA Corporation and its licensors retain all intellectual property
+* and proprietary rights in and to this software, related documentation
+* and any modifications thereto.  Any use, reproduction, disclosure or
+* distribution of this software and related documentation without an express
+* license agreement from NVIDIA Corporation is strictly prohibited.
+*/
+
+@import url("reset.css");
+
+html {
+	background-color: white;
+}
+
+body {
+	position: relative;
+	padding-left: 10%;
+	padding-right: 10%;
+	background-color: red;
+	font-family: Verdana, Arial, Helvetica, sans-serif;
+	font-size: 13px;
+	color: #333
+}
+
+p {
+	padding: 10px;
+}
+
+#wrapper {
+	width: 100%;
+	min-width: 1000px;
+	max-width: 2000px;
+	margin: 0 auto;
+}
+
+#headerwrap {
+	width: 100%;
+	float: left;
+	margin: 0 auto;
+}
+
+#header {
+	background: #f2f2f2;
+	border-radius: 10px;
+	border: 1px solid #ebebeb;
+	margin: 5px;
+	font-weight: bold;
+}
+
+#userinputWrap {
+	width: 100%;
+	float: left;
+	margin: 0 auto;
+}
+
+#userinput {
+	background: #f2f2f2;
+	border-radius: 10px;
+	border: 1px solid #ebebeb;
+	margin: 5px;
+	padding: 5px;
+}
+
+#contentliquid {
+	float: left;
+	width: 100%;
+}
+
+#contentwrap {
+	width: 100%;
+	float: left;
+}
+
+#content {
+	background: #f2f2f2;
+	border-radius: 10px;
+	border: 1px solid #ebebeb;
+	margin: 5px;
+	padding: 5px;
+}
+
+#videoContainer {
+	background: #ccc;
+	margin: 5px;
+	width: 90vh;
+	height: 50vh;
+	padding: 5px;
+}
+
+#recordDetails {
+	display: none;
+}
+
+.select-style {
+	border: 1px solid #ccc;
+	width: 300px;
+	border-radius: 3px;
+	overflow: hidden;
+	background: #fafafa no-repeat 90% 50%;
+	margin: 5px;
+}
+
+.input-style {
+	border: 1px solid #ccc;
+	width: 200px;
+	border-radius: 3px;
+	overflow: hidden;
+	background: #fafafa no-repeat 90% 50%;
+	margin: 5px;
+}
+
+.video-controls {
+	background-color: #90EE90;
+	cursor: pointer;
+}
+
+.video-controls-always-show {
+	background-color: #90EE90;
+	cursor: pointer;
+}
+
+#videoControls {
+	cursor: default;
+}
+
+.stop-button {
+	background-color: #90EE90;
+	cursor: pointer;
+}
+
+.start-button {
+	background-color: #90EE90;
+	cursor: pointer;
+}
+
+#loadingIcon {
+	left: 0;
+	position: relative;
+	top: 0;
+	height: 100%;
+	width: 100%;
+	align-items: center;
+	display: none;
+	justify-content: center;
+}
+
+#lockIcon {
+	cursor: pointer;
+	display: none;
+}
+
+#footerwrap {
+	width: 100%;
+	float: left;
+	margin: 0 auto;
+	clear: both;
+}
+
+#footer {
+	height: 40px;
+	background: #f2f2f2;
+	border-radius: 10px;
+	border: 1px solid #ebebeb;
+	margin: 5px;
+}

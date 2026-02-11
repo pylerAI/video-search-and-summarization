@@ -1,0 +1,117 @@
+==============================================================================
+  NVIDIA VSS 3.0.0 Base Profile - Helm Chart
+==============================================================================
+
+설치가 완료되었습니다!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  GPU 요구사항 (원본 compose 기준)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  모드: {{ .Values.global.llmMode }} (LLM) / {{ .Values.global.vlmMode }} (VLM)
+
+{{- if eq .Values.global.llmMode "local_shared" }}
+  [local_shared 모드 - GPU 공유]
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  GPU #0 (공유)                                                    │
+  │  ├─ VLM NIM (cosmos-reason2-8b): VRAM 40% (NIM_KVCACHE_PERCENT)  │
+  │  │  shm_size: 32Gi, Memory: 32Gi                                 │
+  │  └─ LLM NIM (nemotron-nano-v2): VRAM 40% (NIM_KVCACHE_PERCENT)  │
+  │     shm_size: 16Gi, Memory: 16Gi                                 │
+  │  ※ VLM이 먼저 시작 → ready 후 LLM 시작                          │
+  │  ※ K8s에서 GPU 공유: MIG, MPS, Time-Slicing 중 택1 필요         │
+  └────────────────────────────────────────────────────────────────────┘
+  최소 GPU: 1장 (NIM 전용) + NVIDIA 런타임 (VST 서비스용)
+  권장 GPU: 2장 (NIM 전용 1장 + VST 비디오 처리 1장)
+{{- else if eq .Values.global.llmMode "local" }}
+  [local 모드 - GPU 전용]
+  GPU #0: VLM NIM 전용 (VRAM 100%)
+  GPU #1: LLM NIM 전용 (VRAM 100%)
+  최소 GPU: 2장 (NIM) + NVIDIA 런타임 (VST)
+  권장 GPU: 3장
+{{- else }}
+  [remote 모드 - 외부 API]
+  NIM 서비스 GPU: 0장
+  NVIDIA 런타임: VST 서비스용만 필요
+{{- end }}
+
+  VST 서비스 GPU 사용:
+  - sensor-ms:      runtimeClassName=nvidia (비디오 디코딩)
+  - storage-ms:     runtimeClassName=nvidia, NVIDIA_VISIBLE_DEVICES=all
+  - replaystream-ms: runtimeClassName=nvidia, NVIDIA_VISIBLE_DEVICES=all
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PVC (Persistent Volume Claims) 요구사항
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [RWX 필요 - ReadWriteMany] (NFS, CephFS, EFS 등)
+  ┌────────────────────────┬───────┬────────────────────────────────────┐
+  │ PVC 이름               │ 크기  │ 사용 서비스                        │
+  ├────────────────────────┼───────┼────────────────────────────────────┤
+  │ vst-data               │ 50Gi  │ sensor-ms, storage-ms, replaystream│
+  │ vst-video              │ 200Gi │ sensor-ms, storage-ms, replaystream│
+  │ vst-clips              │ 50Gi  │ storage-ms, replaystream           │
+  └────────────────────────┴───────┴────────────────────────────────────┘
+
+  [RWO - ReadWriteOnce]
+  ┌────────────────────────┬───────┬──────────────────────────┐
+  │ PVC 이름               │ 크기  │ 사용 서비스              │
+  ├────────────────────────┼───────┼──────────────────────────┤
+  │ vst-temp               │ 10Gi  │ storage-ms               │
+  │ postgres-data          │ 20Gi  │ postgres                 │
+  │ redis-data             │ 10Gi  │ redis                    │
+  │ phoenix-data           │ 5Gi   │ phoenix                  │
+  │ llm-nim-cache          │ 50Gi  │ LLM NIM (모델 캐시)      │
+  │ vlm-nim-cache          │ 50Gi  │ VLM NIM (모델 캐시)      │
+  └────────────────────────┴───────┴──────────────────────────┘
+
+  총 스토리지: ~445Gi (비디오 저장량에 따라 증가)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  사전 요구사항
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. NVIDIA GPU Operator 설치 (runtimeClassName: nvidia)
+  2. RWX StorageClass 구성 (NFS Provisioner, Rook-Ceph 등)
+{{- if eq .Values.global.llmMode "local_shared" }}
+  3. GPU 공유 설정 (택1):
+     - NVIDIA MIG (Multi-Instance GPU) - H100 권장
+     - NVIDIA MPS (Multi-Process Service)
+     - NVIDIA GPU Time-Slicing
+     참고: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  서비스 접근
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  VSS UI:
+    kubectl port-forward svc/{{ include "vss-base.fullname" . }}-vss-ui 3000:{{ .Values.vssUI.port }}
+    → http://localhost:3000
+
+  NIM 상태 확인:
+    # VLM NIM
+    kubectl port-forward svc/{{ include "vss-base.fullname" . }}-vlm-nim {{ .Values.vlmNim.port }}:{{ .Values.vlmNim.port }}
+    curl http://localhost:{{ .Values.vlmNim.port }}/v1/health/ready
+
+    # LLM NIM
+    kubectl port-forward svc/{{ include "vss-base.fullname" . }}-llm-nim {{ .Values.llmNim.port }}:{{ .Values.llmNim.port }}
+    curl http://localhost:{{ .Values.llmNim.port }}/v1/health/ready
+
+  Phoenix (Telemetry):
+    kubectl port-forward svc/{{ include "vss-base.fullname" . }}-phoenix {{ .Values.phoenix.port }}:{{ .Values.phoenix.port }}
+    → http://localhost:{{ .Values.phoenix.port }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  설치 예시
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # RWX StorageClass 사용 예시:
+  helm install vss-base ./helm/vss-base \
+    --set global.ngcApiKey=<YOUR_KEY> \
+    --set global.hostIP=<NODE_IP> \
+    --set vstSharedVolumes.vstData.storageClass=nfs-csi \
+    --set vstSharedVolumes.vstVideo.storageClass=nfs-csi \
+    --set vstSharedVolumes.vstClips.storageClass=nfs-csi
+
+==============================================================================

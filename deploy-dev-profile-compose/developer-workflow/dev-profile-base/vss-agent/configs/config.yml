@@ -1,0 +1,334 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+general:
+  use_uvloop: true
+  front_end:
+    _type: fastapi
+    runner_class: vss_agents.api.custom_fastapi_worker.CustomFastApiFrontEndWorker
+    object_store: ${VSS_AGENT_OBJECT_STORE_TYPE}  # Set to local_object_store or remote_object_store
+    endpoints:
+    - path: /api/v1/videos
+      method: POST
+      description: Generate VST upload URL
+      function_name: video_upload_url
+    cors:
+      allow_origins: ['*']
+      allow_methods: ['*']
+      allow_headers: ['*']
+      allow_credentials: false
+
+  telemetry:
+    tracing:
+      phoenix:
+        _type: phoenix
+        endpoint: ${PHOENIX_ENDPOINT}/v1/traces
+        project: DEV-vss-agent-${VSS_AGENT_VERSION}
+      # weave:
+      #   _type: weave
+      #   project: ${WEAVE_PROJECT}
+
+object_stores:
+  local_object_store:
+    _type: in_memory
+
+
+functions:
+  video_upload_url:
+    _type: video_upload_url
+    vst_external_url: ${VST_EXTERNAL_URL}
+    agent_base_url: http://${EXTERNAL_IP}:${VSS_AGENT_PORT}
+
+  video_understanding:
+    _type: video_understanding
+    vlm_name: nim_vlm
+    max_frames: 60
+    max_fps: 2 # for CR1, max fps is 2
+    min_pixels: 3136
+    max_pixels: 12845056
+    reasoning: false
+    video_url_tool: vst_video_clip
+    stream_mode: false
+    vlm_mode: ${VLM_MODE}
+    internal_ip: ${INTERNAL_IP}
+    external_ip: ${EXTERNAL_IP}
+    system_prompt: |
+      You are a monitoring system analyzing video footage.
+      Your task is to describe the events in the video in detail or answer the user's question about the video.
+        IMPORTANT:
+        - You must respond only in English and in plain text.
+        - You must respond only in the format specified in the OUTPUT REQUIREMENTS section.
+        - Timestamp must be in pts format, seconds since the start of the video.
+        - Always provide a direct answer to the question asked.
+        - Never return an empty response. If you cannot find what the user is asking about, acknowledge it to the user.
+
+  vst_video_clip:
+    _type: vst.video_clip
+    vst_internal_url: ${VST_INTERNAL_URL}
+    vst_external_url: ${VST_EXTERNAL_URL}
+
+  vst_snapshot:
+    _type: vst.snapshot
+    vst_internal_url: ${VST_INTERNAL_URL}
+    vst_external_url: ${VST_EXTERNAL_URL}
+
+  vst_video_list:
+    _type: vst.video_list
+    vst_internal_url: ${VST_INTERNAL_URL}
+
+  video_report_gen:
+    _type: video_report_gen
+    object_store: ${VSS_AGENT_OBJECT_STORE_TYPE}
+    base_url: ${VSS_AGENT_REPORTS_BASE_URL}
+    vst_internal_url: ${VST_INTERNAL_URL}
+    video_understanding_tool: video_understanding
+    video_url_tool: vst_video_clip
+    picture_url_tool: vst_snapshot
+    vst_internal_url: ${VST_INTERNAL_URL}
+    vst_external_url: ${VST_EXTERNAL_URL}
+    vlm_prompt: |
+      Describe in detail what is happening in this video,
+      including all visible people, vehicles, equipments, objects,
+      actions, and environmental conditions.
+      OUTPUT REQUIREMENTS:
+      [timestamp-timestamp] Description of what is happening.
+      EXAMPLE:
+      [0.0s-4.0s] <description of the first event>
+      [4.0s-12.0s] <description of the second event>
+
+  report_agent:
+    _type: report_agent
+    log_level: INFO
+    # No Video Analytics MCP tools configured = Video(uploaded) Report mode
+    video_report_tool: video_report_gen
+
+llms:
+  nim_llm:
+    _type: nim
+    model_name: ${LLM_NAME}
+    base_url: ${LLM_BASE_URL}/v1
+    max_tokens: 4096
+    temperature: 0.0
+
+  nim_vlm:
+    _type: nim
+    model_name: ${VLM_NAME}
+    base_url: ${VLM_BASE_URL}/v1
+    temperature: 0.0
+    max_tokens: 4096
+
+  eval_llm_judge:
+    _type: nim
+    model_name: ${EVAL_LLM_JUDGE_NAME}
+    base_url: ${EVAL_LLM_JUDGE_BASE_URL}/v1
+    max_tokens: 4096
+    temperature: 0.0
+
+workflow:
+  _type: top_agent
+  llm_name: nim_llm
+  log_level: INFO
+  max_iterations: 15
+  llm_reasoning: false
+  tool_names:
+  - video_understanding
+  - vst_video_clip
+  - vst_snapshot
+  - vst_video_list
+  subagent_names:
+  - report_agent
+  # yamllint disable rule:line-length
+  prompt: |
+    You are a routing agent for a video surveillance system. Your job is to route requests to the correct tool.
+
+    TOOL CALL RULES:
+    - ALWAYS include ALL required parameters when calling tools
+    - If a tool call fails with a validation error, RETRY IMMEDIATELY: Fix the error and call the tool again with correct parameters.
+
+    # IMPORTANT:
+
+    ## Routing Rules:
+    CRITICAL: If a report for the same video has already been generated from previous interactions AND the user did not request a new report for the same video, return the answer with the EXACT URLs from conversation history - DO NOT call report_agent, DO NOT modify any parts of the URLs.
+    CRITICAL: Videos can be added/removed from the backend system. ALWAYS call vst_video_list when user asks about available videos.
+      **report_agent** - ONLY for generating NEW reports, when user explicitly asks for a new report to be generated.
+      - "Generate a report for video"
+      - "Create an analysis report"
+      - "I need a safety report for this video"
+      **video_understanding** - For any question about video content.
+      - "Was there any breach of safety protocol?"
+      - "Were there any vehicle collisions?"
+      - "Is the bridge in good condition?"
+      **vst_video_clip** - For queries asking for showing videos (e.g., "Let's show the videos just uploaded"), call this tool in parallel with each video name as a separate input.
+      - CRITICAL: If a video clip for the same video has already been generated from previous interactions, return the answer with the EXACT URLs from conversation history - DO NOT call vst_video_clip, DO NOT modify any parts of the URLs. However, if the query asks for video clip of a different video, you MUST call vst_video_clip tool to get the URL. You should NEVER generate the URL yourself.
+      **vst_video_list** - ALWAYS call this tool when asked about available videos.
+      **vst_snapshot** - For queries asking for a snapshot of a video at a specific timestamp.
+      - CRITICAL: If a snapshot for the same video AND at the same timestamp has already been generated from previous interactions, return the answer with the EXACT URLs from conversation history - DO NOT call vst_snapshot, DO NOT modify any parts of the URLs. However, if the query asks for snapshot of a new video or a new timestamp for the same video, you MUST call vst_snapshot tool to get the URL. You should NEVER generate the URL yourself.
+    ## Context: If user doesn't specify the video name, you should use the most recently uploaded video.
+    ## Error Handling: if a tool fails more than 3 times, just return a summarized error message. Do not endlessly try again.
+
+    # WORKFLOWS:
+    1. LIST VIDEOS
+       Trigger: "What videos are available?" / "What sensors are available?"
+       Action: Call vst_video_list, no input parameters required
+
+    2. GENERATE REPORT (new report only)
+       Trigger: "Generate a report" / "Create analysis" / "I need a report"
+       Action: Call report_agent with sensor_id and user_query
+       Note:
+         - Do NOT use for follow-up questions
+
+    3. ANSWER VIDEO QUESTION
+       Trigger: Any question about video content, including follow-ups
+       Examples:
+         - "What is happening in the video?"
+         - "Describe the people"
+         - "What color shirt?" (follow-up after report)
+         - "Are there any vehicles?"
+       Note:
+        - For queries about a particular time(T), set start_time to T-0.5 and end_time to T+0.5
+
+    4. GET MEDIA
+       Trigger: "Show snapsho from <video_name>" / "Get video clip <video_name>" / "Let's show the videos just uploaded<list of video names>"
+       Action: Call vst_snapshot or vst_video_clip
+       Note:
+        - You should call the tools with sensor/file names.
+        - For multiple video names, call the tool in parallel with each video name as a separate input.
+        - You must call this tool to get the URL, DON'T generate the URL yourself.
+
+    # RESPONSE FORMAT
+      - Do not include phrases like "I should", "Let me", "The user".
+      - Convert json to markdown format.
+        - EXCEPTION: For queries about listing sensors, output sensors as plain text, NOT as code blocks or markdown code.
+      - Wrap urls in html tags. CRITICAL: ONLY do this when a url is EXACTLY the one returned from a tool call or the url is EXACTLY the same as one from the conversation history. NEVER generate urls yourself. NEVER modify an existing url to create a new url (e.g. changing timestamps, IDs, or any part of the url). If you need a url that wasn't returned by a tool call, you MUST call the appropriate tool to get it. Examples:
+        <video src="video_url" alt="Video Name">Video Name</video>
+        <image src="image_url" alt="Image Name">Image Name</image>
+  # yamllint enable rule:line-length
+
+eval:
+  general:
+    workflow_alias: ${WEAVE_WORKFLOW_ALIAS}
+    output_dir: ${EVAL_DIR}/results
+    max_concurrency: 10
+    dataset:
+      _type: json
+      file_path: ${EVAL_DIR}/dataset.json
+      structure:
+        id_key: "id"
+        question_key: "query"
+        answer_key: "ground_truth"
+
+  evaluators:
+    trajectory_evaluator:
+      _type: customized_trajectory_evaluator
+      llm_name: eval_llm_judge
+      evaluation_method_id: trajectory
+      track_agent_selected_tools_only: true
+      max_retries: 2
+      llm_judge_reasoning: true
+      custom_prompt_template: |
+        You are an expert evaluator assessing an AI agent's performance on tool calling.
+
+        Question: {question}
+
+        Available Tools and Their Schemas:
+        {tool_schemas}
+
+        Agent's Actions and Tool Calls:
+        {agent_trajectory}
+
+        Agent's Final Answer:
+        {answer}
+
+        Reference/Expected Output:
+        {reference}
+
+        Evaluation Criteria:
+        1. **Tool Selection**: Did the agent select the appropriate tools for the task?
+        2. **Parameter Accuracy**: Were tool parameters correct according to the tool schemas above?
+        Check that all parameters match the expected types, required fields, and descriptions.
+        3. **Data Retrieval**: Did the agent successfully retrieve the necessary data? Sometimes the
+        data is not available, that should not be considered as a failure. As long as the tools are
+        called correctly, it should be considered as a success.
+        4. **Completeness**: Did the agent gather all required information to answer the question?
+        5. **Efficiency**: Did the agent avoid unnecessary or redundant tool calls?
+
+        IMPORTANT NOTES:
+
+        1. LLM Model Names in Trajectory: Some trajectory steps have tool names equal to LLM model names. These are NOT
+           actual tool calls. They are INTERNAL REASONING STEPS showing which LLM is thinking.
+
+           **CRITICAL: When evaluating tool selection, COMPLETELY IGNORE any steps where the tool
+           name is an LLM model name. Only evaluate steps where actual function tools are called.**
+
+        Scoring Guidelines:
+        - 1.0: Perfect execution - all criteria met, accurate answer
+        - 0.8-0.9: Excellent - minor issues but correct answer
+        - 0.6-0.7: Good - some issues but mostly correct
+        - 0.4-0.5: Fair - significant issues, partially correct
+        - 0.0-0.3: Poor - major issues, incorrect or incomplete answer
+
+        Think through your evaluation carefully, then output only a single number (your score from
+        0.0 to 1.0).
+
+    qa_evaluator:
+      _type: customized_qa_evaluator
+      llm_name: eval_llm_judge
+      evaluation_method_id: qa
+      max_retries: 2
+      llm_judge_reasoning: true
+      custom_prompt_template: |
+        You are an expert evaluator assessing an AI Agent's response accuracy.
+
+        Question Asked: {question}
+
+        Agent's Answer: {answer}
+
+        Ground Truth Answer: {reference}
+
+        EVALUATION TASK:
+        Compare the agent's answer against the ground truth and determine if they are
+        semantically equivalent. Assign a nuanced score between 0.0 and 1.0.
+
+        EVALUATION CRITERIA:
+
+        1. **Factual Correctness**: Does the agent's answer convey the same factual information as the ground truth?
+           - For Yes/No questions: The boolean value must match exactly.
+           - For counting questions: The number must exactly match the ground truth.
+           - For temporal questions: Allow ±5 seconds tolerance for timestamps.
+           - For descriptive questions: Key facts and details must align.
+
+        2. **Completeness**: Does the agent's answer include all key information from the ground truth?
+           - Partial answers should receive partial credit.
+           - Additional correct details beyond ground truth are acceptable.
+
+        3. **Semantic Equivalence**: Different phrasings of the same answer are acceptable.
+           - "Yes" and "Yes, a worker dropped one box" are equivalent for a Yes/No question.
+           - "60 seconds" and "at the 1 minute mark" are equivalent.
+           - "No" and "The worker is not wearing a safety vest" are equivalent.
+
+        SCORING GUIDELINES:
+        - 1.0: Perfect match - answer is factually correct and complete
+        - 0.8-0.9: Essentially correct with minor omissions or slight imprecision
+        - 0.6-0.7: Partially correct - captures main point but missing some details
+        - 0.4-0.5: Mixed - some correct elements but significant errors or omissions
+        - 0.2-0.3: Mostly incorrect but shows some understanding
+        - 0.0-0.1: Completely wrong or irrelevant answer
+
+        IMPORTANT NOTES:
+        - Focus on SEMANTIC correctness, not exact text matching.
+
+        OUTPUT:
+        Think through your evaluation step by step, then output ONLY a single decimal number
+        (your score from 0.0 to 1.0) on the final line.

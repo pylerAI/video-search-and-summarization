@@ -1,0 +1,63 @@
+'use client';
+"use strict";
+
+var _interopRequireDefault = require("@babel/runtime/helpers/interopRequireDefault");
+exports.__esModule = true;
+exports.default = exports.PanelGroupContext = void 0;
+var _extends2 = _interopRequireDefault(require("@babel/runtime/helpers/extends"));
+var _react = _interopRequireWildcard(require("react"));
+var _Box = _interopRequireDefault(require("../internals/Box"));
+var _utils = require("../internals/utils");
+var _hooks = require("../internals/hooks");
+function _interopRequireWildcard(e, t) { if ("function" == typeof WeakMap) var r = new WeakMap(), n = new WeakMap(); return (_interopRequireWildcard = function (e, t) { if (!t && e && e.__esModule) return e; var o, i, f = { __proto__: null, default: e }; if (null === e || "object" != typeof e && "function" != typeof e) return f; if (o = t ? n : r) { if (o.has(e)) return o.get(e); o.set(e, f); } for (const t in e) "default" !== t && {}.hasOwnProperty.call(e, t) && ((i = (o = Object.defineProperty) && Object.getOwnPropertyDescriptor(e, t)) && (i.get || i.set) ? o(f, t, i) : f[t] = e[t]); return f; })(e, t); }
+const PanelGroupContext = exports.PanelGroupContext = /*#__PURE__*/_react.default.createContext({});
+
+/**
+ * The `PanelGroup` component is used to display content that can be collapsed.
+ * @see https://rsuitejs.com/components/panel
+ */
+const PanelGroup = (0, _utils.forwardRef)((props, ref) => {
+  const {
+    propsWithDefaults
+  } = (0, _hooks.useCustom)('PanelGroup', props);
+  const {
+    as,
+    accordion,
+    defaultActiveKey,
+    bordered,
+    className,
+    classPrefix = 'panel-group',
+    children,
+    activeKey: activeProp,
+    onSelect,
+    ...rest
+  } = propsWithDefaults;
+  const {
+    withPrefix,
+    merge
+  } = (0, _hooks.useStyles)(classPrefix);
+  const [activeKey, setActiveKey] = (0, _hooks.useControlled)(activeProp, defaultActiveKey);
+  const classes = merge(className, withPrefix({
+    accordion,
+    bordered
+  }));
+  const handleSelect = (0, _hooks.useEventCallback)((activeKey, event) => {
+    setActiveKey(activeKey);
+    onSelect === null || onSelect === void 0 || onSelect(activeKey, event);
+  });
+  const contextValue = (0, _react.useMemo)(() => ({
+    accordion,
+    activeKey,
+    onGroupSelect: handleSelect
+  }), [accordion, activeKey, handleSelect]);
+  return /*#__PURE__*/_react.default.createElement(_Box.default, (0, _extends2.default)({
+    as: as
+  }, rest, {
+    ref: ref,
+    className: classes
+  }), /*#__PURE__*/_react.default.createElement(PanelGroupContext.Provider, {
+    value: contextValue
+  }, children));
+});
+PanelGroup.displayName = 'PanelGroup';
+var _default = exports.default = PanelGroup;

@@ -1,0 +1,23 @@
+{
+  "name": "apitest",
+  "version": "1.0.0",
+  "description": "API test for VMS",
+  "main": "appTest.js",
+  "scripts": {
+    "test": "mocha ./public/apiTest.js",
+    "start": "http-server"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "axios": "^0.21.1",
+    "browserify": "^17.0.0",
+    "chai": "^4.3.4",
+    "chai-http": "^4.3.0",
+    "http-server": "^0.12.3",
+    "ip": "^1.1.5",
+    "minimist": "^1.2.5",
+    "mocha": "^9.0.0",
+    "supertest": "^6.1.3"
+  }
+}

@@ -1,0 +1,126 @@
+{{- if .Values.vssAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vss-agent
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "vss-agent" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "vss-agent" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "vss-agent" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: vss-agent
+          image: "{{ .Values.vssAgent.image.repository }}:{{ .Values.vssAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.vssAgent.image.pullPolicy }}
+          command: ["serve", "--config_file", {{ .Values.vssAgent.configFile | quote }}, "--host", "0.0.0.0", "--port", {{ .Values.vssAgent.port | quote }}]
+          ports:
+            - containerPort: {{ .Values.vssAgent.port }}
+              name: http
+          env:
+            # URL rewriting
+            - name: EXTERNAL_IP
+              value: {{ include "vss-base.externalIP" . | quote }}
+            - name: INTERNAL_IP
+              value: {{ .Values.global.hostIP | quote }}
+            - name: HOST_IP
+              value: {{ .Values.global.hostIP | quote }}
+
+            # NIM mode
+            - name: LLM_MODE
+              value: {{ .Values.global.llmMode | quote }}
+            - name: VLM_MODE
+              value: {{ .Values.global.vlmMode | quote }}
+
+            # Agent config
+            - name: VSS_AGENT_VERSION
+              value: {{ .Values.vssAgent.image.tag | quote }}
+            - name: VSS_AGENT_CONFIG_FILE
+              value: {{ .Values.vssAgent.configFile | quote }}
+            - name: VSS_AGENT_HOST
+              value: "0.0.0.0"
+            - name: VSS_AGENT_PORT
+              value: {{ .Values.vssAgent.port | quote }}
+
+            # Phoenix telemetry
+            - name: PHOENIX_ENDPOINT
+              value: {{ include "vss-base.phoenix.url" . | quote }}
+
+            # VST
+            - name: VST_INTERNAL_URL
+              value: {{ include "vss-base.vstIngress.url" . | quote }}
+            - name: VST_EXTERNAL_URL
+              value: {{ include "vss-base.vstIngress.url" . | quote }}
+            - name: VST_MCP_URL
+              value: {{ include "vss-base.vstMcp.url" . | quote }}
+
+            # LLM/VLM endpoints
+            - name: LLM_NAME
+              value: {{ .Values.global.llmName | quote }}
+            - name: LLM_BASE_URL
+              value: {{ include "vss-base.llmNim.url" . | quote }}
+            - name: VLM_NAME
+              value: {{ .Values.global.vlmName | quote }}
+            - name: VLM_BASE_URL
+              value: {{ include "vss-base.vlmNim.url" . | quote }}
+            - name: EVAL_LLM_JUDGE_NAME
+              value: {{ .Values.global.llmName | quote }}
+            - name: EVAL_LLM_JUDGE_BASE_URL
+              value: {{ include "vss-base.llmNim.url" . | quote }}
+
+            # Object store
+            - name: VSS_AGENT_OBJECT_STORE_TYPE
+              value: {{ .Values.vssAgent.objectStoreType | quote }}
+            - name: VSS_AGENT_REPORTS_BASE_URL
+              value: "http://{{ include "vss-base.externalIP" . }}:{{ .Values.vssAgent.port }}/static/"
+
+            # NVIDIA API Key (for remote mode)
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vss-base.fullname" . }}-secrets
+                  key: nvidia-api-key
+                  optional: true
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ .Values.vssAgent.healthcheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.vssAgent.healthcheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.vssAgent.healthcheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.vssAgent.healthcheck.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vss-agent
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vssAgent.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "vss-agent" "root" .) | nindent 4 }}
+{{- end }}

@@ -1,0 +1,133 @@
+<head>
+  <meta charset="utf-8">
+  <title>Mocha Tests</title>
+  <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet">
+  <script src="https://unpkg.com/video.js/dist/video.js"></script>
+  <script src="https://unpkg.com/videojs-contrib-hls/dist/videojs-contrib-hls.js"></script>
+       
+  <!-- Include Mocha CSS styles -->
+  <link href="https://cdn.rawgit.com/mochajs/mocha/2.2.5/mocha.css" rel="stylesheet">
+  <link href="./nvstreamer_test/public/css/testStyle.css" rel="stylesheet">
+  <div class="navbar">
+    <a onclick="startTest();" id="startTestId" style="cursor: pointer;">Start</a>
+    <a onclick="reloadPage();" id="resetId" style="display: none; cursor: pointer;">Reset</a>
+    <a id="setIterations" style="cursor: default;">Set Iterations</a>
+    <input type="text" name="itr" value="1" id="itrerationValue" style="margin-top: 17px;" onchange="setIterations();"/>
+    <p id="displayInfo" style="display: none; float: left; margin-right: 5px;"></p>
+  </div>
+    <!-- Add the Chai assertion library -->
+    <script src="http://chaijs.com/chai.js"></script>
+    <!-- Add the Mocha test library -->
+    <script src="https://cdn.rawgit.com/mochajs/mocha/2.2.5/mocha.js"></script>
+    <script>
+      let iterationsFromHtml = "1";
+      let toastMessage = "";
+      // Set chai.expect as a global variable
+      var expect = chai.expect;
+      // Setup Mocha to use the BDD interface
+      mocha.setup('bdd');
+    </script>
+    <script src="./nvstreamer_test/public/bundleApiTest.js"></script>
+</head>
+
+<body>
+  <p id="apiPath" style="display: block; color: black; float: left; position: relative; margin-right: 5px;"></p>
+  <p id="iterationNumber" style="display: block; color: black; float: left; margin-right: 5px;"></p>
+  <script>
+    function setCookie(cname, cvalue, exdays) {
+      const d = new Date();
+      d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
+      let expires = "expires="+d.toUTCString();
+      document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+    }
+    function getCookie(cname) {
+      let name = cname + "=";
+      let ca = document.cookie.split(';');
+      for(let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) == ' ') {
+          c = c.substring(1);
+        }
+        if (c.indexOf(name) == 0) {
+          return c.substring(name.length, c.length);
+        }
+      }
+      return "";
+    }
+    function checkCookie(cname) {
+      let user = getCookie(cname);
+      if (user != "") {
+        return true;
+      } else {
+        return false;
+      }
+    }
+    // store url on load
+    let currentPage = location.href;
+    // listen for changes
+    window.setInterval(function() {
+      let currentPage = decodeURIComponent(window.location.toString())
+      if(currentPage.includes('?grep=API test')) {
+        let path = currentPage.split('?grep=API test')
+        if(path[1].length >= 1) {
+          let n = path[1].indexOf("get");
+          if(n < 0) {
+            n = path[1].indexOf("post");
+          }
+          document.getElementById('apiPath').innerHTML = `<b>Selected test: </b>${path[1].slice(n)}`;
+        }
+      }
+      else {
+        document.getElementById('apiPath').innerHTML = "";
+      }
+    }, 1000);
+  </script>
+  <div id="videoDiv" style="display:none; right: 10%; top: 17%; position: fixed; z-index: -10; border: solid 3px; width: 640px; height: 360px">
+  </div>
+  <script>
+    var player = videojs('video');
+    player.play();
+  </script>
+  <div id="snackbar"></div>
+  <div id="mocha"></div>	 
+  <script>
+    function setIterations() {
+      iterationsFromHtml = document.getElementById('itrerationValue').value;
+      window.parent.updateIterations(iterationsFromHtml);
+      let regex = /^[0-9]*$/;
+      if (!iterationsFromHtml.match(regex)) {
+          alert("Input must be a number !");
+          return false;
+      }
+      let displayInfo = document.getElementById("displayInfo");
+      displayInfo.style.display = "block";
+      displayInfo.innerHTML = `Iterations ${iterationsFromHtml}`;
+      setTimeout(function() { 
+        displayInfo.style.display = "none"
+      }, 2000);
+    }
+    // Run the tests with Mocha
+    function startTest() {
+      let regex = /^[0-9]+$/;
+      if(iterationsFromHtml == null || !iterationsFromHtml.match(regex)) {
+        alert("Please set iterations !");
+        return;
+      }
+      document.getElementById("startTestId").style.display = "none";
+      document.getElementById("resetId").style.display = "block"
+      let displayInfo = document.getElementById("displayInfo");
+      displayInfo.style.display = "block";
+      displayInfo.innerHTML = `Starting..`;
+      setTimeout(function() { 
+        displayInfo.style.display = "none"
+      }, 2000);
+      iterationsFromHtml = document.getElementById('itrerationValue').value;
+      window.parent.updateIterations(iterationsFromHtml);
+      mocha.run();
+    }
+    function reloadPage() {
+      document.location.reload();
+    }
+  </script>
+</body>
+</html>

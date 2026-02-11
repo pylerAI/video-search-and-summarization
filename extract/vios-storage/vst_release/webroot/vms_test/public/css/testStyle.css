@@ -1,0 +1,184 @@
+body {
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.navbar {
+  overflow: hidden;
+  background-color: rgb(221, 221, 221);
+}
+
+.navbar a {
+  float: left;
+  font-size: 16px;
+  color: rgb(0, 0, 0);
+  text-align: center;
+  padding: 20px 22px;
+  text-decoration: none;
+}
+
+#startTestId:active {
+  background-color: #3e8e41;
+  box-shadow: 0 5px #666;
+  transform: translateY(4px);
+}
+
+#resetId:active {
+  background-color: #3e8e41;
+  box-shadow: 0 5px #666;
+  transform: translateY(4px);
+}
+
+#cameraDetails:active {
+  background-color: #3e8e41;
+  box-shadow: 0 5px #666;
+  transform: translateY(4px);
+}
+
+.navbar p {
+  float: left;
+  font-size: 16px;
+  color: rgb(255, 0, 0);
+  text-align: center;
+  padding-left: 20px;
+  padding-top: 3px;
+  text-decoration: none;
+}
+
+.navbar #apiPath #iterationNumber {
+  float: left;
+  font-size: 16px;
+  color: black;
+  text-align: center;
+  padding-left: 20px;
+  padding-top: 3px;
+  text-decoration: none;
+}
+
+.navbar input {
+  float: left;
+  font-size: 16px;
+  color: rgb(0, 0, 0);
+  text-decoration: none;
+}
+
+#startTestId:hover {
+  background-color: #04AA6D;
+}
+
+#resetId:hover {
+  background-color: #04AA6D;
+}
+
+#cameraDetails:hover {
+  background-color: #04AA6D;
+}
+
+#snackbar {
+  visibility: hidden;
+  min-width: 250px;
+  margin-left: -125px;
+  background-color: #333;
+  color: #fff;
+  text-align: center;
+  border-radius: 2px;
+  padding: 16px;
+  position: fixed;
+  z-index: 1;
+  left: 50%;
+  bottom: 30px;
+}
+
+#snackbar.show {
+  visibility: visible;
+  -webkit-animation: fadein 0.5s, fadeout 2.5s 2.5s;
+  animation: fadein 0.5s, fadeout 2.5s 2.5s;
+}
+
+@-webkit-keyframes fadein {
+  from {bottom: 0; opacity: 0;}
+  to {bottom: 30px; opacity: 1;}
+}
+
+@keyframes fadein {
+  from {bottom: 0; opacity: 0;}
+  to {bottom: 30px; opacity: 1;}
+}
+
+@-webkit-keyframes fadeout {
+  from {bottom: 30px; opacity: 1;}
+  to {bottom: 0; opacity: 0;}
+}
+
+@keyframes fadeout {
+  from {bottom: 30px; opacity: 1;}
+  to {bottom: 0; opacity: 0;}
+}
+
+.open-button {
+  float: left;
+  font-size: 16px;
+  color: rgb(0, 0, 0);
+  text-align: center;
+  padding: 20px 22px;
+  text-decoration: none;
+}
+
+.form-popup {
+  display: none;
+  position: fixed;
+  top: 5%;
+  right: 40%;
+  border: 3px solid #f1f1f1;
+  z-index: 9;
+}
+
+.form-container {
+  width: 400px;
+  max-width: 800px;
+  max-height: 600px;
+  padding: 10px;
+  background-color: white;
+  overflow-y: scroll;
+}
+
+.form-container input[type=text], .form-container input[type=password] {
+  width: 100%;
+  padding: 15px;
+  margin: 5px 0 22px 0;
+  border: none;
+  background: #f1f1f1;
+}
+
+.form-container input[type=text]:focus, .form-container input[type=password]:focus {
+  background-color: #ddd;
+  outline: none;
+}
+
+.form-container .btn {
+  background-color: #04AA6D;
+  color: white;
+  padding: 16px 20px;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  margin-bottom:10px;
+  opacity: 0.8;
+}
+
+.form-container .cancel {
+  background-color: red;
+}
+
+.form-container .btn:hover, .open-button:hover {
+  opacity: 1;
+}
+
+#overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(128,128,128,0.5);
+  display: none;
+}

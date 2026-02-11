@@ -1,0 +1,12 @@
+services:
+  kibana-init-container-search:
+    build:
+      context: $MDX_SAMPLE_APPS_DIR/developer-workflow/dev-profile-search
+      dockerfile: $MDX_SAMPLE_APPS_DIR/developer-workflow/dev-profile-search/Dockerfiles/kibana-dashboard.Dockerfile
+    network_mode: "host"
+    profiles: ["bp_developer_search_2d"]
+    container_name: mdx-kibana-init-search
+    command: bash /opt/mdx/init-scripts/kibana-import-dashboard.sh
+    depends_on:
+      kibana:
+        condition: service_healthy

@@ -1,0 +1,96 @@
+services:
+  gpt-oss-20b-init:
+    image: busybox:1.37.0
+    profiles:
+    - llm_local_gpt-oss-20b_H100
+    - llm_local_gpt-oss-20b_RTX6000PROBW
+    - llm_local_shared_gpt-oss-20b_H100
+    - llm_local_shared_gpt-oss-20b_RTX6000PROBW
+    user: root
+    volumes:
+      - gpt_oss_20b_cache:/opt/nim/.cache
+    command: sh -c "chmod -R 777 /opt/nim/.cache"
+    restart: "no"
+  gpt-oss-20b:
+    image: nvcr.io/nim/openai/gpt-oss-20b:latest
+    container_name: gpt-oss-20b
+    profiles:
+    - llm_local_gpt-oss-20b_H100
+    - llm_local_gpt-oss-20b_RTX6000PROBW
+    runtime: nvidia
+    shm_size: 16GB
+    ports:
+     - ${LLM_PORT:-30081}:8000
+    environment:
+      NGC_API_KEY: "${NGC_CLI_API_KEY}"
+    env_file:
+      - ${MDX_SAMPLE_APPS_DIR}/nim/gpt-oss-20b/hw-${HARDWARE_PROFILE}.env
+    volumes:
+      - gpt_oss_20b_cache:/opt/nim/.cache
+    user: "${UID:-1000}:${GID:-1000}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+              - gpu
+              driver: nvidia
+              device_ids:
+              - "${LLM_DEVICE_ID:-1}"
+    restart: always
+    healthcheck:
+      test: ['CMD-SHELL', 'if [ -f /tmp/ready_done ]; then curl --max-time 30 -f http://localhost:8000/v1/health/live; else elapsed=0; while ! curl -fs http://localhost:8000/v1/health/ready > /dev/null 2>&1; do sleep 5; echo "elapsed $elapsed"; elapsed=$((elapsed + 5)); if [ $elapsed -ge 600 ]; then echo "Service did not become ready within 10 minutes"; exit 1; fi; done; touch /tmp/ready_done && curl --max-time 30 -f http://localhost:8000/v1/health/live; fi']
+      interval: 60s
+      timeout: 650s
+      retries: 2
+    depends_on:
+      gpt-oss-20b-init:
+        condition: service_completed_successfully
+        required: true
+  gpt-oss-20b-shared-gpu:
+    image: nvcr.io/nim/openai/gpt-oss-20b:latest
+    container_name: gpt-oss-20b-shared-gpu
+    profiles:
+    - llm_local_shared_gpt-oss-20b_H100
+    - llm_local_shared_gpt-oss-20b_RTX6000PROBW
+    runtime: nvidia
+    shm_size: 16GB
+    ports:
+     - ${LLM_PORT:-30081}:8000
+    environment:
+      NGC_API_KEY: "${NGC_CLI_API_KEY}"
+    env_file:
+      - ${MDX_SAMPLE_APPS_DIR}/nim/gpt-oss-20b/hw-${HARDWARE_PROFILE}-full.env
+    volumes:
+      - gpt_oss_20b_cache:/opt/nim/.cache
+    user: "${UID:-1000}:${GID:-1000}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+              - gpu
+              driver: nvidia
+              device_ids:
+              - "${LLM_DEVICE_ID:-1}"
+    restart: always
+    healthcheck:
+      test: ['CMD-SHELL', 'if [ -f /tmp/ready_done ]; then curl --max-time 30 -f http://localhost:8000/v1/health/live; else elapsed=0; while ! curl -fs http://localhost:8000/v1/health/ready > /dev/null 2>&1; do sleep 5; echo "elapsed $elapsed"; elapsed=$((elapsed + 5)); if [ $elapsed -ge 600 ]; then echo "Service did not become ready within 10 minutes"; exit 1; fi; done; touch /tmp/ready_done && curl --max-time 30 -f http://localhost:8000/v1/health/live; fi']
+      interval: 60s
+      timeout: 650s
+      retries: 2
+    depends_on:
+      gpt-oss-20b-init:
+        condition: service_completed_successfully
+        required: true
+      cosmos-reason2-8b-shared-gpu:
+        condition: service_healthy
+        required: false
+      cosmos-reason1-7b-shared-gpu:
+        condition: service_healthy
+        required: false
+      qwen3-vl-8b-instruct-shared-gpu:
+        condition: service_healthy
+        required: false
+volumes:
+  gpt_oss_20b_cache:

@@ -1,0 +1,6 @@
+include:
+  - path: 2d/vst/docker-compose.yaml
+  - path: 3d/vst/docker-compose.yaml
+  - path: smc/vst/docker-compose.yaml
+  - path: developer/vst/docker-compose.yaml
+  - path: ps/vst/docker-compose.yaml

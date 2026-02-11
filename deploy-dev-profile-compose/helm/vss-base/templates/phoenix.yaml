@@ -1,0 +1,76 @@
+{{- if .Values.phoenix.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-phoenix
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "phoenix" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "phoenix" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "phoenix" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: phoenix
+          image: "{{ .Values.phoenix.image.repository }}:{{ .Values.phoenix.image.tag }}"
+          imagePullPolicy: {{ .Values.phoenix.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.phoenix.port }}
+              name: http
+          env:
+            - name: PHOENIX_WORKING_DIR
+              value: "/.phoenix/"
+          volumeMounts:
+            - name: phoenix-data
+              mountPath: /.phoenix
+      volumes:
+        - name: phoenix-data
+          {{- if .Values.phoenix.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vss-base.fullname" . }}-phoenix
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-phoenix
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.phoenix.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "phoenix" "root" .) | nindent 4 }}
+---
+{{- if .Values.phoenix.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-phoenix
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.phoenix.persistence.storageClass }}
+  storageClassName: {{ .Values.phoenix.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.phoenix.persistence.size }}
+{{- end }}
+{{- end }}

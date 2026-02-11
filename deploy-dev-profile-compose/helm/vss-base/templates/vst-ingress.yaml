@@ -1,0 +1,47 @@
+{{- if .Values.vstIngress.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-ingress
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "vst-ingress" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "vst-ingress" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "vst-ingress" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: vst-ingress
+          image: "{{ .Values.vstIngress.image.repository }}:{{ .Values.vstIngress.image.tag }}"
+          imagePullPolicy: {{ .Values.vstIngress.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.vstIngress.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "vss-base.fullname" . }}-global-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-ingress
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vstIngress.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "vst-ingress" "root" .) | nindent 4 }}
+{{- end }}

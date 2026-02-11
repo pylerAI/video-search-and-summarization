@@ -1,0 +1,1358 @@
+openapi: 3.0.3
+info:
+  title: VST Sensor Management
+  description: |-
+    VST Sensor Management MS is used to manage sensor related functionality.
+  version: 1.0.0
+  license:
+    name: Copyright (c) 2021-2023, NVIDIA CORPORATION.  All rights reserved.
+servers:
+  - url: https://localhost/api
+  - url: http://localhost/api
+tags:
+  - name: v1
+    description: VST Sensor Management API Schema v1
+paths:
+  /v1/sensor/list:
+    get:
+      tags:
+        - v1
+      summary: Get list of sensors
+      operationId: getSensorList
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorInfoArray'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/scan:
+    post:
+      tags:
+        - v1
+      summary: Make vst to scan sensors from network
+      operationId: postSensorScan
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/streams:
+    get:
+      tags:
+        - v1
+      summary:
+        Get list of live urls, replay urls, sub streams and other stream related
+        information
+      operationId: getSensorStreams
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamInfo'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/streams:
+    get:
+      tags:
+        - v1
+      summary:
+        Get list of sensor streams
+        information
+      operationId: getSensorStreamsAll
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StreamInfoWrapper'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/add:
+    post:
+      tags:
+        - v1
+      summary:
+        Add sensor manually providing RTSP url OR sensor IP address and sensor
+        details
+      operationId: postSensorNew
+      requestBody:
+        description:
+          url field can be omitted in case of add sensor using IP address
+          and ip, username and password fields can be omitted in case of add sensor
+          using RTSP url
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensorAddInfo'
+        required: true
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sensorId:
+                    type: string
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/status:
+    get:
+      tags:
+        - v1
+      summary: Get sensor error and state for all sensors
+      operationId: getSensorStatus
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorStatusWrapper'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/status:
+    get:
+      tags:
+        - v1
+      summary: Get sensor error and state for particular sensor
+      operationId: getSensorStatusWithId
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorStatus'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/replace:
+    post:
+      tags:
+        - v1
+      summary: Replace inactive sensor
+      operationId: postSensorReplace
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: Success
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sensorId:
+                  type: string
+                  example: 0b6b62ea-b49a-49dc-906a-0010be31b7d7
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}:
+    delete:
+      tags:
+        - v1
+      summary: Remove sensor entry from vst
+      operationId: deleteSensorWithId
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/info:
+    get:
+      tags:
+        - v1
+      summary: Get information for particular sensor
+      operationId: getSensorInfo
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorInfo'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Set information for particular sensor
+      operationId: postSensorInfo
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: json object
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostSensorInfo'
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/settings:
+    get:
+      tags:
+        - v1
+      summary:
+        Get sensor Image, Encode parameters like brightness, saturation, bitrate
+        etc
+      operationId: getSensorSettings
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  additionalProperties:
+                    type: object
+                    properties:
+                      Encode:
+                        $ref: '#/components/schemas/SensorEncodeSettings'
+                      Image:
+                        $ref: '#/components/schemas/SensorImageSettings'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Set/Update sensor image and encode parameters supported by sensor
+      operationId: postSensorSettings
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: json object
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                Encode:
+                  $ref: '#/components/schemas/SetEncodeSettings'
+                Image:
+                  $ref: '#/components/schemas/SetImageSettings'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/{sensorId}/credentials:
+    post:
+      tags:
+        - v1
+      summary: Sets/updates sensor username and password
+      operationId: postSensorCredentials
+      parameters:
+        - name: sensorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: json object
+        content:
+          application/json:
+            schema:
+              required:
+                - password
+                - username
+              type: object
+              properties:
+                password:
+                  type: string
+                username:
+                  type: string
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/debug/unplug:
+    post:
+      tags:
+        - v1
+      summary: Simulate sensor plug-unplug
+      operationId: postDebugUnplug
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DebugPlugUnplug'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/debug/plug:
+    post:
+      tags:
+        - v1
+      summary: Simulate sensor plug-unplug
+      operationId: postDebugPlug
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DebugPlugUnplug'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/configuration:
+    get:
+      tags:
+        - v1
+      summary: Get sensor management service configuration
+      operationId: getSensorConfiguration
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetConfiguration'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Set sensor management service configuration
+      operationId: postSensorConfiguration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetConfiguration'
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/debug/status:
+    get:
+      tags:
+        - v1
+      summary: Check if sensor is plugged or unplugged
+      operationId: getDebugStatus
+      parameters:
+        - name: ip
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - plug
+                      - unplug
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/qos:
+    get:
+      tags:
+        - v1
+      summary: Get qos stats
+      operationId: getSensorQos
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/QosStats'
+                  numActiveRtspConnections:
+                    type: integer
+
+  /v1/sensor/debug/system/stats:
+    get:
+      tags:
+        - v1
+      summary: Get system stats
+      operationId: getSystemStats
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemStats'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/sensor/version:
+    get:
+      tags:
+        - v1
+      summary: Get MS version
+      operationId: getVersion
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/sensor/help:
+    get:
+      tags:
+        - v1
+      summary: Get supported API list
+      operationId: gethelp
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+                
+  /api/v1/sensor/{sensorId}/network:
+    parameters:
+      - name: sensorId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags:
+        - v1
+      summary: Get sensor network information
+      operationId: getSensorNetwork
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dhcpV4:
+                    type: string
+                  dhcpV6:
+                    type: string
+                  ipAddressV4:
+                    type: string
+                  ipAddressV6:
+                    type: string
+                  isIpv4Enabled:
+                    type: boolean
+                  isIpv6Enabled:
+                    type: boolean
+                  subnetMaskV4:
+                    type: string
+                  subnetMaskV6:
+                    type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags:
+        - v1
+      summary: Update sensor network information
+      operationId: updateSensorNetwork
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dhcpV4:
+                  type: string
+                dhcpV6:
+                  type: string
+                ipAddressV4:
+                  type: string
+                ipAddressV6:
+                  type: string
+                isIpv4Enabled:
+                  type: boolean
+                isIpv6Enabled:
+                  type: boolean
+                subnetMaskV4:
+                  type: string
+                subnetMaskV6:
+                  type: string
+              example:
+                dhcpV4: "false"
+                dhcpV6: "Off"
+                ipAddressV4: "10.24.219.177"
+                ipAddressV6: ""
+                isIpv4Enabled: false
+                isIpv6Enabled: false
+                subnetMaskV4: "255.255.252.0"
+                subnetMaskV6: ""
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rebootNeeded:
+                    type: boolean
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+                
+  /api/v1/sensor/{sensorId}/reboot:
+    parameters:
+      - name: sensorId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags:
+        - v1
+      summary: Reboot sensor
+      operationId: postSensorReboot
+      responses:
+        '200':
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Position:
+      required:
+        - depth
+        - direction
+        - fieldOfView
+        - gps
+      type: object
+      properties:
+        depth:
+          type: string
+        direction:
+          type: string
+        fieldOfView:
+          type: string
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+        geoLocation:
+          $ref: '#/components/schemas/GeoLocation'
+        origin:
+          $ref: '#/components/schemas/Origin'
+    Coordinates:
+      type: object
+      properties:
+        x:
+          type: string
+        y:
+          type: string
+    GeoLocation:
+      type: object
+      properties:
+        latitude:
+          type: string
+        longitude:
+          type: string
+    Origin:
+      type: object
+      properties:
+        latitude:
+          type: string
+        longitude:
+          type: string
+    SensorEncodeSettings:
+      type: object
+      properties:
+        Bitrate:
+          $ref: '#/components/schemas/RangeSetting'
+        Encoding:
+          $ref: '#/components/schemas/EnumSetting'
+        EncodingInterval:
+          $ref: '#/components/schemas/RangeSetting'
+        FrameRate:
+          $ref: '#/components/schemas/RangeSetting'
+        GovLength:
+          $ref: '#/components/schemas/RangeSetting'
+        Profile:
+          $ref: '#/components/schemas/EnumSetting'
+        Quality:
+          $ref: '#/components/schemas/RangeSetting'
+        Resolution:
+          $ref: '#/components/schemas/ResolutionSetting'
+    SensorImageSettings:
+      type: object
+      properties:
+        BacklightCompensationLevel:
+          $ref: '#/components/schemas/RangeSetting'
+        BacklightCompensationMode:
+          $ref: '#/components/schemas/EnumSetting'
+        Brightness:
+          $ref: '#/components/schemas/RangeSetting'
+        ColorSaturation:
+          $ref: '#/components/schemas/RangeSetting'
+        Contrast:
+          $ref: '#/components/schemas/RangeSetting'
+        ExposureGain:
+          $ref: '#/components/schemas/RangeSetting'
+        ExposureMaxGain:
+          $ref: '#/components/schemas/RangeSetting'
+        ExposureMode:
+          $ref: '#/components/schemas/EnumSetting'
+        ExposurePriority:
+          $ref: '#/components/schemas/EnumSetting'
+        ExposureTime:
+          $ref: '#/components/schemas/RangeSetting'
+        ExposureWindow:
+          $ref: '#/components/schemas/EnumSetting'
+        IrCutFilterMode:
+          $ref: '#/components/schemas/EnumSetting'
+        MaxExposureTime:
+          $ref: '#/components/schemas/RangeSetting'
+        MinExposureTime:
+          $ref: '#/components/schemas/RangeSetting'
+        Sharpness:
+          $ref: '#/components/schemas/RangeSetting'
+        WhiteBalanceMode:
+          $ref: '#/components/schemas/EnumSetting'
+        WhiteBalanceYbGain:
+          $ref: '#/components/schemas/RangeSetting'
+        WhiteBalanceYrGain:
+          $ref: '#/components/schemas/RangeSetting'
+        WideDynamicRangeLevel:
+          $ref: '#/components/schemas/RangeSetting'
+        WideDynamicRangeMode:
+          $ref: '#/components/schemas/EnumSetting'
+    RangeSetting:
+      required:
+        - Max
+        - Min
+        - Value
+      type: object
+      properties:
+        Max:
+          type: string
+        Min:
+          type: string
+        Value:
+          type: string
+    EnumSetting:
+      required:
+        - AllowedValues
+        - Value
+      type: object
+      properties:
+        AllowedValues:
+          type: array
+          items:
+            type: string
+        Value:
+          type: string
+    ResolutionSetting:
+      required:
+        - AllowedValues
+        - Value
+      type: object
+      properties:
+        AllowedValues:
+          type: array
+          items:
+            required:
+              - Height
+              - Width
+            type: object
+            properties:
+              Height:
+                type: string
+              Width:
+                type: string
+        Value:
+          required:
+            - Height
+            - Width
+          type: object
+          properties:
+            Height:
+              type: string
+            Width:
+              type: string
+    SetEncodeSettings:
+      type: object
+      properties:
+        Bitrate:
+          type: string
+        Encoding:
+          type: string
+        EncodingInterval:
+          type: string
+        FrameRate:
+          type: string
+        GovLength:
+          type: string
+        Profile:
+          type: string
+        Quality:
+          type: string
+        Resolution:
+          type: object
+          properties:
+            Height:
+              type: string
+            Width:
+              type: string
+    SetImageSettings:
+      type: object
+      properties:
+        BacklightCompensationLevel:
+          type: string
+        BacklightCompensationMode:
+          type: string
+        Brightness:
+          type: string
+        ColorSaturation:
+          type: string
+        Contrast:
+          type: string
+        ExposureGain:
+          type: string
+        ExposureMaxGain:
+          type: string
+        ExposureMode:
+          type: string
+        ExposurePriority:
+          type: string
+        ExposureTime:
+          type: string
+        ExposureWindow:
+          type: string
+        IrCutFilterMode:
+          type: string
+        MaxExposureTime:
+          type: string
+        MinExposureTime:
+          type: string
+        Sharpness:
+          type: string
+        WhiteBalanceMode:
+          type: string
+        WhiteBalanceYbGain:
+          type: string
+        WhiteBalanceYrGain:
+          type: string
+        WideDynamicRangeLevel:
+          type: string
+        WideDynamicRangeMode:
+          type: string
+
+    SensorInfo:
+      type: object
+      properties:
+        firmwareVersion:
+          type: string
+        hardware:
+          type: string
+        hardwareId:
+          type: string
+        sensorId:
+          type: string
+        sensorIp:
+          type: string
+        location:
+          type: string
+        manufacturer:
+          type: string
+        name:
+          type: string
+        position:
+          $ref: '#/components/schemas/Position'
+        serialNumber:
+          type: string
+        state:
+          type: string
+          enum:
+            - 'online'
+            - 'offline'
+            - 'removed'
+        tags:
+          type: string
+          
+    PostSensorInfo:
+      type: object
+      properties:
+        firmwareVersion:
+          type: string
+        hardware:
+          type: string
+        hardwareId:
+          type: string
+        sensorId:
+          type: string
+        sensorIp:
+          type: string
+        location:
+          type: string
+        manufacturer:
+          type: string
+        name:
+          type: string
+        position:
+          $ref: '#/components/schemas/Position'
+        serialNumber:
+          type: string
+        tags:
+          type: string
+
+    SensorInfoArray:
+      type: array
+      items:
+        $ref: '#/components/schemas/SensorInfo'
+
+    StreamInfoWrapper:
+      type: object
+      properties:
+        additionalProperties:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamInfo'
+
+    StreamInfo:
+      type: object
+      properties:
+        streamId:
+          type: string
+          example: '7927cbbc-cba6-4f22-b65d-46f7382f5f65'
+        isMain:
+          type: boolean
+          example: true
+        url:
+          type: string
+          format: uri
+          example: 'rtsp://10.41.18.147:8554/live/7927cbbc-cba6-4f22-b65d-46f7382f5f65'
+        name:
+          type: string
+          example: 'HIKVISION%20DS-2CD2T43G0-I5'
+        metadata:
+          type: object
+          properties:
+            bitrate:
+              type: string
+              example: '8000'
+            codec:
+              type: string
+              example: 'H264'
+            framerate:
+              type: string
+              example: '30'
+            govlength:
+              type: string
+              example: '60'
+            resolution:
+              type: string
+              example: '1920x1080'
+
+    SensorAddInfo:
+      oneOf:
+        - type: object
+          required:
+            - ip
+            - password
+            - username
+          properties:
+            sensorIp:
+              type: string
+            name:
+              type: string
+            location:
+              type: string
+            hardware:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+            manufacturer:
+              type: string
+            serialNumber:
+              type: string
+            firmwareVersion:
+              type: string
+            hardwareId:
+              type: string
+            tags:
+              type: string
+        - type: object
+          required:
+            - url
+            - password
+            - username
+          properties:
+            url:
+              type: string
+            name:
+              type: string
+            location:
+              type: string
+            hardware:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+            manufacturer:
+              type: string
+            serialNumber:
+              type: string
+            firmwareVersion:
+              type: string
+            hardwareId:
+              type: string
+            tag:
+              type: string
+
+    SensorStatusWrapper:
+      type: object
+      properties:
+        additionalProperties:
+          $ref: '#/components/schemas/SensorStatus'
+
+    SensorStatus:
+      required:
+        - errorCode
+        - errorMessage
+        - state
+        - name
+      type: object
+      properties:
+        errorCode:
+          type: string
+          example: NoError
+        errorMessage:
+          type: string
+          example: No Error
+        state:
+          type: string
+          enum:
+            - online
+            - offline
+        name:
+          type: string
+
+    DebugPlugUnplug:
+      required:
+        - action
+        - ip
+      type: object
+      properties:
+        ip:
+          type: string
+          example: 10.24.213.119
+        action:
+          type: string
+          enum:
+            - plug
+            - unplug
+
+    GetConfiguration:
+      type: object
+      properties:
+        deviceDiscoveryFrequencySeconds:
+          type: integer
+        deviceDiscoveryInterfaces:
+          type: array
+          items:
+            type: string
+            example: eth0
+        deviceDiscoveryTimeoutSeconds:
+          type: integer
+        httpPort:
+          type: string
+        useMessageBroker:
+          type: boolean
+        kafkaServerAddress:
+          type: string
+        redisServerEnvironmentVariable:
+          type: string
+        messageBrokerTopic:
+          type: string
+        maxSensorsSupported:
+          type: integer
+        ntpServers:
+          type: array
+          items:
+            type: string
+        onvifRequestTimeoutSeconds:
+          type: integer
+        enablePrometheus:
+          type: boolean
+        enableNotification:
+          type: boolean
+        prometheusPort:
+          type: string
+        enableDebugApis:
+          type: boolean
+        supportedAudioCodecs:
+          type: string
+        supportedVideoCodecs:
+          type: string
+        useHttpDigestAuthentication:
+          type: boolean
+        useHttps:
+          type: boolean
+        vstDataPath:
+          type: string
+        webserviceAccessControlList:
+          type: string
+        enableUserCleanup:
+          type: boolean
+        multiUserExtraOptions:
+          type: string
+        useMultiUser:
+          type: boolean
+        vstIp:
+          type: string
+      required:
+        - deviceDiscoveryFrequencySeconds
+        - deviceDiscoveryInterfaces
+        - deviceDiscoveryTimeoutSeconds
+        - httpPort
+        - useMessageBroker
+        - kafkaServerAddress
+        - redisServerEnvironmentVariable
+        - messageBrokerTopic
+        - maxSensorsSupported
+        - onvif_request_timeout_secs
+        - enable_prometheus
+        - enable_notification
+        - prometheus_port
+        - enable_debug_apis
+        - supported_audio_codecs
+        - supported_video_codecs
+        - use_http_digest_authentication
+        - use_https
+        - vst_data_path
+        - webservice_access_control_list
+        - enable_user_cleanup
+        - multi_user_extra_options
+        - use_multi_user
+        - vst_ip
+
+    SetConfiguration:
+      type: object
+      properties:
+        deviceDiscoveryInterfaces:
+          type: array
+          items:
+            type: string
+            example: eth0
+        ntpServers:
+          type: array
+          items:
+            type: string
+
+    SystemStats:
+      required:
+        - cpuUsage
+        - decUsage
+        - encUsage
+        - gpuUsage
+        - openFilesCount
+        - rssMB
+        - systemMemoryUsageMB
+        - totalGpuMemory
+        - totalGpuMemoryUsage
+      type: object
+      properties:
+        cpuUsage:
+          type: integer
+          example: 7
+        decUsage:
+          type: integer
+          example: 13
+        encUsage:
+          type: integer
+          example: 19
+        gpuUsage:
+          type: integer
+          example: 1
+        openFilesCount:
+          type: integer
+          example: 155
+        rssMegabytes:
+          type: integer
+          example: 100
+        systemMemoryUsageMegabytes:
+          type: integer
+          example: 433
+        totalGpuMemory:
+          type: integer
+          example: 24576
+        totalGpuMemoryUsage:
+          type: integer
+          example: 501
+        tegraStats:
+          type: object
+          properties:
+            total:
+              type: object
+              properties:
+                cpu:
+                  type: string
+                  example: 32%@878,20%@1036,11%@1036,12%@1113,4%@1190,6%@1190,9%@1445,12%@1497
+                emcFrequencyMegahertz:
+                  type: string
+                  example: 1%@408
+                gr3dFrequencyMegahertz:
+                  type: string
+                  example: 0%@114
+                memoryInMegabytes:
+                  type: string
+                  example: 982/15825
+
+    QosStats:
+      type: object
+      properties:
+        avgFps:
+          type: number
+        avgFramecount:
+          type: number
+        bitrateKbpsAvg:
+          type: number
+        bitrateKbpsMax:
+          type: number
+        bitrateKbpsMin:
+          type: number
+        elapsedMeasurementTime:
+          type: number
+        errors:
+          type: string
+        interPacketGapMsAvg:
+          type: number
+        interPacketGapMsMax:
+          type: number
+        interPacketGapMsMin:
+          type: number
+        name:
+          type: string
+        packetLossPercentageAvg:
+          type: number
+        packetLossPercentageMax:
+          type: number
+        packetLossPercentageMin:
+          type: number
+        rtspUrl:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        totalPacketsLost:
+          type: integer
+        totalPacketsReceived:
+          type: integer
+
+    Error:
+      required:
+        - error_code
+        - error_message
+      type: object
+      properties:
+        error_code:
+          type: string
+          example: VMSInternalError
+        error_message:
+          type: string
+          example: VMS internal processing error

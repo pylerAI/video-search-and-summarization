@@ -1,0 +1,147 @@
+{{/*
+  VLM NIM (cosmos-reason2-8b)
+  - local_shared 모드: LLM과 동일 GPU 공유 (device_ids=[LLM_DEVICE_ID])
+  - VLM이 먼저 시작되어야 함 (LLM은 VLM healthy 후 시작)
+  - hw-H100-full.env: NIM_KVCACHE_PERCENT=0.4, NIM_MAX_MODEL_LEN=32768,
+                      NIM_MAX_NUM_SEQS=4, MAX_JOBS=4, NIM_DISABLE_MM_PREPROCESSOR_CACHE=1
+*/}}
+{{- if and .Values.vlmNim.enabled (ne .Values.global.vlmMode "remote") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vlm-nim
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm-nim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: vlm-nim
+  strategy:
+    type: Recreate  # GPU 리소스 충돌 방지
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: vlm-nim
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      {{- if .Values.vlmNim.runtimeClassName }}
+      runtimeClassName: {{ .Values.vlmNim.runtimeClassName }}
+      {{- end }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: vlm-nim
+          image: "{{ .Values.vlmNim.image.repository }}:{{ .Values.vlmNim.image.tag }}"
+          imagePullPolicy: {{ .Values.vlmNim.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.vlmNim.containerPort }}
+              name: http
+          env:
+            # NGC 인증
+            - name: NGC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vss-base.fullname" . }}-secrets
+                  key: NGC_API_KEY
+            # CUDA 설정
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
+            # hw-H100-full.env에서 가져온 NIM 설정
+            {{- range $key, $value := .Values.vlmNim.nimConfig }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # 커스텀 모델 가중치 (선택사항)
+            {{- if .Values.vlmNim.customWeights }}
+            - name: NIM_MODEL_NAME
+              value: {{ .Values.vlmNim.customWeights | quote }}
+            {{- end }}
+            # 추가 환경변수
+            {{- range $key, $value := .Values.vlmNim.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: vlm-cache
+              mountPath: /opt/nim/.cache
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            {{- toYaml .Values.vlmNim.resources | nindent 12 }}
+          # 원본 compose 헬스체크 반영
+          startupProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.vlmNim.healthcheck.initialDelaySeconds | default 60 }}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 40  # 30s * 40 = 20분 대기 (모델 다운로드 시)
+          readinessProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http
+            periodSeconds: {{ .Values.vlmNim.healthcheck.periodSeconds | default 60 }}
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/health/live
+              port: http
+            periodSeconds: {{ .Values.vlmNim.healthcheck.periodSeconds | default 60 }}
+            timeoutSeconds: 30
+            failureThreshold: {{ .Values.vlmNim.healthcheck.failureThreshold | default 2 }}
+      volumes:
+        - name: vlm-cache
+          {{- if .Values.vlmNim.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vss-base.fullname" . }}-vlm-nim-cache
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        # shm_size: 32gb (원본 compose)
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.vlmNim.shmSizeGi | default 32 }}Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vlm-nim
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm-nim
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vlmNim.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: vlm-nim
+---
+{{- if .Values.vlmNim.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vlm-nim-cache
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm-nim
+spec:
+  accessModes:
+    - {{ .Values.vlmNim.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.vlmNim.persistence.size | default "50Gi" }}
+  {{- if .Values.vlmNim.persistence.storageClass }}
+  storageClassName: {{ .Values.vlmNim.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}

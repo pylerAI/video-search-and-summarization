@@ -1,0 +1,358 @@
+openapi: 3.0.3
+info:
+  title: VST Proxy Stream MS
+  description: |-
+    VST Replay Stream MS is used to manage proxy RTSP URLs sensors
+  version: 1.0.0
+  license:
+    name: Copyright (c) 2021-2023, NVIDIA CORPORATION.  All rights reserved.
+servers:
+  - url: https://localhost/api
+  - url: http://localhost/api
+tags:
+  - name: v1
+    description: VST Proxy Stream API Schema v1
+paths:
+  /v1/proxy/streams:
+    get:
+      tags:
+        - v1
+      summary: Get list of available replay streams
+      operationId: getReplayStream
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamInfoWrapper'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/stream/add:
+    post:
+      tags:
+        - v1
+      summary: Add RTSP streams
+      operationId: postProxyStreamAdd
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRTSPRequest'
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                required:
+                  - url
+                type: object
+                properties:
+                  url:
+                    type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/stream/{streamId}:
+    delete:
+      tags:
+        - v1
+      summary: Remove RTSP URL
+      operationId: deleteProxyStream
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: path
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/session/{streamId}:
+    delete:
+      tags:
+        - v1
+      summary: Remove session
+      operationId: deleteProxySession
+      parameters:
+        - name: streamId
+          in: header
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: path
+          description: The ID of the stream
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/info:
+    get:
+      tags:
+        - v1
+      summary: Get RTSP proxy info
+      operationId: getProxyInfo
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyInfo'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/configuration:
+    get:
+      tags:
+        - v1
+      summary: Get RTSP Proxy service configuration
+      operationId: getSensorConfiguration
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetConfiguration'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/proxy/version:
+    get:
+      tags:
+        - v1
+      summary: Get MS version
+      operationId: getVersion
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/proxy/help:
+    get:
+      tags:
+        - v1
+      summary: Get supported API list
+      operationId: gethelp
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    ProxyInfo:
+      type: object
+      required:
+        - urlPrefix
+        - originalUrlPrefix
+        - activeClientSessions
+      properties:
+        urlPrefix:
+          type: string
+        originalUrlPrefix:
+          type: string
+        activeClientSessions:
+          type: string
+
+    AddRTSPRequest:
+      type: object
+      required:
+        - id
+        - url
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+
+    StreamInfoWrapper:
+      type: array
+      items:
+        $ref: '#/components/schemas/StreamInfo'
+
+    StreamInfo:
+      type: object
+      properties:
+        streamId:
+          type: string
+        name:
+          type: string
+        sensorUrl:
+          type: string
+        proxyUrl:
+          type: string
+
+    GetConfiguration:
+      type: object
+      properties:
+        enableRtspServerFrameIdSupport:
+          type: boolean
+        httpPort:
+          type: string
+        maxStreamsSupported:
+          type: integer
+        enableQosMonitoring:
+          type: boolean
+        qosDataCaptureIntervalSec:
+          type: integer
+        qosDataPublishIntervalSec:
+          type: integer
+        qosLogfilePath:
+          type: string
+        enablePrometheus:
+          type: boolean
+        enableStreamMonitoring:
+          type: boolean
+        prometheusPort:
+          type: string
+        rtspInBaseUdpPortNum:
+          type: integer
+        rtspOutBaseUdpPortNum:
+          type: integer
+        rtspPreferredNetworkIface:
+          type: string
+        rtspServerPort:
+          type: integer
+        rtspServerReclamationClientTimeoutSec:
+          type: integer
+        rtspStreamingOverTcp:
+          type: boolean
+        serverDomainName:
+          type: string
+        sessionMaxAgeSec:
+          type: integer
+        streamMonitorIntervalSecs:
+          type: integer
+        useHttpDigestAuthentication:
+          type: boolean
+        useHttps:
+          type: boolean
+        useRtspAuthentication:
+          type: boolean
+        vstDataPath:
+          type: string
+        webserviceAccessControlList:
+          type: string
+        enableUserCleanup:
+          type: boolean
+        multiUserExtraOptions:
+          type: string
+        useMultiUser:
+          type: boolean
+        vstIp:
+          type: string
+      required:
+        - enableRtspServerFrameIdSupport
+        - httpPort
+        - maxStreamsSupported
+        - enableQosMonitoring
+        - qosDataCaptureIntervalSec
+        - qosDataPublishIntervalSec
+        - qosLogfilePath
+        - enablePrometheus
+        - enableStreamMonitoring
+        - prometheusPort
+        - rtspInBaseUdpPortNum
+        - rtspOutBaseUdpPortNum
+        - rtspPreferredNetworkIface
+        - rtspServerPort
+        - rtspServerReclamationClientTimeoutSec
+        - rtspStreamingOverTcp
+        - serverDomainName
+        - sessionMaxAgeSec
+        - streamMonitorIntervalSecs
+        - useHttpDigestAuthentication
+        - useHttps
+        - useRtspAuthentication
+        - vstDataPath
+        - webserviceAccessControlList
+        - enableUserCleanup
+        - multiUserExtraOptions
+        - useMultiUser
+        - vstIp
+
+    Error:
+      required:
+        - error_code
+        - error_message
+      type: object
+      properties:
+        error_code:
+          type: string
+          example: VMSInternalError
+        error_message:
+          type: string
+          example: VMS internal processing error

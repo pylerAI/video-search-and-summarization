@@ -1,0 +1,379 @@
+# =============================================================================
+# VSS Base Profile - Helm Values
+# =============================================================================
+# dev-profile.sh up -p base (default: H100, local_shared mode)에 대응하는 values
+#
+# GPU 요구사항 요약 (local_shared 모드):
+#   - LLM NIM + VLM NIM: 동일 GPU 1장 공유 (각 VRAM 40%)
+#   - VST 서비스 (sensor, storage, replaystream): NVIDIA 런타임 필요 (비디오 인코딩/디코딩)
+#   - 최소 GPU 1장 필요, 권장 2장+ (NIM 전용 1장 + VST 전용 1장)
+#
+# 스토리지 요구사항 요약:
+#   - NIM 모델 캐시: ~50Gi x 2 (LLM + VLM)
+#   - VST 비디오 스토리지: 200Gi+ (비디오 양에 따라 가변)
+#   - VST 공유 볼륨 (vst-data, vst-video, vst-clips): RWX(ReadWriteMany) 필요
+#   - PostgreSQL, Redis, Phoenix: 각각 RWO(ReadWriteOnce) 충분
+# =============================================================================
+
+global:
+  # NGC 레지스트리 인증
+  imagePullSecrets:
+    - name: nvcr-secret
+
+  # 호스트/클러스터 설정
+  hostIP: ""  # 설치 시 --set global.hostIP=<IP> 로 지정
+  externalIP: ""  # 비어있으면 hostIP 사용
+
+  # NGC API Key (REQUIRED)
+  ngcApiKey: ""  # 설치 시 --set global.ngcApiKey=<KEY> 로 지정
+  nvidiaApiKey: ""
+
+  # 메시지 브로커: kafka 또는 redis
+  streamType: kafka
+
+  # VST 어댑터 타입
+  vstAdaptor: vst_rtsp
+
+  # NIM 모드: local_shared | local | remote
+  # local_shared: LLM + VLM이 동일 GPU 공유 (GPU 1장)
+  # local: LLM, VLM 각각 전용 GPU (GPU 2장)
+  # remote: 외부 NIM 엔드포인트 사용 (GPU 0장)
+  llmMode: local_shared
+  vlmMode: local_shared
+
+  # 모델 이름
+  llmName: "nvidia/nvidia-nemotron-nano-9b-v2"
+  vlmName: "nvidia/cosmos-reason2-8b"
+
+# =============================================================================
+# Foundational Services
+# =============================================================================
+
+phoenix:
+  enabled: true
+  image:
+    repository: arizephoenix/phoenix
+    tag: "version-8.12.1"
+    pullPolicy: IfNotPresent
+  port: 6006
+  # GPU: 불필요
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "8.2.2-alpine"
+    pullPolicy: IfNotPresent
+  port: 6379
+  # GPU: 불필요
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  config: |
+    save 900 1
+    save 300 10
+    save 60 10000
+
+# =============================================================================
+# VST (Video Storage Tool) Services
+# =============================================================================
+# NOTE: sensor-ms, storage-ms, replaystream-ms는 다음 볼륨을 공유합니다:
+#   - vst-data (vst_data): 센서 메타데이터, DB 소켓 등
+#   - vst-video (vst_video): 비디오 파일 저장
+#   - vst-clips (streamer_videos): 클립 파일 (storage, replaystream만)
+# K8s에서 여러 Pod 간 공유하려면 ReadWriteMany(RWX) 볼륨이 필요합니다.
+# (예: NFS, CephFS, EFS 등)
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "17.6-alpine"
+    pullPolicy: IfNotPresent
+  database: nvcentralizedb
+  username: vst
+  # GPU: 불필요
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+
+# VST 서비스 간 공유 볼륨 (sensor, storage, replaystream이 공유)
+vstSharedVolumes:
+  # VST 워킹 데이터 (DB 소켓, 메타데이터 등)
+  vstData:
+    enabled: true
+    size: 50Gi
+    storageClass: ""  # RWX 지원하는 storageClass 필요 (예: nfs-csi)
+    accessMode: ReadWriteMany
+
+  # 비디오 파일 저장소
+  vstVideo:
+    enabled: true
+    size: 200Gi
+    storageClass: ""  # RWX 지원하는 storageClass 필요
+    accessMode: ReadWriteMany
+
+  # 클립 스토리지 (storage, replaystream 공유)
+  vstClips:
+    enabled: true
+    size: 50Gi
+    storageClass: ""  # RWX 지원하는 storageClass 필요
+    accessMode: ReadWriteMany
+
+  # 임시 파일 (storage만 사용)
+  vstTemp:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+
+vstIngress:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-vios-ingress
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 30888
+  # GPU: 불필요
+  persistence:
+    logs:
+      enabled: true
+      size: 5Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+
+sensorMs:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-vios-sensor
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 30000
+  # GPU: NVIDIA 런타임 필요 (비디오 디코딩)
+  # 원본 compose에서 runtime: nvidia 사용하지만 device_ids 지정 없음
+  runtimeClassName: nvidia  # "" 로 비활성화 가능
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    # GPU는 비디오 디코딩에 필요하지만, 명시적 device_ids 없음
+    # 필요시 아래 주석 해제
+    # limits:
+    #   nvidia.com/gpu: "1"
+
+storageMs:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-vios-storage
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 30011
+  # GPU: NVIDIA 런타임 필요 (NVIDIA_VISIBLE_DEVICES=all)
+  runtimeClassName: nvidia
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    # limits:
+    #   nvidia.com/gpu: "1"
+
+vstMcp:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-vios-mcp
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 8001
+  # GPU: 불필요
+  config:
+    apiBaseUrl: ""
+    apiTimeout: "30"
+    serverName: "vst-mcp-server"
+    serverVersion: "1.0.0"
+    logLevel: "INFO"
+    enableJsonrpcLogging: "true"
+
+replaystreamMs:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-vios-replaystream
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 30012
+  # GPU: NVIDIA 런타임 필요 (NVIDIA_VISIBLE_DEVICES=all)
+  runtimeClassName: nvidia
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    # limits:
+    #   nvidia.com/gpu: "1"
+
+sdrReplaystream:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/sdr
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 4004
+  # GPU: 불필요
+  persistence:
+    logs:
+      enabled: true
+      size: 5Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+  resources:
+    limits:
+      memory: "300Mi"
+
+envoyReplaystream:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/envoy-proxy
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  # GPU: 불필요
+
+# =============================================================================
+# Agent Services
+# =============================================================================
+
+vssAgent:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-agent
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 8000
+  # GPU: 불필요
+  configFile: "/vss-agent/deployments/developer-workflow/dev-profile-base/vss-agent/configs/config.yml"
+  objectStoreType: local_object_store
+  healthcheck:
+    initialDelaySeconds: 240
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+vssUI:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/vss-core/vss-agent-ui
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  port: 3000
+  # GPU: 불필요
+  config:
+    appTitle: "VSS BLUEPRINT"
+    appSubtitle: "Vision (Base)"
+    workflow: "Developer Agent"
+    enableChatTab: "true"
+    enableAlertsTab: "false"
+    enableDashboardTab: "false"
+    enableMapTab: "false"
+    enableVideoManagementTab: "true"
+    videoManagementAddRtspEnable: "false"
+    chatUploadFileEnable: "true"
+
+# =============================================================================
+# NIM Services (AI Model Inference)
+# =============================================================================
+# GPU 할당 모드:
+#   local_shared: LLM + VLM이 동일 GPU 공유 → GPU 1장 (각 NIM_KVCACHE_PERCENT=0.4)
+#   local:        LLM, VLM 각각 전용 GPU → GPU 2장
+#   remote:       GPU 불필요 (외부 API 사용)
+#
+# 원본 compose 분석:
+#   shared 모드: VLM과 LLM 모두 device_ids=[LLM_DEVICE_ID] → 동일 GPU
+#   VLM이 먼저 시작, ready 후 LLM 시작 (depends_on)
+#   NIM_KVCACHE_PERCENT=0.4로 각각 GPU VRAM의 40% 사용
+#
+# K8s에서 GPU 공유 방법:
+#   1. NVIDIA MIG (Multi-Instance GPU) - H100 권장
+#   2. NVIDIA MPS (Multi-Process Service)
+#   3. NVIDIA GPU Time-Slicing
+#   4. 같은 Pod에 두 컨테이너 배치 (sidecar 패턴)
+# =============================================================================
+
+llmNim:
+  enabled: true
+  image:
+    repository: nvcr.io/nim/nvidia/nvidia-nemotron-nano-9b-v2
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  port: 30081
+  containerPort: 8000
+  # GPU 설정
+  sharedGpu: true  # true: VLM과 동일 GPU 공유 (local_shared)
+  runtimeClassName: nvidia
+  shmSizeGi: 16  # 원본 shm_size: 16GB
+  resources:
+    limits:
+      nvidia.com/gpu: "1"  # local_shared에서도 스케줄링을 위해 1 요청
+    requests:
+      memory: "16Gi"
+      cpu: "4"
+  # hw-H100-full.env 기반 NIM 설정
+  nimConfig:
+    NIM_KVCACHE_PERCENT: "0.4"       # GPU VRAM 중 KV캐시 비율 (shared이므로 0.4)
+    NIM_MAX_NUM_SEQS: "4"            # 최대 동시 시퀀스
+    NIM_MAX_MODEL_LEN: "128000"      # 최대 모델 컨텍스트 길이
+    NIM_LOW_MEMORY_MODE: "1"         # 저메모리 모드 활성화
+  extraEnv: {}
+  persistence:
+    enabled: true
+    size: 50Gi     # 모델 캐시 (모델 다운로드 후 ~20-30GB 사용)
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  healthcheck:
+    initialDelaySeconds: 300   # 모델 다운로드 시 10분+ 소요 가능
+    periodSeconds: 60
+    timeoutSeconds: 650
+    failureThreshold: 2
+
+vlmNim:
+  enabled: true
+  image:
+    repository: nvcr.io/nim/nvidia/cosmos-reason2-8b
+    tag: "1.6.0"
+    pullPolicy: IfNotPresent
+  port: 30082
+  containerPort: 8000
+  # GPU 설정
+  sharedGpu: true
+  runtimeClassName: nvidia
+  shmSizeGi: 32  # 원본 shm_size: 32gb
+  customWeights: ""  # 커스텀 모델 가중치 경로 (선택)
+  resources:
+    limits:
+      nvidia.com/gpu: "1"
+    requests:
+      memory: "32Gi"
+      cpu: "4"
+  # hw-H100-full.env 기반 NIM 설정
+  nimConfig:
+    NIM_KVCACHE_PERCENT: "0.4"
+    NIM_MAX_MODEL_LEN: "32768"
+    NIM_MAX_NUM_SEQS: "4"
+    MAX_JOBS: "4"
+    NIM_DISABLE_MM_PREPROCESSOR_CACHE: "1"  # 멀티모달 전처리 캐시 비활성화
+  extraEnv: {}
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  healthcheck:
+    initialDelaySeconds: 300
+    periodSeconds: 60
+    timeoutSeconds: 650
+    failureThreshold: 2

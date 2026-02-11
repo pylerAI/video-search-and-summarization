@@ -1,0 +1,38 @@
+functions:
+  vst_sensor_list:
+    _type: mcp_tool_wrapper
+    url: ${VST_MCP_URL}/mcp
+    mcp_tool_name: sensor_list
+
+function_groups:
+  video_analytics:
+    _type: video_analytics
+    es_url: "http://${HOST_IP}:9200"
+    index_prefix: "mdx-"
+    vlm_verified: true
+    vst_sensor_list_tool: vst_sensor_list
+    embedding_model_name: "sentence-transformers/all-MiniLM-L6-v2"
+    include:
+      - get_incident
+      - get_incidents
+      - get_sensor_ids
+      - get_places
+      - get_fov_histogram
+      - get_average_speeds
+      - analyze
+
+llms:
+  nim_llm:
+    _type: nim
+    model_name: meta/llama-3.1-70b-instruct
+    temperature: 0.0
+    max_tokens: 1024
+
+
+# dummy workflow required to start MCP server
+workflow:
+  _type: react_agent
+  tool_names: [video_analytics]
+  llm_name: nim_llm
+  verbose: true
+  parse_agent_response_max_retries: 3

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: vss-base
+description: NVIDIA VSS 3.0.0 Base Profile - Helm Chart (converted from docker compose dev-profile base)
+type: application
+version: 1.0.0
+appVersion: "3.0.0"
+keywords:
+  - nvidia
+  - vss
+  - metropolis
+  - video-storage
+  - ai-agent

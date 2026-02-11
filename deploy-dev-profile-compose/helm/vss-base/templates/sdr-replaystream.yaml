@@ -1,0 +1,93 @@
+{{- if .Values.sdrReplaystream.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-sdr-replaystream
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "sdr-replaystream" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "sdr-replaystream" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "sdr-replaystream" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: sdr-replaystream
+          image: "{{ .Values.sdrReplaystream.image.repository }}:{{ .Values.sdrReplaystream.image.tag }}"
+          imagePullPolicy: {{ .Values.sdrReplaystream.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.sdrReplaystream.port }}
+              name: http
+          env:
+            - name: PORT
+              value: {{ .Values.sdrReplaystream.port | quote }}
+            - name: WDM_WL_REDIS_SERVER
+              value: {{ include "vss-base.fullname" . }}-redis
+            - name: WDM_WL_REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            - name: WDM_WL_ADD_URL
+              value: "/api/v1/replay/stream/add"
+            - name: WDM_WL_DELETE_URL
+              value: "/api/v1/replay/stream/"
+            - name: WDM_WL_HEALTH_CHECK_URL
+              value: "/api/v1/replay/configuration"
+            - name: WDM_WL_CHANGE_ID_ADD
+              value: "camera_streaming"
+            - name: WDM_WL_CHANGE_ID_DEL
+              value: "camera_remove"
+            - name: WDM_CLEAR_DATA_WL
+              value: "true"
+            - name: WDM_KFK_ENABLE
+              value: "false"
+            - name: WDM_DS_SWAP_ID_NAME
+              value: "false"
+            - name: WDM_WL_THRESHOLD
+              value: "500"
+            - name: WDM_ADD_REMOVE_RETRY_ATTEMPTS
+              value: "50"
+            - name: WDM_CLUSTER_TYPE
+              value: "docker"
+            - name: WDM_RESTART_DS_ON_ADD_FAIL
+              value: "false"
+            - name: WDM_DISABLE_WERKZEUG_LOGGING
+              value: "true"
+            - name: WDM_WL_OBJECT_NAME
+              value: "replaystream-ms"
+            - name: WDM_CONSUMER_GRP_ID
+              value: "sdr-replaystream-cg"
+            - name: OTEL_SDK_DISABLED
+              value: "true"
+            - name: WDM_INITIALIZE_FROM_VST
+              value: "false"
+            - name: ENVOY_REQUEST_TIMEOUT
+              value: "30"
+            - name: WDM_TARGET_PORT_MAPPING
+              value: '{"replaystream-ms-1": {{ .Values.replaystreamMs.port }}}'
+            - name: WDM_REDIS_CACHE_OBJECT
+              value: "replaystream-data"
+          resources:
+            {{- toYaml .Values.sdrReplaystream.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-sdr-replaystream
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.sdrReplaystream.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "sdr-replaystream" "root" .) | nindent 4 }}
+{{- end }}

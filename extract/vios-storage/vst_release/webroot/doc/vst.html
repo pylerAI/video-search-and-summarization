@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VST Doc</title>
+  <link rel="stylesheet" type="text/css" href="./swagger-ui.css" />
+  <link rel="icon" type="image/png" href="./nvidia_32_32.png" sizes="32x32" />
+  <link rel="icon" type="image/png" href="./nvidia_16_16.png" sizes="16x16" />
+  <style>
+    /* Beautify the dropdown label */
+    label[for="json-select"] {
+      font-weight: bold;
+      margin-right: 10px;
+    }
+
+    /* Style the select dropdown */
+    #json-select {
+      appearance: none;
+      background-color: #f7f7f7;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 16px;
+      color: #333;
+      cursor: pointer;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+
+    #json-select:hover {
+      border-color: #999;
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Style the options within the dropdown */
+    #json-select option {
+      background-color: #fff;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <label for="json-select">Select VST MS documentation:</label>
+  <select id="json-select">
+    <option value="sensor_management_ms.yaml">Sensor Management MS</option>
+    <option value="live_stream_ms.yaml">Live Stream MS</option>
+    <option value="replay_stream_ms.yaml">Replay Stream MS</option>
+    <option value="stream_recorder_ms.yaml">Stream Recoder MS</option>
+    <option value="file_management_ms.yaml">File Management MS</option>
+    <option value="rtsp_proxy_stream_ms.yaml">RTSP Proxy Stream MS</option>
+    <option value="stream_bridge_ms.yaml">Stream Bridge MS</option>
+  </select>
+
+  <div id="swagger-ui"></div>
+
+  <script src="./swagger-ui-bundle.js" charset="UTF-8"></script>
+  <script src="./swagger-ui-standalone-preset.js" charset="UTF-8"></script>
+  <script>
+    const jsonSelect = document.getElementById("json-select");
+    let ui;
+
+    function loadSwaggerUI(jsonUrl) {
+      if (ui) {
+        ui.specActions.updateUrl(jsonUrl);
+      } else {
+        ui = SwaggerUIBundle({
+          url: jsonUrl,
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+          layout: "StandaloneLayout",
+        });
+      }
+    }
+
+    jsonSelect.addEventListener("change", function () {
+      const selectedJson = jsonSelect.value;
+      loadSwaggerUI(selectedJson);
+
+      // Simulate clicking the "Explore" button after JSON selection changes
+      const exploreButton = document.querySelector(".download-url-button");
+      exploreButton.click();
+    });
+
+    // Initialize Swagger UI with the default JSON file
+    loadSwaggerUI(jsonSelect.value);
+    // Observe the DOM for changes and hide the img element with the validator badge
+    const observer = new MutationObserver(function (mutationsList) {
+      for (const mutation of mutationsList) {
+        if (mutation.addedNodes) {
+          mutation.addedNodes.forEach(node => {
+            if (node.nodeName === 'IMG' && node.src.includes('https://validator.swagger.io/validator')) {
+              node.style.display = 'none';
+            }
+          });
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  </script>
+</body>
+</html>

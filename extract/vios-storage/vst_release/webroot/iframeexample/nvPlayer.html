@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nv-WebRTC-Player</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+      }
+      .video-container {
+        position: relative;
+        max-width: 80vw; /* Adjust width as needed */
+        height: 97.5vh; /* Maximum width of the video player */
+      }
+
+      .video-container video {
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="video-container">
+      <video id="webrtc-video-player" controls autoplay muted>
+        Your browser does not support the video tag.
+      </video>
+    </div>
+    <script type="module" src="./src/nvWebrtc.js"></script>
+  </body>
+</html>

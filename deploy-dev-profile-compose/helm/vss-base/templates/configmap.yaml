@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vss-base.fullname" . }}-global-config
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+data:
+  HOST_IP: {{ .Values.global.hostIP | quote }}
+  EXTERNALLY_ACCESSIBLE_IP: {{ include "vss-base.externalIP" . | quote }}
+  STREAM_TYPE: {{ .Values.global.streamType | quote }}
+  VST_ADAPTOR: {{ .Values.global.vstAdaptor | quote }}
+  LLM_MODE: {{ .Values.global.llmMode | quote }}
+  VLM_MODE: {{ .Values.global.vlmMode | quote }}
+  LLM_NAME: {{ .Values.global.llmName | quote }}
+  VLM_NAME: {{ .Values.global.vlmName | quote }}

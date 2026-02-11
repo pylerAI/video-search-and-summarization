@@ -1,0 +1,563 @@
+openapi: 3.0.3
+info:
+  title: VST Stream Recorder
+  description: |-
+    VST Stream Recorder MS is used to manage recording of sensors
+  version: 1.0.0
+  license:
+    name: Copyright (c) 2021-2023, NVIDIA CORPORATION.  All rights reserved.
+servers:
+  - url: https://localhost/api
+  - url: http://localhost/api
+tags:
+  - name: v1
+    description: VST Stream Recorder API Schema v1
+paths:
+  /v1/record/streams:
+    get:
+      tags:
+        - v1
+      summary: Get list of available record streams
+      operationId: getRecordStream
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StreamInfoWrapper'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/stream/add:
+    post:
+      tags:
+        - v1
+      summary: Add stream to VST recorder MS
+      operationId: postRecordStreamAdd
+      parameters:
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddStreamResponse'
+      responses:
+        200:
+          description: Success
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}:
+    delete:
+      tags:
+        - v1
+      summary: Remove stream from VST recorder MS
+      operationId: deleteRecordStream
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/start:
+    post:
+      tags:
+        - v1
+      summary: Start recording
+      operationId: postRecordStreamStart
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/stop:
+    post:
+      tags:
+        - v1
+      summary: Stop recording
+      operationId: postRecordStreamStop
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/event:
+    post:
+      tags:
+        - v1
+      summary: Trigger event recording
+      operationId: postEventRecording
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/schedule:
+    get:
+      tags:
+        - v1
+      summary: Get device record schdule for particular device
+      operationId: getRecordSchedule
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 'The response contains endTime and startTime in cron format'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleArray'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - v1
+      summary: Sets/Update device record schdule for particular sensor
+      operationId: postRecordSchedule
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: json object
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleArray'
+        required: true
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - v1
+      summary: Un-schedule device record schdule for particular device
+      operationId: deleteRecordSchedule
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: startTime
+          in: query
+          description: 0 13 * * 2
+          required: true
+          schema:
+            type: string
+        - name: endTime
+          in: query
+          description: 0 14 * * 2
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/timelines:
+    get:
+      tags:
+        - v1
+      summary: Get timeline of recorded video between specified time
+      operationId: getRecordTimelines
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: json object array
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimelinesArray'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/{streamId}/status:
+    get:
+      tags:
+        - v1
+      summary: Get device record states
+      operationId: getRecordState
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordStates'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/configuration:
+    get:
+      tags:
+        - v1
+      summary: Get Stream Recorder service configuration
+      operationId: getSensorConfiguration
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetConfiguration'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/record/version:
+    get:
+      tags:
+        - v1
+      summary: Get MS version
+      operationId: getVersion
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/record/help:
+    get:
+      tags:
+        - v1
+      summary: Get supported API list
+      operationId: gethelp
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    StreamInfoWrapper:
+      type: object
+      properties:
+        additionalProperties:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamInfo'
+
+    StreamInfo:
+      type: object
+      properties:
+        streamId:
+          type: string
+          example: '7927cbbc-cba6-4f22-b65d-46f7382f5f65'
+        isMain:
+          type: boolean
+          example: true
+        url:
+          type: string
+          format: uri
+          example: 'rtsp://10.41.18.147:8554/live/7927cbbc-cba6-4f22-b65d-46f7382f5f65'
+        name:
+          type: string
+          example: 'HIKVISION%20DS-2CD2T43G0-I5'
+        metadata:
+          type: object
+          properties:
+            bitrate:
+              type: string
+              example: '8000'
+            codec:
+              type: string
+              example: 'H264'
+            framerate:
+              type: string
+              example: '30'
+            govlength:
+              type: string
+              example: '60'
+            resolution:
+              type: string
+              example: '1920x1080'
+
+    Schedule:
+      required:
+        - endTime
+        - startTime
+      type: object
+      properties:
+        endTime:
+          type: string
+          example: 0 14 * * 2
+        startTime:
+          type: string
+          example: 0 13 * * 2
+
+    ScheduleArray:
+      type: array
+      items:
+        $ref: '#/components/schemas/Schedule'
+
+    Timelines:
+      required:
+        - endTime
+        - startTime
+      type: object
+      properties:
+        endTime:
+          type: string
+          format: date-time
+        startTime:
+          type: string
+          format: date-time
+
+    TimelinesArray:
+      type: array
+      items:
+        $ref: '#/components/schemas/Timelines'
+
+    AddStreamResponse:
+      type: object
+      properties:
+        url:
+          type: string
+
+    RecordStates:
+      type: object
+      properties:
+        recordingStatus:
+          type: string
+          enum:
+            - off
+            - schedule
+            - user
+            - event
+            - alwaysOn
+            - error
+            - statusUnknown
+
+    GetConfiguration:
+      type: object
+      properties:
+        alwaysRecording:
+          type: boolean
+        httpPort:
+          type: string
+        recordedVideoDirRoot:
+          type: string
+        recordedVideoTotalSizeMB:
+          type: integer
+        useHttpDigestAuthentication:
+          type: boolean
+        useHttps:
+          type: boolean
+        vstDataPath:
+          type: string
+        webserviceAccessControlList:
+          type: string
+        enableUserCleanup:
+          type: boolean
+        multiUserExtraOptions:
+          type: string
+        useMultiUser:
+          type: boolean
+        vstIp:
+          type: string
+        eventRecordLengthSecs:
+          type: number
+        recordBufferLengthSecs:
+          type: number
+      required:
+        - alwaysRecording
+        - enableAgingPolicy
+        - httpPort
+        - recordedVideoDirRoot
+        - recordedVideoTotalSizeMB
+        - storageMonitoringFrequencySecs
+        - storageThresholdPercentage
+        - totalVideoStorageSizeMB
+        - useHttpDigestAuthentication
+        - useHttps
+        - vstDataPath
+        - webserviceAccessControlList
+        - enableUserCleanup
+        - multiUserExtraOptions
+        - useMultiUser
+        - vstIp
+        - eventRecordLengthSecs
+        - recordBufferLengthSecs
+
+    Error:
+      required:
+        - error_code
+        - error_message
+      type: object
+      properties:
+        error_code:
+          type: string
+          example: VMSInternalError
+        error_message:
+          type: string
+          example: VMS internal processing error

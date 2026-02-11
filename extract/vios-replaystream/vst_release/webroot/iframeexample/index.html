@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nv-WebRTC-Player-Example</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        display: flex; /* Set body as flex container */
+        justify-content: center; /* Center contents horizontally */
+        align-items: center; /* Center contents vertically */
+        height: 100vh; /* Make body take up entire viewport height */
+      }
+      .container {
+        width: 80vw;
+        margin: 20px auto;
+        padding: 10px;
+        overflow: hidden; /* Hide overflow to prevent scrollbars */
+        box-shadow: 0 3px 10px rgb(0 0 0 / 0.2);
+      }
+      iframe {
+        display: block;
+        background: #000;
+        border: none;
+        height: 85vh;
+        width: 100%;
+        margin: 0 auto;
+      }
+      .iframeHeader {
+        display: flex;
+        align-items: center;
+        justify-content: start; /* Distribute items evenly along the main axis */
+      }
+      .iframeHeader h2 {
+        margin-right: auto; /* Push the "Video Player" heading to the left */
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="iframeHeader">
+        <h4>Video Player</h4>
+      </div>
+      <iframe id="videoFrame" src="nvPlayer.html" title="webrtc-video-player">
+      </iframe>
+    </div>
+  </body>
+</html>

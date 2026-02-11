@@ -1,0 +1,61 @@
+{{- if .Values.vstMcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-mcp
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "vst-mcp" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "vst-mcp" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "vst-mcp" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: vst-mcp
+          image: "{{ .Values.vstMcp.image.repository }}:{{ .Values.vstMcp.image.tag }}"
+          imagePullPolicy: {{ .Values.vstMcp.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.vstMcp.port }}
+              name: http
+          env:
+            - name: MCP_GATEWAY_CPP_API_BASE_URL
+              value: {{ include "vss-base.vstIngress.url" . | quote }}
+            - name: MCP_GATEWAY_CPP_API_TIMEOUT
+              value: {{ .Values.vstMcp.config.apiTimeout | quote }}
+            - name: MCP_GATEWAY_SERVER_NAME
+              value: {{ .Values.vstMcp.config.serverName | quote }}
+            - name: MCP_GATEWAY_SERVER_VERSION
+              value: {{ .Values.vstMcp.config.serverVersion | quote }}
+            - name: MCP_GATEWAY_SERVER_HOST
+              value: "0.0.0.0"
+            - name: MCP_GATEWAY_SERVER_PORT
+              value: {{ .Values.vstMcp.port | quote }}
+            - name: MCP_GATEWAY_LOG_LEVEL
+              value: {{ .Values.vstMcp.config.logLevel | quote }}
+            - name: MCP_GATEWAY_ENABLE_JSONRPC_LOGGING
+              value: {{ .Values.vstMcp.config.enableJsonrpcLogging | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-mcp
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vstMcp.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "vst-mcp" "root" .) | nindent 4 }}
+{{- end }}

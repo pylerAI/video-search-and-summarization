@@ -1,0 +1,572 @@
+openapi: 3.0.3
+info:
+  title: VST Storage Management MS
+  description: |-
+    VST Storage Management MS is used to Management a recording files in a storage
+  version: 1.0.0
+  license:
+    name: Copyright (c) 2021-2023, NVIDIA CORPORATION.  All rights reserved.
+servers:
+  - url: https://localhost/api
+  - url: http://localhost/api
+tags:
+  - name: v1
+    description: VST Storage Management API Schema v1
+paths:
+  /v1/storage/file/{streamId}:
+    delete:
+      tags:
+      - v1
+      summary: Delete media files for the specified stream
+      operationId: deleteFile
+      parameters:
+      - name: streamId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spaceSaved:
+                    type: integer
+        default:
+          description: error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags:
+        - v1
+      summary: Download video files of a particular stream
+      operationId: getDownloadFile
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startTime
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: endTime
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: fullLength
+          in: query
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/{streamId}:
+    get:
+      tags:
+        - v1
+      summary: Get total used storage size by the specified stream
+      operationId: getRecordSize
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: streamId
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: json object
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - sizeInMegabytes
+                  - state
+                properties:
+                  sizeInMegabytes:
+                    type: integer
+                  state:
+                    type: string
+                    enum:
+                      - connected
+                      - disconnected
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/storage/file/metadata:
+    get:
+      tags:
+        - v1
+      summary: Get file metadata
+      operationId: getMetadata
+      parameters:
+        - name: streamId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/file/protect:
+    post:
+      tags:
+        - v1
+      summary: Add/remove files into/from the protected list, It will protect a file from deletion.
+      operationId: addOrRemoveFilesInProtectList
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileProtection'
+        required: true
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectFiles'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/storage/file:
+    delete:
+      tags:
+        - v1
+      summary: Delete a multiple media files
+      operationId: deleteFiles
+      parameters:
+        - name: filePath
+          description: An array of file paths to delete
+          required: true
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteFiles'
+
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+      - v1
+      summary: Upload a media file
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              required:
+              - file
+              - fileName
+              - fileSize
+              properties:
+                file:
+                  type: string
+                  description: The file to upload
+                  format: binary
+                fileName:
+                  type: string
+                  description: Name of video file
+                fileSize:
+                  type: string
+                  description: File size in bytes
+        required: true
+      responses:
+        200:
+          description: json object
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fileName:
+                    type: string
+                    example: sample_file.mp4
+                  streamId:
+                    type: string
+                    example: 13814000-8752-1052-bfff-ac9b0a33cda4
+        default:
+          description: error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/storage/configuration:
+    get:
+      tags:
+        - v1
+      summary: Get storage management configurations
+      operationId: getDownloadConfiguration
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetConfiguration"
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/version:
+    get:
+      tags:
+        - v1
+      summary: Get MS version
+      operationId: getVersion
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/help:
+    get:
+      tags:
+        - v1
+      summary: Get supported API list
+      operationId: gethelp
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/size:
+    get:
+      tags:
+        - v1
+      summary: Get total used storage size and used storage size for each recorded streams
+      operationId: totalStorageSize
+      responses:
+        200:
+          description: json object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotalStorageSize'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/storage/info:
+    get:
+      tags:
+        - v1
+      summary: Get storage information i.e. Total, Used and Available storage space
+      operationId: getStorageInfo
+      responses:
+        200:
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageInfo"
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/storage/file/protected:
+    get:
+      tags:
+        - v1
+      summary: Get protected file list
+      operationId: getProtectedFiles
+      responses:
+        200:
+          description: Successs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+              example:
+                - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174587.mkv
+                - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174545.mkv
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    FileMetadata:
+      type: object
+      properties:
+        Duration:
+          type: string
+        Container:
+          type: string
+        Codec:
+          type: string
+        Height:
+          type: string
+        Width:
+          type: string
+        Framerate:
+          type: string
+        ScanType:
+          type: string
+        Bitrate:
+          type: string
+        SampleRate:
+          type: string
+        Channels:
+          type: string
+        Depth:
+          type: string
+      required:
+        - Duration
+        - Container
+        - Codec
+        - Height
+        - Width
+        - Framerate
+        - ScanType
+        - Bitrate
+        - SampleRate
+        - Channels
+        - Depth
+
+    GetConfiguration:
+      type: object
+      properties:
+        enableAgingPolicy:
+          type: boolean
+        enableUserCleanup:
+          type: boolean
+        maxVideoDownloadSizeMB:
+          type: integer
+        multiUserExtraOptions:
+          type: string
+        recordedVideoDirRoot:
+          type: string
+        storageMonitoringFrequencySecs:
+          type: number
+        storageThresholdPercentage:
+          type: number
+        totalVideoStorageSizeMB:
+          type: integer
+        useHttpDigestAuthentication:
+          type: boolean
+        useHttps:
+          type: boolean
+        useMultiUser:
+          type: boolean
+        vstDataPath:
+          type: string
+        vstIp:
+          type: string
+        webserviceAccessControlList:
+          type: string
+      required:
+        - enableAgingPolicy
+        - enableUserCleanup
+        - maxVideoDownloadSizeMB
+        - multiUserExtraOptions
+        - recordedVideoDirRoot
+        - storageMonitoringFrequencySecs
+        - storageThresholdPercentage
+        - totalVideoStorageSizeMB
+        - useHttpDigestAuthentication
+        - useHttps
+        - useMultiUser
+        - vstDataPath
+        - vstIp
+        - webserviceAccessControlList
+    TotalStorageSize:
+      type: object
+      properties:
+        total:
+          required:
+            - remainingStorageDays
+            - sizeInMegabytes
+          type: object
+          properties:
+            remainingStorageDays:
+              type: integer
+            sizeInMegabytes:
+              type: integer
+        additionalproperties:
+          type: object
+          properties:
+            sizeInMegabytes:
+              type: integer
+            state:
+              type: string
+              enum:
+                - connected
+                - disconnected
+      required:
+        - total
+
+    FileProtection:
+      type: object
+      properties:
+        filePath:
+          type: array
+          items:
+            type: string
+          example:
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174587.mkv
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174545.mkv
+        protect:
+          type: boolean
+          example: true
+      required:
+      - filePath
+      - protect
+
+    StorageInfo:
+      type: object
+      properties:
+        total:
+          type: integer
+        used:
+          type: integer
+        available:
+          type: integer
+
+      required:
+        - total
+        - used
+        - available
+
+    ProtectFiles:
+      properties:
+        invalidFiles:
+          type: array
+          items:
+            type: string
+          example:
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174587.mkv
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174545.mkv
+      required:
+      - invalidFiles
+
+    DeleteFiles:
+      properties:
+        invalidFiles:
+          type: array
+          items:
+            type: string
+          example:
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174587.mkv
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174545.mkv
+        protectedFiles:
+          type: array
+          items:
+            type: string
+          example:
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174588.mkv
+            - /home/vst/vst_release/vst_video/ff94097a-911e-463a-8619-567883f43a5b/1920x1080/2023/10/24/13/169815174549.mkv
+        spaceSaved:
+          type: integer
+      required:
+      - invalidFiles
+      - protectedFiles
+      - spaceSaved
+
+    Error:
+      required:
+        - error_code
+        - error_message
+      type: object
+      properties:
+        error_code:
+          type: string
+          example: VMSInternalError
+        error_message:
+          type: string
+          example: VMS internal processing error

@@ -1,0 +1,159 @@
+{{/*
+  LLM NIM (nvidia-nemotron-nano-9b-v2)
+  - local_shared 모드: VLM과 동일 GPU 공유 (device_ids=[LLM_DEVICE_ID])
+  - VLM이 ready 상태가 된 후 시작해야 함 (depends_on)
+  - hw-H100-full.env: NIM_KVCACHE_PERCENT=0.4, NIM_MAX_NUM_SEQS=4,
+                      NIM_MAX_MODEL_LEN=128000, NIM_LOW_MEMORY_MODE=1
+*/}}
+{{- if and .Values.llmNim.enabled (ne .Values.global.llmMode "remote") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-llm-nim
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-nim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: llm-nim
+  strategy:
+    type: Recreate  # GPU 리소스 충돌 방지
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: llm-nim
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      {{- if .Values.llmNim.runtimeClassName }}
+      runtimeClassName: {{ .Values.llmNim.runtimeClassName }}
+      {{- end }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      # shared GPU 모드: VLM이 먼저 ready 상태가 되어야 함
+      {{- if .Values.llmNim.sharedGpu }}
+      initContainers:
+        - name: wait-for-vlm
+          image: curlimages/curl:8.5.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for VLM NIM to be ready..."
+              echo "VLM endpoint: http://{{ include "vss-base.fullname" . }}-vlm-nim:{{ .Values.vlmNim.port }}/v1/health/ready"
+              until curl -sf http://{{ include "vss-base.fullname" . }}-vlm-nim:{{ .Values.vlmNim.port }}/v1/health/ready > /dev/null 2>&1; do
+                echo "VLM not ready yet, waiting 15s..."
+                sleep 15
+              done
+              echo "VLM NIM is ready! Starting LLM NIM..."
+      {{- end }}
+      containers:
+        - name: llm-nim
+          image: "{{ .Values.llmNim.image.repository }}:{{ .Values.llmNim.image.tag }}"
+          imagePullPolicy: {{ .Values.llmNim.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.llmNim.containerPort }}
+              name: http
+          env:
+            # NGC 인증
+            - name: NGC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vss-base.fullname" . }}-secrets
+                  key: NGC_API_KEY
+            # CUDA 설정
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
+            # hw-H100-full.env에서 가져온 NIM 설정
+            {{- range $key, $value := .Values.llmNim.nimConfig }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # 추가 환경변수
+            {{- range $key, $value := .Values.llmNim.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: llm-cache
+              mountPath: /opt/nim/.cache
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            {{- toYaml .Values.llmNim.resources | nindent 12 }}
+          # 원본 compose 헬스체크 반영
+          startupProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.llmNim.healthcheck.initialDelaySeconds | default 60 }}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 40  # 30s * 40 = 20분 대기 (모델 다운로드 시)
+          readinessProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http
+            periodSeconds: {{ .Values.llmNim.healthcheck.periodSeconds | default 60 }}
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/health/live
+              port: http
+            periodSeconds: {{ .Values.llmNim.healthcheck.periodSeconds | default 60 }}
+            timeoutSeconds: 30
+            failureThreshold: {{ .Values.llmNim.healthcheck.failureThreshold | default 2 }}
+      volumes:
+        - name: llm-cache
+          {{- if .Values.llmNim.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vss-base.fullname" . }}-llm-nim-cache
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        # shm_size: 16GB (원본 compose)
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.llmNim.shmSizeGi | default 16 }}Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-llm-nim
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-nim
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.llmNim.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: llm-nim
+---
+{{- if .Values.llmNim.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-llm-nim-cache
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-nim
+spec:
+  accessModes:
+    - {{ .Values.llmNim.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.llmNim.persistence.size | default "50Gi" }}
+  {{- if .Values.llmNim.persistence.storageClass }}
+  storageClassName: {{ .Values.llmNim.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}

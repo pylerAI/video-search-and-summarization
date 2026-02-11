@@ -1,0 +1,219 @@
+<head>
+  <meta charset="utf-8">
+  <title>Mocha Tests</title>
+  <!-- Include Mocha CSS styles -->
+  <link href="https://cdn.rawgit.com/mochajs/mocha/2.2.5/mocha.css" rel="stylesheet">
+  <link href="./tokkio_test/public/css/testStyle.css" rel="stylesheet">
+  <div class="navbar">
+    <a onclick="openForm();" id="startTestId" style="cursor: pointer;">Start</a>
+    <a onclick="reloadPage();" id="resetId" style="display: none; cursor: pointer;">Reset</a>
+    <a id="setIterations" style="cursor: default;">Set Iterations</a>
+    <input type="text" name="itr" value="1" id="itrerationValue" style="margin-top: 17px;" onchange="setIterations();"/>
+    <p id="displayInfo" style="display: none; float: left; margin-right: 5px;"></p>
+  </div>
+    <!-- Add the Chai assertion library -->
+    <script src="http://chaijs.com/chai.js"></script>
+    <!-- Add the Mocha test library -->
+    <script src="https://cdn.rawgit.com/mochajs/mocha/2.2.5/mocha.js"></script>
+    <script>
+      let iterationsFromHtml = "1";
+      let toastMessage = "";
+      // Set chai.expect as a global variable
+      var expect = chai.expect;
+      // Setup Mocha to use the BDD interface
+      mocha.setup('bdd');
+    </script>
+    <script src="./tokkio_test/public/bundleApiTest.js"></script>
+  <div id="overlay">
+    <div class="form-popup" id="myForm">
+      <form action="/action_page.php" class="form-container">
+        <b>Authorize camera:</b>
+        <span style='font-size:100px; float: right; font-size: 15px; cursor: pointer;' onclick="closeForm();">&#10006;</span>
+        <br/>
+        <select id="cameraDropdown" onchange="setCamera();" style="margin-top: 19px; float: left; max-width: 380px;"></select>
+        <br/>
+        <br/>
+        <br style="clear: both;"/>
+        <label for="text">Username</label>
+        <input type="text" placeholder="Enter Username" name="Username" id="username" required>
+    
+        <label for="text">Password</label>
+        <input type="text" placeholder="Enter Password" name="Password" id="password" required>
+
+        <label for="text"><b>Add camera using IP:</b></label>
+        <br/>
+        <br/>
+        <label for="text">IP</label>
+        <input type="text" placeholder="Enter IP" name="addCameraIp" id="addCameraIp" value="10.24.132.67" required>
+        <label for="text">Username</label>
+        <input type="text" placeholder="Enter Username" name="addCameraUser" id="addCameraUser" value="admin" required>
+        <label for="text">Password</label>
+        <input type="text" placeholder="Enter Password" name="addCameraPassword" id="addCameraPassword" value="nvidia123" required>
+        <label for="text"><b>RTSP url for add/remove camera:</b></label>
+        <br/>
+        <br/>
+        <label for="text">RTSP URL</label>
+        <input type="text" placeholder="Enter RTSP URL" name="addCameraRtsp" id="addCameraRtsp" 
+          value="rtsp://devonvif:0nv!F3nG@10.31.177.245:554/live/ed88fcfb-5425-4669-bba8-ea2540b02f1f" required>
+        <button type="button" class="btn" onclick="submitForm()" id="submitFormButton">Start</button>
+        <button type="button" class="btn cancel" onclick="closeForm()">Cancel</button>
+      </form>
+    </div>
+  </div>
+</head>
+
+<body>
+  <p id="apiPath" style="display: block; color: black; float: left; position: relative; margin-right: 5px;"></p>
+  <p id="iterationNumber" style="display: block; color: black; float: left; margin-right: 5px;"></p>
+  <script>
+    function openForm() {
+      document.getElementById("myForm").style.display = "block";
+      document.getElementById("overlay").style.display = "block";
+      populateCameraList();
+    }
+    function closeForm() {
+      document.getElementById("myForm").style.display = "none";
+      document.getElementById("overlay").style.display = "none";
+    }
+    function submitForm() {
+      let username = document.getElementById("username").value;
+      let password = document.getElementById("password").value;
+      let dropdown = document.getElementById("cameraDropdown");
+      let cameraId = dropdown.value;
+      let addCameraIp = document.getElementById("addCameraIp").value;
+      let addCameraUser = document.getElementById("addCameraUser").value;
+      let addCameraPassword = document.getElementById("addCameraPassword").value;
+      let addCameraRtsp = document.getElementById("addCameraRtsp").value;
+      setCookie("username", username, 2);
+      setCookie("password", password, 2);
+      closeForm();
+      startTest();
+      window.parent.updateCameraId(cameraId, username, password, addCameraIp, addCameraUser, addCameraPassword, addCameraRtsp);
+    }
+    function setCookie(cname, cvalue, exdays) {
+      const d = new Date();
+      d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
+      let expires = "expires="+d.toUTCString();
+      document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+    }
+    function getCookie(cname) {
+      let name = cname + "=";
+      let ca = document.cookie.split(';');
+      for(let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) == ' ') {
+          c = c.substring(1);
+        }
+        if (c.indexOf(name) == 0) {
+          return c.substring(name.length, c.length);
+        }
+      }
+      return "";
+    }
+    function checkCookie(cname) {
+      let user = getCookie(cname);
+      if (user != "") {
+        return true;
+      } else {
+        return false;
+      }
+    }
+    function populateCameraList() {
+      let dropdown = document.getElementById('cameraDropdown');
+      dropdown.length = 0;
+      let defaultOption = document.createElement('option');
+      defaultOption.text = 'Select Camera';
+      dropdown.add(defaultOption);
+      dropdown.selectedIndex = 0;
+      fetch(`http://vms-vms-svc:30000/api/device/list`)
+        .then(response => response.json())
+        .then((data) => {
+          console.log(data)
+          for (let i = 0; i < data.length; i++) {
+            option = document.createElement('option');
+            option.text = data[i].name + " (" + data[i].ip + ")";
+            option.value = data[i].id;
+            dropdown.add(option);
+            if(data[i].name.includes("Sample_input")) {
+              dropdown.value = data[i].id;
+            }
+          }
+        });
+    }
+    function setCamera() {
+      var dropdown = document.getElementById('cameraDropdown');
+      setCookie("selectedCameraIndex", dropdown.selectedIndex, 2);
+    }
+    // store url on load
+    let currentPage = location.href;
+    // listen for changes
+    window.setInterval(function() {
+      let currentPage = decodeURIComponent(window.location.toString())
+      if(currentPage.includes('?grep=API test')) {
+        let path = currentPage.split('?grep=API test')
+        if(path[1].length >= 1) {
+          let n = path[1].indexOf("get");
+          if(n < 0) {
+            n = path[1].indexOf("post");
+          }
+          document.getElementById('apiPath').innerHTML = `<b>Selected test: </b>${path[1].slice(n)}`;
+        }
+      }
+      else {
+        document.getElementById('apiPath').innerHTML = "";
+      }
+    }, 1000);
+  </script>
+  <div id="videoDiv" style="display:none; right: 10%; top: 17%; position: fixed; z-index: -10; border: solid 3px;">
+    <video
+      autoplay
+      controls
+      muted
+      width="400"
+      height="225"
+    >
+    </video>
+  </div>
+  <div id="snackbar"></div>
+  <div id="mocha"></div>	 
+  <script>
+    function setIterations() {
+      iterationsFromHtml = document.getElementById('itrerationValue').value;
+      window.parent.updateIterations(iterationsFromHtml);
+      let regex = /^[0-9]*$/;
+      if (!iterationsFromHtml.match(regex)) {
+          alert("Input must be a number !");
+          return false;
+      }
+      let displayInfo = document.getElementById("displayInfo");
+      displayInfo.style.display = "block";
+      displayInfo.innerHTML = `Iterations ${iterationsFromHtml}`;
+      setTimeout(function() { 
+        displayInfo.style.display = "none"
+      }, 2000);
+    }
+    // Run the tests with Mocha
+    function startTest() {
+      let regex = /^[0-9]+$/;
+      if(iterationsFromHtml == null || !iterationsFromHtml.match(regex)) {
+        alert("Please set iterations !");
+        return;
+      }
+      document.getElementById("startTestId").style.display = "none";
+      document.getElementById("resetId").style.display = "block"
+      let displayInfo = document.getElementById("displayInfo");
+      displayInfo.style.display = "block";
+      displayInfo.innerHTML = `Starting..`;
+      setTimeout(function() { 
+        displayInfo.style.display = "none"
+      }, 2000);
+      iterationsFromHtml = document.getElementById('itrerationValue').value;
+      window.parent.updateIterations(iterationsFromHtml);
+      mocha.run();
+    }
+    function reloadPage() {
+      document.location.reload();
+    }
+  </script>
+</body>
+</html>

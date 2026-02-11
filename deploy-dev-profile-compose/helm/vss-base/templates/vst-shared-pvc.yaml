@@ -1,0 +1,81 @@
+{{/*
+  VST 서비스 간 공유 PVC (sensor-ms, storage-ms, replaystream-ms)
+  이 PVC들은 ReadWriteMany(RWX) 모드가 필요합니다.
+  NFS, CephFS, AWS EFS 등 RWX를 지원하는 StorageClass를 사용하세요.
+*/}}
+
+{{- if .Values.vstSharedVolumes.vstData.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-data
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vst-shared-storage
+spec:
+  accessModes:
+    - {{ .Values.vstSharedVolumes.vstData.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.vstSharedVolumes.vstData.size | default "50Gi" }}
+  {{- if .Values.vstSharedVolumes.vstData.storageClass }}
+  storageClassName: {{ .Values.vstSharedVolumes.vstData.storageClass }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.vstSharedVolumes.vstVideo.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-video
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vst-shared-storage
+spec:
+  accessModes:
+    - {{ .Values.vstSharedVolumes.vstVideo.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.vstSharedVolumes.vstVideo.size | default "200Gi" }}
+  {{- if .Values.vstSharedVolumes.vstVideo.storageClass }}
+  storageClassName: {{ .Values.vstSharedVolumes.vstVideo.storageClass }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.vstSharedVolumes.vstClips.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-clips
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vst-shared-storage
+spec:
+  accessModes:
+    - {{ .Values.vstSharedVolumes.vstClips.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.vstSharedVolumes.vstClips.size | default "50Gi" }}
+  {{- if .Values.vstSharedVolumes.vstClips.storageClass }}
+  storageClassName: {{ .Values.vstSharedVolumes.vstClips.storageClass }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.vstSharedVolumes.vstTemp.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vst-temp
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vst-shared-storage
+spec:
+  accessModes:
+    - {{ .Values.vstSharedVolumes.vstTemp.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.vstSharedVolumes.vstTemp.size | default "10Gi" }}
+  {{- if .Values.vstSharedVolumes.vstTemp.storageClass }}
+  storageClassName: {{ .Values.vstSharedVolumes.vstTemp.storageClass }}
+  {{- end }}
+{{- end }}

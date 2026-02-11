@@ -1,0 +1,97 @@
+{{- if .Values.vssUI.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vss-ui
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+    {{- include "vss-base.selectorLabels" (dict "component" "vss-ui" "root" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vss-base.selectorLabels" (dict "component" "vss-ui" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vss-base.labels" . | nindent 8 }}
+        {{- include "vss-base.selectorLabels" (dict "component" "vss-ui" "root" .) | nindent 8 }}
+    spec:
+      {{- include "vss-base.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: vss-ui
+          image: "{{ .Values.vssUI.image.repository }}:{{ .Values.vssUI.image.tag }}"
+          imagePullPolicy: {{ .Values.vssUI.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.vssUI.port }}
+              name: http
+          env:
+            - name: RUN_APP_NAME
+              value: "nv-metropolis-bp-vss-ui"
+            - name: NEXT_PUBLIC_APP_TITLE
+              value: {{ .Values.vssUI.config.appTitle | quote }}
+            - name: NEXT_PUBLIC_APP_SUBTITLE
+              value: {{ .Values.vssUI.config.appSubtitle | quote }}
+
+            # Chat tab
+            - name: NEXT_PUBLIC_ENABLE_CHAT_TAB
+              value: {{ .Values.vssUI.config.enableChatTab | quote }}
+            - name: NEXT_PUBLIC_WORKFLOW
+              value: {{ .Values.vssUI.config.workflow | quote }}
+            - name: NEXT_PUBLIC_WEBSOCKET_CHAT_COMPLETION_URL
+              value: "ws://{{ include "vss-base.externalIP" . }}:{{ .Values.vssAgent.port }}/websocket"
+            - name: NEXT_PUBLIC_HTTP_CHAT_COMPLETION_URL
+              value: "http://{{ include "vss-base.fullname" . }}-vss-agent:{{ .Values.vssAgent.port }}/chat/stream"
+            - name: NEXT_PUBLIC_AGENT_API_URL_BASE
+              value: "http://{{ include "vss-base.externalIP" . }}:{{ .Values.vssAgent.port }}/api/v1"
+            - name: NEXT_PUBLIC_CHAT_UPLOAD_FILE_ENABLE
+              value: {{ .Values.vssUI.config.chatUploadFileEnable | quote }}
+            - name: NEXT_PUBLIC_WEB_SOCKET_DEFAULT_ON
+              value: "false"
+            - name: NEXT_PUBLIC_ENABLE_INTERMEDIATE_STEPS
+              value: "true"
+            - name: NEXT_PUBLIC_DARK_THEME_DEFAULT
+              value: "true"
+            - name: NEXT_PUBLIC_SIDE_CHATBAR_COLLAPSED
+              value: "true"
+            - name: NEXT_PUBLIC_CHAT_HISTORY_DEFAULT_ON
+              value: "true"
+
+            # Alerts tab
+            - name: NEXT_PUBLIC_ENABLE_ALERTS_TAB
+              value: {{ .Values.vssUI.config.enableAlertsTab | quote }}
+            - name: NEXT_PUBLIC_VST_API_URL
+              value: "http://{{ include "vss-base.externalIP" . }}:{{ .Values.vstIngress.port }}/vst/api"
+
+            # Dashboard tab
+            - name: NEXT_PUBLIC_ENABLE_DASHBOARD_TAB
+              value: {{ .Values.vssUI.config.enableDashboardTab | quote }}
+
+            # Map tab
+            - name: NEXT_PUBLIC_ENABLE_MAP_TAB
+              value: {{ .Values.vssUI.config.enableMapTab | quote }}
+
+            # Video management tab
+            - name: NEXT_PUBLIC_ENABLE_VIDEO_MANAGEMENT_TAB
+              value: {{ .Values.vssUI.config.enableVideoManagementTab | quote }}
+            - name: NEXT_PUBLIC_VIDEO_MANAGEMENT_TAB_ADD_RTSP_ENABLE
+              value: {{ .Values.vssUI.config.videoManagementAddRtspEnable | quote }}
+            - name: NEXT_PUBLIC_VIDEO_MANAGEMENT_VIDEO_UPLOAD_ENABLE
+              value: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vss-base.fullname" . }}-vss-ui
+  labels:
+    {{- include "vss-base.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vssUI.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "vss-base.selectorLabels" (dict "component" "vss-ui" "root" .) | nindent 4 }}
+{{- end }}
