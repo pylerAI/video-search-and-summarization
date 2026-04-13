@@ -134,6 +134,6 @@ jobs:
       - name: scale down not use service
         run: |
           # engine scale down
-          kubectl scale deployment vss-vss-deployment -n vss --replicas=0
+          # kubectl scale deployment vss-vss-deployment -n vss --replicas=0
           # llm server scale down (not use)
           kubectl scale statefulset vss -n vss --replicas=0

@@ -37,6 +37,9 @@ vss:
               configMapKeyRef:
                 name: vss-vlm-config
                 key: MODEL_PATH
+          # for qwen 
+          - name: VLLM_GPU_MEMORY_UTILIZATION 
+            value: "0.8"
           # - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
           #   valueFrom:
           #     configMapKeyRef:
@@ -600,21 +603,11 @@ riva:
             value: mode=all
           image:
             repository: nvcr.io/nim/nvidia/parakeet-1-1b-rnnt-multilingual
-            tag: 1
-      services:
-        riva-multi-service:
-          fullNameOverride: true
-          ports:
-          - name: http-api
-            port: 9000
-            targetPort: 9000
-          - name: grpc-api
-            port: 50051
-            targetPort: 50051
+            tag: latest
       volumes:
       - name: riva-cache
         persistentVolumeClaim:
-          claimName: riva-multi-nim-cache-pvc
+          claimName: riva-nim-cache-pvc
   workloadSpecs:
     dummy: {}
     wl-env:
