@@ -119,7 +119,9 @@ jobs:
       - name: Deploy vss app to Onprem
         run: |
           IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
-          kubectl scale deployment vss-vss-deployment -n vss --replicas=0
+          if kubectl get deployment vss-vss-deployment -n vss &> /dev/null; then
+            kubectl scale deployment vss-vss-deployment -n vss --replicas=0
+          fi
           find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
           helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.0.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
           # apply configmap
