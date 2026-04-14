@@ -20,7 +20,7 @@ RUN touch -m 600 /root/.ssh/known_hosts && \
     ssh-keyscan github.com > /root/.ssh/known_hosts
 
 RUN --mount=type=ssh \
-    git clone git@github.com:pylerAI/context-aware-rag.git -b main-1.0.0 /workspace/vss-ctx-rag && \
+    git clone git@github.com:pylerAI/context-aware-rag.git -b main /workspace/vss-ctx-rag && \
     pip install -e /workspace/vss-ctx-rag --no-deps && \
     git clone git@github.com:pylerAI/video-search-and-summarization.git -b develop-2.4.0 /workspace/vss
 
