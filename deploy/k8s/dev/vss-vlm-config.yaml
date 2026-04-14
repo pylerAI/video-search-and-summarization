@@ -6,7 +6,7 @@ metadata:
   labels:
     app: vss-vss-deployment
 data:
-  VLM_MODEL_TO_USE: "cosmos-reason1"
+  VLM_MODEL_TO_USE: "vllm-compatible"
   OPENAI_API_KEY: "fake_key"
   # VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-40B"
   # VIA_VLM_ENDPOINT: "http://vila-server-service:8000/v1"
