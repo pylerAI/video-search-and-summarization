@@ -28,8 +28,6 @@ models/custom/custom_model.py
 models/custom/samples/README.md
 models/custom/samples/fuyu8b/inference.py
 models/custom/samples/fuyu8b/manifest.yaml
-models/custom/samples/neva/inference.py
-models/custom/samples/neva/manifest.yaml
 models/openai_compat/openai_compat_model.py
 models/nvila/VILA/llava/model/apply_delta.py
 models/nvila/VILA/llava/model/configuration_llava.py
