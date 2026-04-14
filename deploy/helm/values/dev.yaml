@@ -1,0 +1,731 @@
+
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+#
+# NVIDIA CORPORATION and its licensors retain all intellectual property
+# and proprietary rights in and to this software, related documentation
+# and any modifications thereto.  Any use, reproduction, disclosure or
+# distribution of this software and related documentation without an express
+# license agreement from NVIDIA CORPORATION is strictly prohibited.
+
+global:
+  ngcImagePullSecretName: ngc-docker-reg-secret
+
+vss:
+  nodeSelector:
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+  applicationSpecs:
+    vss-deployment:
+      securityContext:
+        runAsGroup: 0
+        runAsUser: 0 
+      containers:
+        vss:
+          image:
+            pullPolicy: IfNotPresent
+            repository: harbor.pyler.local/apps/dev/vss-engine
+            tag: IMAGE_TAG
+          env:
+          - name: VLM_MODEL_TO_USE
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: VLM_MODEL_TO_USE
+          - name: MODEL_PATH
+            valueFrom:
+              configMapKeyRef:
+                name: vss-vlm-config
+                key: MODEL_PATH
+          # for qwen 
+          - name: VLLM_GPU_MEMORY_UTILIZATION 
+            value: "0.8"
+          # - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+          #   valueFrom:
+          #     configMapKeyRef:
+          #       name: vss-vlm-config
+          #       key: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+          # - name: VIA_VLM_ENDPOINT
+          #   valueFrom:
+          #     configMapKeyRef:
+          #       name: vss-vlm-config
+          #       key: VIA_VLM_ENDPOINT
+          - name: ENABLE_AUDIO
+            value: 'true'
+          - name: ENABLE_RIVA_SERVER_READINESS_CHECK
+            value: 'true'
+          - name: LLM_MODEL
+            value: openai/gpt-oss-120b
+          - name: DISABLE_GUARDRAILS
+            value: 'true'
+          # multi-language support
+          - name: RIVA_ASR_SERVER_URI
+            value: riva-service
+          - name: ENABLE_VIA_HEALTH_EVAL
+            value: "true"
+          - name: VIA_CTX_RAG_ENABLE_OTEL
+            value: "true"
+          - name: VIA_CTX_RAG_EXPORTER
+            value: "otlp"
+          - name: VIA_CTX_RAG_OTEL_ENDPOINT
+            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
+          - name: VIA_ENABLE_OTEL
+            value: "true"
+          - name: VIA_OTEL_EXPORTER
+            value: "otlp"
+          - name: VIA_OTEL_ENDPOINT
+            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
+          startupProbe:
+            failureThreshold: 360
+      initContainers:
+      - name: copy-configmaps
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -e
+            echo "Copying scripts..."
+            if [ -d /configmap-scripts ]; then
+              cp -rL /configmap-scripts/. /opt/scripts/
+              echo "Scripts copied: $(ls -la /opt/scripts/)"
+            fi
+            echo "All ConfigMaps copied successfully"
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
+          waiting for milvus; sleep 2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-milvus-up
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
+          2; done
+        image: busybox:1.28
+        imagePullPolicy: IfNotPresent
+        name: check-neo4j-up
+      - args:
+        - "while ! curl -s -f -o /dev/null http://llm-nim-svc:8000/v1/health/live;\
+          \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
+        command:
+        - sh
+        - -c
+        image: curlimages/curl:latest
+        name: check-llm-up
+
+  defaultVolumes:
+  - configMap:
+      name: vss-workload-cm
+    name: workload-cm-volume
+  - configMap:
+      name: vss-configs-cm
+    name: configs-volume
+  - emptyDir: {}
+    name: scripts-cm-volume
+
+  extraPodVolumes:
+  - configMap:
+      defaultMode: 420
+      name: vss-scripts-cm
+    name: scripts-cm-volume-source
+  - name: guardrails-config-dir
+    emptyDir: {}
+  extraPodVolumeMounts:
+  - name: scripts-cm-volume-source
+    mountPath: /configmap-scripts
+  - name: guardrails-config-dir
+    mountPath: /opt/nvidia/via/guardrails_config
+
+  configs:
+    ca_rag_config.yaml:
+      context_manager:
+        functions:
+        - summarization
+        - ingestion_function
+        - retriever_function
+      functions:
+        ingestion_function:
+          params:
+            batch_size: 1
+            cot: false
+            image: false
+            top_k: 5
+          tools:
+            db: vector_db
+            llm: chat_llm
+          type: vector_ingestion
+        retriever_function:
+          params:
+            batch_size: 1
+            cot: false
+            image: false
+            top_k: 5
+          tools:
+            db: vector_db
+            llm: chat_llm
+          type: vector_retrieval
+        summarization:
+          params:
+            batch_max_concurrency: 20
+            batch_size: 5
+            prompts:
+              caption: Write a concise and clear dense caption for the provided warehouse
+                video, focusing on irregular or hazardous events such as boxes falling,
+                workers not wearing PPE, workers falling, workers taking photographs, workers
+                chitchatting, forklift stuck, etc. Start and end each sentence with a time
+                stamp.
+              caption_summarization: 'You should summarize the following events of a warehouse
+                in the format start_time:end_time:caption. For start_time and end_time use
+                . to seperate seconds, minutes, hours. If during a time segment only regular
+                activities happen, then ignore them, else note any irregular activities
+                in detail. The output should be bullet points in the format start_time:end_time:
+                detailed_event_description. Don''t return anything else except the bullet
+                points.'
+              summary_aggregation: 'You are a warehouse monitoring system. Given the caption
+                in the form start_time:end_time: caption, Aggregate the following captions
+                in the format start_time:end_time:event_description. If the event_description
+                is the same as another event_description, aggregate the captions in the
+                format start_time1:end_time1,...,start_timek:end_timek:event_description.
+                If any two adjacent end_time1 and start_time2 is within a few tenths of
+                a second, merge the captions in the format start_time1:end_time2. The output
+                should only contain bullet points.  Cluster the output into Unsafe Behavior,
+                Operational Inefficiencies, Potential Equipment Damage and Unauthorized
+                Personnel'
+          tools:
+            db: vector_db
+            llm: summarization_llm
+          type: batch_summarization
+      tools:
+        chat_llm:
+          params:
+            base_url: http://llm-openai-svc:8000/v1
+            max_tokens: 2048
+            model: ${LLM_MODEL}
+            temperature: 0.2
+            top_p: 0.7
+          type: llm
+        graph_db:
+          params:
+            host: ${GRAPH_DB_HOST}
+            password: ${GRAPH_DB_PASSWORD}
+            port: ${GRAPH_DB_PORT}
+            username: ${GRAPH_DB_USERNAME}
+          tools:
+            embedding: nvidia_embedding
+          type: neo4j
+
+        nvidia_embedding:
+          params:
+            base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+            model: nvidia/llama-3.2-nv-embedqa-1b-v2
+          type: embedding
+        nvidia_reranker:
+          params:
+            base_url: http://nemo-rerank-ranking-deployment-ranking-service:8000/v1
+            model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+          type: reranker
+        summarization_llm:
+          params:
+            base_url: http://llm-openai-svc:8000/v1
+            max_tokens: 2048
+            model: ${LLM_MODEL}
+            temperature: 0.2
+            top_p: 0.7
+          type: llm
+        vector_db:
+          params:
+            host: ${MILVUS_DB_HOST}
+            port: ${MILVUS_DB_PORT}
+          tools:
+            embedding: nvidia_embedding
+          type: milvus
+    guardrails_config.yaml:
+      models:
+      - engine: nim
+        model: openai/gpt-oss-120b
+        parameters:
+          base_url: http://llm-openai-svc:8000/v1
+        type: main
+      - engine: nim
+        model: nvidia/llama-3.2-nv-embedqa-1b-v2
+        parameters:
+          base_url: http://nemo-embedding-embedding-deployment-embedding-service:8000/v1
+        type: embeddings
+
+    prompt_config.yaml:
+      evaluation_guidance_prompt: '**EVALUATION GUIDANCE:**
+        - Conclude with gathered information if repeated tool calls yield the same results
+        - Never repeat identical tool calls that return no results or empty results
+        - For failed searches: try ChunkSearch for specific entities or break down complex
+        terms into simpler components'
+      response_sys_msg_prompt: 'You are a response agent that provides comprehensive
+        answers based on analysis and tool results.
+        **CORE REQUIREMENTS:**
+        - Provide detailed, evidence-based answers with timestamps, locations, and visual
+        descriptions
+        - Include ALL relevant findings and supporting evidence from the analysis
+        - Explain your conclusions and provide chronological context when relevant
+        - Never include chunk IDs or internal system identifiers in responses
+
+        **FORMATTING:**
+        - Use factual, direct language without pleasantries ("Certainly!", "Here is...",
+        etc.)
+        - State "No relevant information found" if no relevant data was discovered
+        - Follow user-specified format requirements exactly (yes/no only, case requirements,
+        length constraints, etc.)
+        - When format is specified, prioritize format compliance over comprehensive
+        explanations
+        '
+      thinking_sys_msg_prompt: "You are a strategic planner and reasoning expert working\
+        \ with an execution agent to analyze videos.\n\n## Your Capabilities\n\nYou\
+        \ do **not** call tools directly. Instead, you generate structured plans for\
+        \ the Execute Agent to follow.\n\n## Workflow Steps\n\nYou will follow these\
+        \ steps:\n\n### Step 1: Analyze & Plan\n- Document reasoning in `<thinking></thinking>`.\n\
+        - Output one or more tool calls (strict XML format) in separate 'execute' blocks.\n\
+        - **CRITICAL**: When one tool's output is needed as input for another tool,\
+        \ make only the first tool call and wait for results.\n- Stop immediately after\
+        \ and output `[Pause]` to wait for results.\n\n### Step 2: Wait for Results\n\
+        After you propose execute steps, stop immediately after and output `[Pause]`\
+        \ to wait for results.\n\n### Step 3: Interpret & Replan\nOnce the Execute Agent\
+        \ returns results, analyze them inside `<thinking></thinking>`.\n- If the results\
+        \ contain information needed for subsequent tool calls (like chunk IDs from\
+        \ ChunkFilter), use those actual values in your next tool calls.\n- Propose\
+        \ next actions until you have enough information to answer.\n\n### Step 4: Final\
+        \ Answer\nOnly when confident, output:\n```<thinking>Final reasoning with comprehensive\
+        \ analysis of all evidence found</thinking><answer>Final answer with timestamps,\
+        \ locations, visual descriptions, and supporting evidence</answer>\n```\n\n\n\
+        {num_cameras_info}\n{video_length_info}\nCRITICAL ASSUMPTION: ALL queries describe\
+        \ scenes from video content that you must search for using your tools. NEVER\
+        \ treat queries as logic puzzles or general knowledge questions - they are ALWAYS\
+        \ about finding specific video content.\n\n\n\n## Available Tools\nYou can call\
+        \ any combination of these tools by using separate <execute> blocks for each\
+        \ tool call. Additionally, if you include multiple queries in the same call,\
+        \ they must be separated by ';'.\n\n\n### 1. ChunkSearch\n\n#### Query Formats:\n\
+        \n## Single Query\n```\n<execute>\n  <step>1</step>\n  <tool>chunk_search</tool>\n\
+        \  <input>\n    <query>your_question</query>\n    <topk>10</topk>\n  </input>\n\
+        </execute>\n```\n\n## Multiple Query\n```\n<execute>\n  <step>1</step>\n  <tool>chunk_search</tool>\n\
+        \  <input>\n    <query>your_question;your_question;your_question</query>\n \
+        \   <topk>10</topk>\n  </input>\n</execute>\n```\n\n- Use case:\n\n  - Returns\
+        \ a ranked list of chunks, with the most relevant results at the top. For example,\
+        \ given the list [d, g, a, e], chunk d is the most relevant, followed by g,\
+        \ and so on.\n- Assign topk=15 for counting problem, assign lower topk=8 for\
+        \ other problem\n- Try to provide diverse search queries to ensure comprehensive\
+        \ result(for example, you can add the options into queries).\n- You must generate\
+        \ a question for **every chunk returned by the chunk search** — do not miss\
+        \ any one!!!!!\n- The chunk search cannot handle queries related to the global\
+        \ video timeline, because the original temporal signal is lost after all video\
+        \ chunks are split. If a question involves specific video timing, you need to\
+        \ boldly hypothesize the possible time range and then carefully verify each\
+        \ candidate chunk to locate the correct answer.\n\n### 2. ChunkFilter\n\n####\
+        \ Query Formats:\n\nQuestion about time range:\n```\n<execute>\n  <step>1</step>\n\
+        \  <tool>chunk_filter</tool>\n  <input>\n    <range>start_time:end_time</range>\n\
+        \  </input>\n</execute>\n```\n\nQuestion about specific camera/video and time\
+        \ range:\n```\n<execute>\n  <step>1</step>\n  <tool>chunk_filter</tool>\n  <input>\n\
+        \    <range>start_time:end_time</range>\n    <camera_id>camera_X</camera_id>\n\
+        \  </input>\n</execute>\n```\n\n- Use case:\n\n  - If the question mentions\
+        \ a specific timestamp or time, you must convert it to seconds as numeric values.\n\
+        - **CRITICAL**: The range format must be <start_seconds>:<end_seconds> using\
+        \ ONLY numeric values in seconds.\n- **DO NOT use time format like HH:MM:SS**.\
+        \ Convert all times to total seconds first.\n- **IMPORTANT**: For camera_id,\
+        \ always use the format \"camera_X\" or \"video_X\" where X is the camera/video\
+        \ number (e.g., camera_1/video_1, camera_2/video_2, camera_3/video_3, camera_4/video_4,\
+        \ etc.) Mention the camera_id only when the question is about a specific camera/video.\n\
+        \n**Time Conversion Examples:**\n  - \"What happens at 00:05?\" (5 seconds)\
+        \ -> Query `<execute><step>1</step><tool>chunk_filter</tool><input><range>5:15</range></input></execute>`\n\
+        \  - \"What happens at 2:15?\" (2 minutes 15 seconds = 135 seconds) -> Query\
+        \ `<execute><step>1</step><tool>chunk_filter</tool><input><range>135:145</range></input></execute>`\n\
+        \  - \"Describe the action in the first minute.\" (0 to 60 seconds) -> Query\
+        \ `<execute><step>1</step><tool>chunk_filter</tool><input><range>0:60</range></input></execute>`\n\
+        \  - \"Events at 1:30:45\" (1 hour 30 min 45 sec = 5445 seconds) -> Query `<execute><step>1</step><tool>chunk_filter</tool><input><range>5445:5455</range></input></execute>`\n\
+        \n### 3. EntitySearch\n\n#### Query Formats:\n```\n<execute>\n  <step>1</step>\n\
+        \  <tool>entity_search</tool>\n  <input>\n    <query>your_question</query>\n\
+        \  </input>\n</execute>\n```\n\n- Use case:\n\n  - Returns a ranked list of\
+        \ entities, with the most relevant results at the top. For example, given the\
+        \ list [a, b, c, d, e], entity a is the most relevant, followed by b, and so\
+        \ on.\n- Best for finding specific people, objects, or locations in video content\n\
+        - Use when you need to track or identify particular entities across video segments\n\
+        \n## SUGGESTIONS\n- Try to provide diverse search queries to ensure comprehensive\
+        \ result(for example, you can add the options into queries).\n- For counting\
+        \ problems, consider using a higher top-k and more diverse queries to ensure\
+        \ no missing items.\n- For counting problems, your question should follow this\
+        \ format: Is there xxx occur in this video? (A chunk should be considered correct\
+        \ as long as the queried event occurs in more than one frame, even if the chunk\
+        \ also includes other content or is primarily focused on something else. coarsely\
+        \ matched chunks should be taken into account (e.g., watering flowers vs. watering\
+        \ toy flowers))\n- For counting problems, you should carefully examine each\
+        \ chunk to avoid any omissions!!!\n- For ordering, you can either use the chunk_id\
+        \ or the timestamps to determine the order.\n\n\n## Strict Rules\n\n1. Response\
+        \ of each round should provide thinking process in <thinking></thinking> at\
+        \ the beginning!! Never output anything after [Pause]!!\n2. You can only concatenate\
+        \ video chunks that are TEMPORALLY ADJACENT to each other (n;n+1), with a maximum\
+        \ of TWO at a time!!!\n3. If you are unable to give a precise answer or you\
+        \ are not sure, continue calling tools for more information; if the maximum\
+        \ number of attempts has been reached and you are still unsure, choose the most\
+        \ likely one.\n4. **DO NOT CONCLUDE PREMATURELY**: For complex queries (especially\
+        \ cross-camera tracking), you MUST make multiple tool calls and exhaust all\
+        \ search strategies before providing a final answer. One tool call is rarely\
+        \ sufficient for comprehensive analysis.\n\n"
+
+  egress:
+    # multi-language support
+    riva-api:
+      address: riva-multilang-service
+      port: 9000
+    llm-openai-api:
+      address: llm-openai-svc
+      port: 8000
+
+  resources:
+    limits:
+      nvidia.com/gpu: 2
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: FRONTEND_PORT
+        value: '9000'
+      - name: BACKEND_PORT
+        value: '8000'
+      - name: GRAPH_DB_HOST
+        value: neo-4-j-service
+      - name: GRAPH_DB_PORT
+        value: '7687'
+      - name: MILVUS_DB_HOST
+        value: milvus-milvus-deployment-milvus-service
+      - name: MILVUS_DB_PORT
+        value: '19530'
+      - name: MINIO_HOST
+        value: minio-minio-deployment-minio-service
+      - name: MINIO_PORT
+        value: '9000'
+      - name: MINIO_WEBUI_PORT
+        value: '9001'
+      - name: ARANGO_DB_HOST
+        value: arango-db-arango-db-deployment-arango-db-service
+      - name: ARANGO_DB_PORT
+        value: '8529'
+      - name: APP_VECTORSTORE_URL
+        value: http://milvus-milvus-deployment-milvus-service:19530
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: OPENAI_API_KEY
+            name: infisical-managed-secrets
+            optional: true
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NVIDIA_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: GRAPH_DB_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: GRAPHDB_USER
+            name: infisical-managed-secrets
+      - name: GRAPH_DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: GRAPHDB_PASSWORD
+            name: infisical-managed-secrets
+      - name: MINIO_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: MINIO_USERNAME
+            name: infisical-managed-secrets
+      - name: MINIO_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: MINIO_PASSWORD
+            name: infisical-managed-secrets
+      - name: ARANGO_DB_USERNAME
+        valueFrom:
+          secretKeyRef:
+            key: ARANGO_DB_USERNAME
+            name: infisical-managed-secrets
+      - name: ARANGO_DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: ARANGO_DB_PASSWORD
+            name: infisical-managed-secrets
+      - name: ES_HOST
+        value: elasticsearch-elasticsearch-deployment-elasticsearch-service
+      - name: ES_PORT
+        value: '9200'
+      - name: ES_TRANSPORT_PORT
+        value: '9300'
+
+
+etcd:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+
+minio:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss 
+  storageClassName: gpfs
+  applicationSpecs:
+    minio-deployment:
+      containers:
+        minio-container:
+          env:
+          - name: MINIO_ROOT_USER
+            valueFrom:
+              secretKeyRef:
+                key: MINIO_USERNAME
+                name: infisical-managed-secrets
+          - name: MINIO_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: MINIO_PASSWORD
+                name: infisical-managed-secrets
+  extraPodVolumes:
+  - name: secret-access-key-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: MINIO_USERNAME
+        path: access-key
+  - name: secret-secret-key-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: MINIO_PASSWORD
+        path: secret-key
+  extraPodVolumeMounts:
+  - name: secret-access-key-volume
+    mountPath: /secrets/access-key
+    subPath: access-key
+    readOnly: true
+  - name: secret-secret-key-volume
+    mountPath: /secrets/secret-key
+    subPath: secret-key
+    readOnly: true
+
+milvus:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+  defaultVolumeMounts:
+  - mountPath: /opt/workload-config
+    name: workload-cm-volume
+  - mountPath: /milvus/configs/user.yaml
+    subPath: config.yaml
+    name: configs-volume
+  - mountPath: /opt/scripts
+    name: scripts-cm-volume
+  
+  configs:
+    config.yaml:
+      log:
+        level: warn
+        format: text
+        stdout: true
+      grpc:
+        log:
+          level: WARNING
+          
+neo4j:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+
+  extraPodVolumes:
+  - name: secret-db-username-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: GRAPHDB_USER
+        path: db-username
+  - name: secret-db-password-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: GRAPHDB_PASSWORD
+        path: db-password
+  extraPodVolumeMounts:
+  - name: secret-db-username-volume
+    mountPath: /secrets/db-username
+    subPath: db-username
+    readOnly: true
+  - name: secret-db-password-volume
+    mountPath: /secrets/db-password
+    subPath: db-password
+    readOnly: true
+
+nim-llm:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss 
+  storageClassName: gpfs
+  persistence:
+    storageClass: gpfs
+  image:
+    repository: nvcr.io/nim/openai/gpt-oss-120b
+    tag: latest
+  model:
+    name: openai/gpt-oss-120b
+    ngcAPISecret: infisical-managed-secrets
+  resources:
+    limits:
+      nvidia.com/gpu: 4  
+  persistence:
+    existingClaim: model-store-vss-openai-0
+    enabled: true
+  
+nemo-embedding:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss  
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_TRT_ENGINE_HOST_CODE_ALLOWED
+        value: '1'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+
+nemo-rerank:
+  namespace: vss  
+  nodeSelector: 
+    pyler.io/group: dgx
+  storageClassName: gpfs
+  workloadSpecs:
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+      wl_units: 1
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+
+riva:
+  enabled: true
+  namespace: vss
+  nodeSelector: 
+    pyler.io/group: dgx
+  storageClassName: gpfs
+  applicationSpecs:
+    riva-deployment:
+      containers:
+        riva-container:
+          env:
+          - name: NIM_TAGS_SELECTOR
+            # https://docs.nvidia.com/nim/speech/latest/asr/deploy-asr-models/parakeet-rnnt.html
+            value: "mode=all" 
+          image:
+            repository: nvcr.io/nim/nvidia/parakeet-1-1b-rnnt-multilingual
+            tag: latest
+          livenessProbe:
+            httpGet:
+              path: /v1/health/live
+              port: http-api
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http-api
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          startupProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http-api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 480
+      volumes:
+      - name: riva-cache
+        persistentVolumeClaim:
+          claimName: riva-nim-cache-pvc
+
+  workloadSpecs:
+    dummy: {}
+    wl-env:
+      wl_env:
+      - name: NGC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            key: NGC_API_KEY
+            name: infisical-managed-secrets
+      - name: NIM_HTTP_API_PORT
+        value: '9000'
+      - name: NIM_GRPC_API_PORT
+        value: '50051'
+      - name: NIM_CACHE_PATH
+        value: /mnt/nim-cache
+
+arango-db:
+  nodeSelector: 
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+  applicationSpecs:
+    arango-db-deployment:
+      containers:
+        arango-db-container:
+          env:
+          - name: ARANGO_DB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                key: ARANGO_DB_USERNAME
+                name: infisical-managed-secrets
+          - name: ARANGO_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: ARANGO_DB_PASSWORD
+                name: infisical-managed-secrets
+  extraPodVolumes:
+  - name: secret-db-username-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: ARANGO_DB_USERNAME
+        path: db-username
+  - name: secret-db-password-volume
+    secret:
+      secretName: infisical-managed-secrets
+      items:
+      - key: ARANGO_DB_PASSWORD
+        path: db-password
+  extraPodVolumeMounts:
+  - name: secret-db-username-volume
+    mountPath: /secrets/db-username
+    subPath: db-username
+    readOnly: true
+  - name: secret-db-password-volume
+    mountPath: /secrets/db-password
+    subPath: db-password
+    readOnly: true

@@ -1,0 +1,78 @@
+name: VSS VLM Model Config Update
+
+on:
+  push:
+    branches:
+      - develop-2.4.1
+    paths:
+      - 'deploy/k8s/dev/vss-vlm-config.yaml'
+
+  workflow_call:
+    inputs:
+      config_only:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+
+jobs:
+  update-config-and-restart:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Update VSS VLM ConfigMap
+        run: |
+          echo "=== VSS VLM ConfigMap 업데이트 ==="
+          kubectl apply -f deploy/k8s/dev/vss-vlm-config.yaml
+          
+          echo "=== 현재 VSS VLM ConfigMap 상태 ==="
+          kubectl get configmap vss-vlm-config -n vss-240 -o yaml
+
+      - name: Restart VSS deployment
+        run: |
+          echo "=== VSS 서버 재시작 (scale 0 → 1) ==="
+          # Scale down to 0
+          kubectl scale deployment/vss-vss-deployment --replicas=0 -n vss
+          echo "=== VSS 서버 스케일 다운 완료 ==="
+          
+          # Wait for pods to terminate
+          kubectl wait --for=delete pod -l app=vss-vss-deployment -n vss --timeout=60s || true
+          
+          # Scale up to 1
+          kubectl scale deployment/vss-vss-deployment --replicas=1 -n vss
+          echo "=== VSS 서버 스케일 업 완료 ==="
+          
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/vss-vss-deployment -n vss --timeout=300s
+          
+          echo "=== VSS 서버 상태 확인 ==="
+          kubectl get pods -n vss -l app=vss-vss-deployment
+
+      - name: Verify deployment
+        run: |
+          echo "=== VSS 서비스 상태 ==="
+          kubectl get pods -n vss | grep vss
+          kubectl get svc -n vss | grep vss
+          
+          echo "=== VSS VLM ConfigMap 내용 확인 ==="
+          kubectl get configmap vss-vlm-config -n vss -o yaml

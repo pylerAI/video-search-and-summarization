@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vss-vlm-config
+  namespace: vss
+  labels:
+    app: vss-vss-deployment
+data:
+  VLM_MODEL_TO_USE: "cosmos-reason1"
+  OPENAI_API_KEY: "fake_key"
+  # VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-40B"
+  # VIA_VLM_ENDPOINT: "http://vila-server-service:8000/v1"
+  MODEL_PATH: "git:https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct" 

@@ -1,0 +1,141 @@
+name: VSS Deploy
+
+on:
+  push:
+    branches:
+      - develop-2.4.1
+    paths-ignore:
+      - 'deploy/k8s/vlm/Qwen/model-config.yaml'
+      - 'deploy/k8s/vlm/VILA/model-config.yaml'
+      - 'deploy/k8s/dev/vss-vlm-config.yaml'
+      - 'vlm_deploy/Qwen/**'
+      - 'vlm_deploy/VILA/**'
+      - 'deploy/helm/values/dev.yaml'
+      - '.github/workflows/vlm-config-update.yaml'
+      - '.github/workflows/vlm-deploy.yaml'
+      - '.github/workflows/vss-config-update.yaml'
+      - '.github/workflows/vss-configmap-update.yaml'
+      - '.github/workflows/vss-dev-container.yaml'
+      - 'deploy/k8s/dev/vss-configs-cm.yaml'
+
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+      image_tag:
+        required: false
+        type: string
+    secrets:
+      TOKEN:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      NGC_API_KEY:
+        required: false
+      HARBOR_USERNAME:
+        required: false
+      HARBOR_PASSWORD:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: sel2-arc-runners
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Set Environments
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (because image_tag is provided: ${{ inputs.image_tag }})"
+          elif [ "${GITHUB_REF##*/}" = "main" ]; then
+            echo "PROJECT_ENV=prod" >> $GITHUB_ENV
+            echo "Environment set to: prod (because branch is main)"
+          else
+            echo "PROJECT_ENV=dev" >> $GITHUB_ENV
+            echo "Environment set to: dev (default for branch: ${GITHUB_REF##*/})"
+          fi
+      - name: Checkout (with image_tag)
+        if: inputs.image_tag
+        uses: actions/checkout@v4
+        with:
+          repository: pylerAI/video-search-and-summarization
+          ref: develop
+          token: ${{ secrets.TOKEN }}
+
+      - name: Checkout (default)
+        if: ${{ !inputs.image_tag }}
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Login to NGC
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: '$oauthtoken'
+          password: ${{ secrets.NGC_API_KEY }}
+          
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build & Push VSS Engine Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src/vss-engine
+          push: true
+          tags: ${{ vars.HARBOR_REGISTRY }}/apps/${{ env.PROJECT_ENV }}/vss-engine:${{ inputs.image_tag || github.sha }}
+          file: ./src/vss-engine/docker/Dockerfile
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/blueprint/vss-engine-base:2.4.1
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.3'
+
+      - name: Set up Helm 3
+        uses: azure/setup-helm@v4.3.0
+        with:
+          version: 'v3.16.4'
+
+      - name: Deploy services to Onprem
+        run:  |
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
+          find deploy/k8s/${{ env.PROJECT_ENV }} -type f -name "*.yaml" -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
+          kubectl apply -f deploy/k8s/${{ env.PROJECT_ENV }} --recursive
+
+      - name: Deploy vss app to Onprem
+        run: |
+          IMAGE_TAG="${{ inputs.image_tag || github.sha }}"
+          if kubectl get deployment vss-vss-deployment -n vss &> /dev/null; then
+            kubectl scale deployment vss-vss-deployment -n vss --replicas=0
+          fi
+          find deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -exec sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" {} +
+          helm upgrade vss deploy/helm/nvidia-blueprint-vss-2.4.1.tgz -f deploy/helm/values/${{ env.PROJECT_ENV }}.yaml -n vss --install
+          # apply configmap
+          kubectl apply -f deploy/k8s/dev/vss-configs-cm.yaml -n vss
+
+      - name: Patch schedulerName for deployments
+        run: |
+          kubectl patch deployment nemo-embedding-embedding-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment nemo-rerank-ranking-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+          kubectl patch deployment vss-vss-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
+
+      - name: scale down not use service
+        run: |
+          # engine scale down
+          # kubectl scale deployment vss-vss-deployment -n vss --replicas=0
+          # llm server scale down (not use)
+          kubectl scale statefulset vss -n vss --replicas=0
