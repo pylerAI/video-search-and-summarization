@@ -10,4 +10,4 @@ data:
   OPENAI_API_KEY: "fake_key"
   # VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME: "VILA1.5-40B"
   # VIA_VLM_ENDPOINT: "http://vila-server-service:8000/v1"
-  MODEL_PATH: "git:https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct" 
+  MODEL_PATH: "ngc:nim/nvidia/cosmos-reason1-7b:1.1-fp8-dynamic"

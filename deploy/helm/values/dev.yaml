@@ -12,7 +12,7 @@ global:
 
 vss:
   nodeSelector:
-    kubernetes.io/hostname: dgx-b200-08
+    pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
   applicationSpecs:
@@ -25,7 +25,7 @@ vss:
           image:
             pullPolicy: IfNotPresent
             repository: harbor.pyler.local/apps/dev/vss-engine
-            tag: IMAGE_TAG
+            tag: 87ef61e722f5cdb8f4012525860dcca9c229677a
           env:
           - name: VLM_MODEL_TO_USE
             valueFrom:
@@ -37,9 +37,7 @@ vss:
               configMapKeyRef:
                 name: vss-vlm-config
                 key: MODEL_PATH
-          # for qwen 
-          - name: VLLM_GPU_MEMORY_UTILIZATION 
-            value: "0.8"
+
           # - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
           #   valueFrom:
           #     configMapKeyRef:
@@ -60,7 +58,7 @@ vss:
             value: 'true'
           # multi-language support
           - name: RIVA_ASR_SERVER_URI
-            value: riva-multilang-service
+            value: riva-service
           - name: ENABLE_VIA_HEALTH_EVAL
             value: "true"
           - name: VIA_CTX_RAG_ENABLE_OTEL
@@ -78,6 +76,18 @@ vss:
           startupProbe:
             failureThreshold: 360
       initContainers:
+      - name: copy-configmaps
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -e
+            echo "Copying scripts..."
+            if [ -d /configmap-scripts ]; then
+              cp -rL /configmap-scripts/. /opt/scripts/
+              echo "Scripts copied: $(ls -la /opt/scripts/)"
+            fi
+            echo "All ConfigMaps copied successfully"
       - command:
         - sh
         - -c
@@ -95,13 +105,36 @@ vss:
         imagePullPolicy: IfNotPresent
         name: check-neo4j-up
       - args:
-        - "while ! curl -s -f -o /dev/null http://llm-openai-svc:8000/v1/health/live;\
+        - "while ! curl -s -f -o /dev/null http://llm-nim-svc:8000/v1/health/live;\
           \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
         command:
         - sh
         - -c
         image: curlimages/curl:latest
         name: check-llm-up
+
+  defaultVolumes:
+  - configMap:
+      name: vss-workload-cm
+    name: workload-cm-volume
+  - configMap:
+      name: vss-configs-cm
+    name: configs-volume
+  - emptyDir: {}
+    name: scripts-cm-volume
+
+  extraPodVolumes:
+  - configMap:
+      defaultMode: 420
+      name: vss-scripts-cm
+    name: scripts-cm-volume-source
+  - name: guardrails-config-dir
+    emptyDir: {}
+  extraPodVolumeMounts:
+  - name: scripts-cm-volume-source
+    mountPath: /configmap-scripts
+  - name: guardrails-config-dir
+    mountPath: /opt/nvidia/via/guardrails_config
 
   configs:
     ca_rag_config.yaml:
@@ -536,15 +569,18 @@ nim-llm:
   persistence:
     storageClass: gpfs
   image:
-    repository: nvcr.io/nim/meta/llama-3.1-70b-instruct
-    tag: 1.10.1
+    repository: nvcr.io/nim/openai/gpt-oss-120b
+    tag: latest
   model:
-    name: meta/llama-3.1-70b-instruct
+    name: openai/gpt-oss-120b
     ngcAPISecret: infisical-managed-secrets
   resources:
     limits:
-      nvidia.com/gpu: 4
-
+      nvidia.com/gpu: 4  
+  persistence:
+    existingClaim: model-store-vss-openai-0
+    enabled: true
+  
 nemo-embedding:
   nodeSelector: 
     pyler.io/group: dgx
@@ -599,15 +635,40 @@ riva:
         riva-container:
           env:
           - name: NIM_TAGS_SELECTOR
-            # value: name=parakeet-0-6b-ctc-riva-en-us,mode=all
-            value: mode=all
+            # https://docs.nvidia.com/nim/speech/latest/asr/deploy-asr-models/parakeet-rnnt.html
+            value: "mode=all" 
           image:
             repository: nvcr.io/nim/nvidia/parakeet-1-1b-rnnt-multilingual
             tag: latest
+          livenessProbe:
+            httpGet:
+              path: /v1/health/live
+              port: http-api
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http-api
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          startupProbe:
+            httpGet:
+              path: /v1/health/ready
+              port: http-api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 480
       volumes:
       - name: riva-cache
         persistentVolumeClaim:
           claimName: riva-nim-cache-pvc
+
   workloadSpecs:
     dummy: {}
     wl-env:
@@ -623,16 +684,6 @@ riva:
         value: '50051'
       - name: NIM_CACHE_PATH
         value: /mnt/nim-cache
-
-      - name: DISABLE_RIVA_HTTP_SERVER
-        value: "False"
-      # gRPC(50051) 쓰려면
-      - name: NIM_DISABLE_GRPC_STARTUP
-        value: "False"
-      # 내부 Triton을 같이 써야 모델 서빙이 정상 동작
-      - name: NIM_DISABLE_TRITON_STARTUP
-        value: "False"
-      wl_units: 1
 
 arango-db:
   nodeSelector: 
