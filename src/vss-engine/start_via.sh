@@ -153,6 +153,28 @@ PID_FILE="/tmp/pids.txt"
 if [ "$MODE" == "release" ]; then
     export PYTHONWARNINGS=ignore
 fi
+# Function to install additional audio plugins for GStreamer and FFmpeg
+install_audio_plugins() {
+    echo "Installing additional audio plugins for GStreamer and FFmpeg"
+    apt-get update
+    apt-get install --reinstall -y \
+      libvpx9 \
+      libzvbi0 \
+      libmp3lame0 \
+      libx265-199 \
+      libunibreak5 \
+      libmpg123-0
+
+    apt-get install -y gstreamer1.0-libav gstreamer1.0-plugins-ugly gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-tools ffmpeg
+
+    ldconfig
+    rm -rf ~/.cache/gstreamer-1.0/
+
+    apt-get install --reinstall -y gstreamer1.0-libav
+
+    export GST_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/gstreamer-1.0
+    echo "Audio plugins installation completed"
+}
 
 # Function to kill processes
 kill_processes() {
@@ -356,6 +378,7 @@ start_processes() {
 
     if [ "$ENABLE_AUDIO" = true ]; then
         configure_riva_asr_service
+        install_audio_plugins
     fi
 
     start_cuda_mps_server
