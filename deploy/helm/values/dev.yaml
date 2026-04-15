@@ -63,80 +63,83 @@ vss:
             value: riva-service
           - name: ENABLE_VIA_HEALTH_EVAL
             value: "true"
-          - name: VIA_CTX_RAG_ENABLE_OTEL
-            value: "true"
-          - name: VIA_CTX_RAG_EXPORTER
-            value: "otlp"
-          - name: VIA_CTX_RAG_OTEL_ENDPOINT
-            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
-          - name: VIA_ENABLE_OTEL
-            value: "true"
-          - name: VIA_OTEL_EXPORTER
-            value: "otlp"
-          - name: VIA_OTEL_ENDPOINT
-            value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
+          # - name: VIA_CTX_RAG_ENABLE_OTEL
+          #   value: "true"
+          # - name: VIA_CTX_RAG_EXPORTER
+          #   value: "otlp"
+          # - name: VIA_CTX_RAG_OTEL_ENDPOINT
+          #   value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
+          # - name: VIA_ENABLE_OTEL
+          #   value: "true"
+          # - name: VIA_OTEL_EXPORTER
+          #   value: "otlp"
+          # - name: VIA_OTEL_ENDPOINT
+          #   value: "http://signoz-k8s-collector-k8s-infra-otel-agent.monitoring.svc.cluster.local:4318"
           startupProbe:
-            failureThreshold: 360
-      initContainers:
-      - name: copy-configmaps
-        image: busybox:latest
-        command: ["sh", "-c"]
-        args:
-          - |
-            set -e
-            echo "Copying scripts..."
-            if [ -d /configmap-scripts ]; then
-              cp -rL /configmap-scripts/. /opt/scripts/
-              echo "Scripts copied: $(ls -la /opt/scripts/)"
-            fi
-            echo "All ConfigMaps copied successfully"
-      - command:
-        - sh
-        - -c
-        - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
-          waiting for milvus; sleep 2; done
-        image: busybox:1.28
-        imagePullPolicy: IfNotPresent
-        name: check-milvus-up
-      - command:
-        - sh
-        - -c
-        - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
-          2; done
-        image: busybox:1.28
-        imagePullPolicy: IfNotPresent
-        name: check-neo4j-up
-      - args:
-        - "while ! curl -s -f -o /dev/null http://llm-nim-svc:8000/v1/health/live;\
-          \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
-        command:
-        - sh
-        - -c
-        image: curlimages/curl:latest
-        name: check-llm-up
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 120
+      # initContainers:
+      # - name: copy-configmaps
+      #   image: busybox:latest
+      #   command: ["sh", "-c"]
+      #   args:
+      #     - |
+      #       set -e
+      #       echo "Copying scripts..."
+      #       if [ -d /configmap-scripts ]; then
+      #         cp -rL /configmap-scripts/. /opt/scripts/
+      #         echo "Scripts copied: $(ls -la /opt/scripts/)"
+      #       fi
+      #       echo "All ConfigMaps copied successfully"
+      # - command:
+      #   - sh
+      #   - -c
+      #   - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
+      #     waiting for milvus; sleep 2; done
+      #   image: busybox:1.28
+      #   imagePullPolicy: IfNotPresent
+      #   name: check-milvus-up
+      # - command:
+      #   - sh
+      #   - -c
+      #   - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
+      #     2; done
+      #   image: busybox:1.28
+      #   imagePullPolicy: IfNotPresent
+      #   name: check-neo4j-up
+      # - args:
+      #   - "while ! curl -s -f -o /dev/null http://llm-nim-svc:8000/v1/health/live;\
+      #     \ do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
+      #   command:
+      #   - sh
+      #   - -c
+      #   image: curlimages/curl:latest
+      #   name: check-llm-up
 
-  defaultVolumes:
-  - configMap:
-      name: vss-workload-cm
-    name: workload-cm-volume
-  - configMap:
-      name: vss-configs-cm
-    name: configs-volume
-  - emptyDir: {}
-    name: scripts-cm-volume
+  # defaultVolumes:
+  # - configMap:
+  #     name: vss-workload-cm
+  #   name: workload-cm-volume
+  # - configMap:
+  #     name: vss-configs-cm
+  #   name: configs-volume
+  # - emptyDir: {}
+  #   name: scripts-cm-volume
 
-  extraPodVolumes:
-  - configMap:
-      defaultMode: 420
-      name: vss-scripts-cm
-    name: scripts-cm-volume-source
-  - name: guardrails-config-dir
-    emptyDir: {}
-  extraPodVolumeMounts:
-  - name: scripts-cm-volume-source
-    mountPath: /configmap-scripts
-  - name: guardrails-config-dir
-    mountPath: /opt/nvidia/via/guardrails_config
+  # extraPodVolumes:
+  # - configMap:
+  #     defaultMode: 420
+  #     name: vss-scripts-cm
+  #   name: scripts-cm-volume-source
+  # - name: guardrails-config-dir
+  #   emptyDir: {}
+  # extraPodVolumeMounts:
+  # - name: scripts-cm-volume-source
+  #   mountPath: /configmap-scripts
+  # - name: guardrails-config-dir
+  #   mountPath: /opt/nvidia/via/guardrails_config
 
   configs:
     ca_rag_config.yaml:
@@ -200,7 +203,7 @@ vss:
       tools:
         chat_llm:
           params:
-            base_url: http://llm-openai-svc:8000/v1
+            base_url: http://llm-nim-svc:8000/v1
             max_tokens: 2048
             model: ${LLM_MODEL}
             temperature: 0.2
@@ -228,7 +231,7 @@ vss:
           type: reranker
         summarization_llm:
           params:
-            base_url: http://llm-openai-svc:8000/v1
+            base_url: http://llm-nim-svc:8000/v1
             max_tokens: 2048
             model: ${LLM_MODEL}
             temperature: 0.2
@@ -246,7 +249,7 @@ vss:
       - engine: nim
         model: openai/gpt-oss-120b
         parameters:
-          base_url: http://llm-openai-svc:8000/v1
+          base_url: http://llm-nim-svc:8000/v1
         type: main
       - engine: nim
         model: nvidia/llama-3.2-nv-embedqa-1b-v2
@@ -373,9 +376,7 @@ vss:
     riva-api:
       address: riva-multilang-service
       port: 9000
-    llm-openai-api:
-      address: llm-openai-svc
-      port: 8000
+
 
   resources:
     limits:
