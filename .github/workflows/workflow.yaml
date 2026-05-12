@@ -132,10 +132,3 @@ jobs:
           kubectl patch deployment nemo-embedding-embedding-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
           kubectl patch deployment nemo-rerank-ranking-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
           kubectl patch deployment vss-vss-deployment -n vss -p '{"spec":{"template":{"spec":{"schedulerName":"bin-packing-scheduler"}}}}'
-
-      - name: scale down not use service
-        run: |
-          # engine scale down
-          # kubectl scale deployment vss-vss-deployment -n vss --replicas=0
-          # llm server scale down (not use)
-          kubectl scale statefulset vss -n vss --replicas=0

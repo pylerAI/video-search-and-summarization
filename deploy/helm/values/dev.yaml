@@ -463,10 +463,23 @@ vss:
 
 
 etcd:
-  nodeSelector: 
+  nodeSelector:
     pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
+  # PVC: etcd-vss-cache-pvc (Milvus collection metadata)
+  # Already exists at 10Gi (created by chart default); declared explicitly here
+  # so size/access mode are version-controlled in this values file.
+  storageClaims:
+    vss-cache-pvc:
+      annotations:
+        helm.sh/resource-policy: keep
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
 
 minio:
   nodeSelector: 
@@ -512,10 +525,34 @@ minio:
     readOnly: true
 
 milvus:
-  nodeSelector: 
+  nodeSelector:
     pyler.io/group: dgx
   namespace: vss
   storageClassName: gpfs
+  # PVC: milvus-data-pvc (RocksMQ WAL, localStorage at /var/lib/milvus)
+  # Without this, RocksMQ WAL is on emptyDir and any pod restart/reschedule
+  # corrupts in-flight inserts and may prevent Milvus from starting cleanly.
+  storageClaims:
+    data-pvc:
+      annotations:
+        helm.sh/resource-policy: keep
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 100Gi
+  applicationSpecs:
+    milvus-deployment:
+      containers:
+        milvus-container:
+          volumeMounts:
+          - mountPath: /var/lib/milvus
+            name: milvus-data
+      volumes:
+      - name: milvus-data
+        persistentVolumeClaim:
+          claimName: milvus-data-pvc
   defaultVolumeMounts:
   - mountPath: /opt/workload-config
     name: workload-cm-volume
@@ -524,7 +561,7 @@ milvus:
     name: configs-volume
   - mountPath: /opt/scripts
     name: scripts-cm-volume
-  
+
   configs:
     config.yaml:
       log:
@@ -534,6 +571,36 @@ milvus:
       grpc:
         log:
           level: WARNING
+
+milvus-minio:
+  nodeSelector:
+    pyler.io/group: dgx
+  namespace: vss
+  storageClassName: gpfs
+  # PVC: milvus-minio-data-pvc (MinIO object store backing Milvus binlogs/segments/indexes)
+  # This is the most critical one — without it, every Milvus collection
+  # is lost the moment this pod is recreated.
+  storageClaims:
+    data-pvc:
+      annotations:
+        helm.sh/resource-policy: keep
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 500Gi
+  applicationSpecs:
+    milvus-minio-deployment:
+      containers:
+        milvus-minio-container:
+          volumeMounts:
+          - mountPath: /minio_data
+            name: minio-data
+      volumes:
+      - name: minio-data
+        persistentVolumeClaim:
+          claimName: milvus-minio-data-pvc
           
 neo4j:
   nodeSelector: 
