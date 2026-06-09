@@ -1,5 +1,5 @@
 #Dockerfile
-FROM vllm/vllm-openai:latest
+FROM harbor.pyler.local/dockerhub-proxy/vllm/vllm-openai:latest
 
 RUN uv pip install --system git+https://github.com/huggingface/transformers.git
 
